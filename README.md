@@ -27,24 +27,57 @@ Pre-configured agent skills for Wednesday Solutions projects. These skills provi
 
 ## Installation
 
+### Option 1: Global Installation (Recommended)
+
+Install globally to use the `wednesday-skills` command anywhere:
+
 ```bash
-npm i @wednesday-solutions-eng/ai-agent-skills
+npm install -g @wednesday-solutions-eng/ai-agent-skills
 ```
 
-After installation, run the CLI to install skills to your project:
+Then run in your project directory:
 
 ```bash
 wednesday-skills install
 ```
 
-### CLI Commands
+### Option 2: Using npx (No Installation)
+
+Run directly without installing:
 
 ```bash
-# Install skills to current directory
+npx @wednesday-solutions-eng/ai-agent-skills install
+```
+
+## What Happens During Installation
+
+The CLI does two things:
+
+1. **Installs skill files** to `.wednesday/skills/`
+2. **Configures AI agents** to discover the skills by creating/updating:
+   - `CLAUDE.md` - For Claude Code
+   - `.cursorrules` - For Cursor
+   - `.github/copilot-instructions.md` - For GitHub Copilot
+
+This ensures your AI assistants **actively know** about the skills and will use them.
+
+## CLI Commands
+
+```bash
+# Install skills AND configure all agents (recommended)
 wednesday-skills install
 
 # Install skills to a specific directory
 wednesday-skills install ./my-project
+
+# Install skills without configuring agents
+wednesday-skills install --skip-config
+
+# Configure agents for already-installed skills
+wednesday-skills configure
+
+# Configure only a specific agent (claude, cursor, or copilot)
+wednesday-skills configure . claude
 
 # List available skills
 wednesday-skills list
@@ -57,6 +90,10 @@ wednesday-skills help
 
 ```
 your-project/
+├── CLAUDE.md                          # Claude Code configuration
+├── .cursorrules                       # Cursor configuration
+├── .github/
+│   └── copilot-instructions.md        # GitHub Copilot configuration
 ├── .wednesday/
 │   └── skills/
 │       ├── wednesday-dev/
@@ -79,16 +116,37 @@ your-project/
 ## Supported AI Tools
 
 These skills work with:
-- **Claude Code** (Anthropic)
-- **Cursor** (cursor.com)
+- **Claude Code** (Anthropic) - via `CLAUDE.md`
+- **Cursor** (cursor.com) - via `.cursorrules`
+- **GitHub Copilot** - via `.github/copilot-instructions.md`
 - **Gemini CLI** (Google)
-- **GitHub Copilot Workspace**
 - **Amp** (Sourcegraph)
 - Any tool supporting the [Agent Skills](https://agentskills.io) format
 
+## How It Works
+
+The installation generates an `<available_skills>` XML block that gets injected into each agent's configuration file:
+
+```xml
+<available_skills>
+  <skill>
+    <name>wednesday-dev</name>
+    <description>Technical development guidelines...</description>
+    <location>.wednesday/skills/wednesday-dev/SKILL.md</location>
+  </skill>
+  <skill>
+    <name>wednesday-design</name>
+    <description>Design and UX guidelines...</description>
+    <location>.wednesday/skills/wednesday-design/SKILL.md</location>
+  </skill>
+</available_skills>
+```
+
+When AI agents see this in their system prompt, they know to read the SKILL.md files when working on relevant tasks.
+
 ## Usage
 
-Once installed, AI assistants will automatically discover and apply these guidelines when working on your project.
+Once installed, AI assistants will discover and apply these guidelines when working on your project.
 
 ### Example Prompts
 
@@ -132,14 +190,32 @@ Create a `.wednesday/config.json` to override defaults:
 }
 ```
 
-## Updating
+### Re-running configuration
+
+If you modify the skills or want to update agent configurations:
 
 ```bash
-npm update @wednesday-solutions-eng/ai-agent-skills
+wednesday-skills configure
+```
+
+This will regenerate the agent configuration files with the latest skill metadata.
+
+## Updating
+
+If installed globally:
+
+```bash
+npm update -g @wednesday-solutions-eng/ai-agent-skills
 wednesday-skills install
 ```
 
-This will overwrite the existing skills with the latest version.
+Or just use npx (always gets latest):
+
+```bash
+npx @wednesday-solutions-eng/ai-agent-skills@latest install
+```
+
+This will overwrite the existing skills and update agent configurations.
 
 ## Contributing
 

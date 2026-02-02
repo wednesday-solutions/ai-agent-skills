@@ -1,0 +1,45 @@
+{
+  "name": "@wednesday/ai-agent-skills",
+  "version": "1.0.0",
+  "description": "Pre-configured agent skills for Wednesday Solutions projects. Provides AI coding assistants with project-specific guidelines for code quality and design standards.",
+  "keywords": [
+    "agent-skills",
+    "claude",
+    "cursor",
+    "ai",
+    "coding-assistant",
+    "code-quality",
+    "design-system",
+    "wednesday-solutions",
+    "eslint",
+    "react",
+    "typescript",
+    "ui-components"
+  ],
+  "author": "Wednesday Solutions <delivery@wednesday.is>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wednesday-solutions/ai-agent-skills.git"
+  },
+  "homepage": "https://github.com/wednesday-solutions/ai-agent-skills#readme",
+  "bugs": {
+    "url": "https://github.com/wednesday-solutions/ai-agent-skills/issues"
+  },
+  "bin": {
+    "wednesday-skills": "./bin/cli.js",
+    "ws-skills": "./bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "skills/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

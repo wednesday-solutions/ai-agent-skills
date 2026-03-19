@@ -34,3 +34,7 @@ build/
 
 # Test artifacts
 /tmp/
+test/PLAN.md
+test/CODEBASE.md
+test/BRIEF.md
+test/.plans/

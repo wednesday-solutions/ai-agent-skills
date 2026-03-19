@@ -362,33 +362,104 @@ function logUsage(targetDir) {
   fs.writeFileSync(usageFile, JSON.stringify(usage, null, 2));
 }
 
-// ─── CODEBASE.md seed ─────────────────────────────────────────────────────────
+// ─── Individual agent markdown files ─────────────────────────────────────────
 
-function buildCodebaseDoc(architect) {
-  const modules = (architect.modules || [])
-    .map(m => `- **${m.name}**: ${m.responsibility}`)
-    .join('\n');
-
+function buildArchitectDoc(architect) {
   const stack = (architect.techStack || [])
-    .map(t => `- **${t.layer}**: ${t.choice} — ${t.reason}`)
+    .map(t => `| ${t.layer} | ${t.choice} | ${t.reason} |`)
     .join('\n');
 
-  return `# Codebase Structure
+  const modules = (architect.modules || [])
+    .map(m => `### ${m.name}\n- **Responsibility:** ${m.responsibility}\n- **Interfaces:** ${(m.interfaces || []).join(', ')}`)
+    .join('\n\n');
 
-> Auto-generated from greenfield planning. Update as the project evolves.
+  const risks = (architect.technicalRisks || []).map(r => `- ${r}`).join('\n');
+
+  return `# Architect Analysis
+
+## System Design
+${architect.systemDesign || '—'}
 
 ## Tech Stack
-${stack || '(see PLAN.md)'}
+| Layer | Choice | Reason |
+|-------|--------|--------|
+${stack || '| — | — | — |'}
 
 ## Module Boundaries
-${modules || '(see PLAN.md)'}
+${modules || '—'}
 
 ## Infrastructure
-${architect.infrastructure || '(see PLAN.md)'}
+${architect.infrastructure || '—'}
 
-## Notes
-- Update this file as new modules are added
-- Reference PLAN.md for architecture decisions and phase breakdown
+## Scaling Strategy
+${architect.scalingStrategy || '—'}
+
+## Technical Risks
+${risks || '—'}
+`;
+}
+
+function buildPMDoc(pm) {
+  const phases = (pm.phases || []).map(p =>
+    `### Phase ${p.number} — ${p.name}\n**Goal:** ${p.goal}\n**Estimated weeks:** ${p.estimatedWeeks}\n\n**Tasks:**\n${(p.tasks || []).map(t => `- [ ] ${t}`).join('\n')}\n\n**Acceptance Criteria:**\n${(p.acceptanceCriteria || []).map(c => `- [ ] ${c}`).join('\n')}`
+  ).join('\n\n');
+
+  const metrics = (pm.successMetrics || [])
+    .map(m => `| ${m.metric} | ${m.target} | ${m.measuredBy} |`)
+    .join('\n');
+
+  const outOfScope = (pm.outOfScope || []).map(i => `- ${i}`).join('\n');
+  const assumptions = (pm.assumptions || []).map(i => `- ${i}`).join('\n');
+
+  return `# PM Analysis
+
+## Phases
+${phases || '—'}
+
+## Success Metrics
+| Metric | Target | Measured By |
+|--------|--------|------------|
+${metrics || '| — | — | — |'}
+
+## Out of Scope
+${outOfScope || '—'}
+
+## Assumptions
+${assumptions || '—'}
+`;
+}
+
+function buildSecurityDoc(security) {
+  const threats = (security.threatModel || [])
+    .map(t => `| ${t.threat} | ${t.likelihood} | ${t.impact} |`)
+    .join('\n');
+
+  const tasks = (security.securityTasks || []).map(t => `- [ ] ${t}`).join('\n');
+  const flags = (security.flags || []).map(f => `- ⚠ ${f}`).join('\n');
+  const data = (security.dataClassification || []).map(d => `- ${d}`).join('\n');
+  const compliance = (security.complianceFlags || []).join(', ') || 'None';
+
+  return `# Security Analysis
+
+## Threat Model
+| Threat | Likelihood | Impact |
+|--------|-----------|--------|
+${threats || '| — | — | — |'}
+
+## Data Classification
+${data || '—'}
+
+## Auth Strategy
+${security.authStrategy || '—'}
+
+## Compliance Flags
+${compliance}
+
+## Security Tasks
+${tasks || '—'}
+
+## Flags (Urgent)
+${flags || '—'}
 `;
 }
 
@@ -419,8 +490,7 @@ async function main() {
   const briefArgIdx = args.indexOf('--brief');
 
   const briefFile = path.join(targetDir, 'BRIEF.md');
-  const planFile = path.join(targetDir, 'PLAN.md');
-  const codebaseFile = path.join(targetDir, 'CODEBASE.md');
+  const plansDir = path.join(targetDir, '.plans');
 
   // Load or create brief
   let brief;
@@ -455,22 +525,33 @@ async function main() {
 
   console.log('\nRunning 3 persona agents in parallel...');
   const [architect, pm, security] = await Promise.all([
-    runArchitect(context).then(r => { console.log('  Architect done'); return r; }),
-    runPM(context).then(r => { console.log('  PM done'); return r; }),
-    runSecurity(context).then(r => { console.log('  Security done'); return r; }),
+    runArchitect(context)
+      .then(r => { console.log('  ✓ Architect done'); return r; })
+      .catch(e => { console.warn('  ✗ Architect failed:', e.message); return {}; }),
+    runPM(context)
+      .then(r => { console.log('  ✓ PM done'); return r; })
+      .catch(e => { console.warn('  ✗ PM failed:', e.message); return {}; }),
+    runSecurity(context)
+      .then(r => { console.log('  ✓ Security done'); return r; })
+      .catch(e => { console.warn('  ✗ Security failed:', e.message); return {}; }),
   ]);
 
   console.log('\nSynthesizing plan...');
   const plan = await runSynthesis(brief, qna, architect, pm, security);
 
-  fs.writeFileSync(planFile, plan);
-  fs.writeFileSync(codebaseFile, buildCodebaseDoc(architect));
+  fs.mkdirSync(plansDir, { recursive: true });
+  fs.writeFileSync(path.join(plansDir, 'architect.md'), buildArchitectDoc(architect));
+  fs.writeFileSync(path.join(plansDir, 'pm.md'), buildPMDoc(pm));
+  fs.writeFileSync(path.join(plansDir, 'security.md'), buildSecurityDoc(security));
+  fs.writeFileSync(path.join(plansDir, 'PLAN.md'), plan);
   logUsage(targetDir);
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   console.log(`\nDone in ${elapsed}s`);
-  console.log(`  PLAN.md     → ${planFile}`);
-  console.log(`  CODEBASE.md → ${codebaseFile}`);
+  console.log(`  .plans/architect.md → ${path.join(plansDir, 'architect.md')}`);
+  console.log(`  .plans/pm.md        → ${path.join(plansDir, 'pm.md')}`);
+  console.log(`  .plans/security.md  → ${path.join(plansDir, 'security.md')}`);
+  console.log(`  .plans/PLAN.md      → ${path.join(plansDir, 'PLAN.md')}`);
 }
 
 main().catch(err => {

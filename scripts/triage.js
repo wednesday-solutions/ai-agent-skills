@@ -15,6 +15,33 @@
  */
 
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// Load .env from cwd (local project), then ~/.wednesday/.env (global fallback)
+function loadEnv() {
+  const candidates = [
+    path.join(process.cwd(), '.env'),
+    path.join(os.homedir(), '.wednesday', '.env'),
+  ];
+  for (const envFile of candidates) {
+    if (fs.existsSync(envFile)) {
+      const lines = fs.readFileSync(envFile, 'utf8').split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eq = trimmed.indexOf('=');
+        if (eq === -1) continue;
+        const key = trimmed.slice(0, eq).trim();
+        const val = trimmed.slice(eq + 1).trim();
+        if (key && !(key in process.env)) process.env[key] = val;
+      }
+      break;
+    }
+  }
+}
+loadEnv();
 const { execSync } = require('child_process');
 
 // ─── Config ────────────────────────────────────────────────────────────────

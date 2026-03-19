@@ -1,236 +1,155 @@
 # Wednesday Agent Skills
 
-Pre-configured agent skills for Wednesday Solutions projects. These skills provide AI coding assistants (Claude Code, Cursor, etc.) with project-specific guidelines for code quality and design standards.
+AI skills for Wednesday Solutions projects — git discipline, PR automation, terminal dashboard, and greenfield planning.
 
-## What's Included
+---
 
-| Skill | Description |
-|-------|-------------|
-| `wednesday-dev` | Technical development guidelines (imports, complexity, naming) |
-| `wednesday-design` | Design & UX guidelines (tokens, animations, components) |
+## Install
 
-### wednesday-dev
-- Import ordering rules
-- Cyclomatic complexity limits (max 8)
-- Naming conventions (PascalCase, camelCase, UPPER_SNAKE_CASE)
-- TypeScript best practices
-- React patterns
-- Testing requirements
-
-### wednesday-design
-- **492+ approved UI components** from 8 vetted libraries
-- Design tokens (colors, typography, spacing, shadows)
-- Animation patterns and easing functions
-- Component styling patterns
-- Accessibility requirements
-- Performance guidelines
-
-## Installation
-
-### Option 1: Global Installation (Recommended)
-
-Install globally to use the `wednesday-skills` command anywhere:
-
-```bash
-npm install -g @wednesday-solutions-eng/ai-agent-skills
-```
-
-Then run in your project directory:
-
-```bash
-wednesday-skills install
-```
-
-### Option 2: Using npx (No Installation)
-
-Run directly without installing:
-
+**Option 1 — npx (no setup)**
 ```bash
 npx @wednesday-solutions-eng/ai-agent-skills install
 ```
 
-## What Happens During Installation
-
-The CLI does two things:
-
-1. **Installs skill files** to `.wednesday/skills/`
-2. **Configures AI agents** to discover the skills by creating/updating:
-   - `CLAUDE.md` - For Claude Code
-   - `.cursorrules` - For Cursor
-   - `.github/copilot-instructions.md` - For GitHub Copilot
-
-This ensures your AI assistants **actively know** about the skills and will use them.
-
-## CLI Commands
-
+**Option 2 — global**
 ```bash
-# Install skills AND configure all agents (recommended)
+npm install -g @wednesday-solutions-eng/ai-agent-skills
 wednesday-skills install
-
-# Install skills to a specific directory
-wednesday-skills install ./my-project
-
-# Install skills without configuring agents
-wednesday-skills install --skip-config
-
-# Configure agents for already-installed skills
-wednesday-skills configure
-
-# Configure only a specific agent (claude, cursor, or copilot)
-wednesday-skills configure . claude
-
-# List available skills
-wednesday-skills list
-
-# Show help
-wednesday-skills help
 ```
 
-## Directory Structure After Installation
+**Option 3 — shell (no npm)**
+```bash
+bash install.sh
+```
+
+Run in your project root. Done in seconds.
+
+---
+
+## What you get after install
+
+| Feature | What it does |
+|---------|-------------|
+| `git-os` skill | Every agent follows conventional commits — no bad commit messages |
+| `commit-lint` CI | GitHub Action blocks PRs with non-conventional commits |
+| `triage-loop` skill | Gemini PR review comments auto-sorted by impact, fixed on your approval |
+| `triage` CI | GitHub Action that runs triage when Gemini bot posts a review |
+| `greenfield` skill | Run `wednesday-skills plan` — 3 AI personas produce `PLAN.md` in minutes |
+| `sprint` skill | Give a ticket → get branch name, PR title, and description template |
+| `deploy-checklist` skill | Pre and post deploy verification checklist |
+| `wednesday-dev` skill | Import ordering, complexity limits (max 8), naming conventions |
+| `wednesday-design` skill | 492+ approved UI components, design tokens, animation patterns |
+
+**Config files written automatically:**
+- `CLAUDE.md` — Claude Code
+- `GEMINI.md` — Gemini CLI
+- `.cursorrules` — Cursor
+- `.github/copilot-instructions.md` — GitHub Copilot
+- `.wednesday/tools.json` — tool adapter config (sync target for Antigravity)
+
+---
+
+## CLI commands
+
+```bash
+wednesday-skills install                  # install + configure all agents
+wednesday-skills install --skip-config    # install skills only
+wednesday-skills configure . gemini       # re-configure a specific agent
+wednesday-skills sync                     # re-sync all tool adapters
+wednesday-skills sync --tool antigravity  # sync to Antigravity only
+wednesday-skills dashboard                # launch terminal dashboard
+wednesday-skills dashboard --pr 142       # focus dashboard on one PR
+wednesday-skills plan                     # run greenfield planning
+wednesday-skills list                     # list installed skills
+```
+
+---
+
+## Terminal dashboard
+
+```
+wednesday-skills dashboard
+```
+
+Requires `GITHUB_TOKEN` env var. Shows:
+- Active PRs and fix counts
+- Triage queue per PR
+- Installed skills
+- OpenRouter usage and cost
+
+Press `r` to refresh, `q` to quit.
+
+---
+
+## Greenfield planner
+
+```bash
+# Option 1: create BRIEF.md first
+echo "Build a todo app with auth and teams" > BRIEF.md
+wednesday-skills plan
+
+# Option 2: pass brief inline
+wednesday-skills plan --brief "Build a todo app with auth and teams"
+```
+
+Requires `OPENROUTER_API_KEY` in `.env`. Outputs `PLAN.md` and `CODEBASE.md`.
+
+---
+
+## Environment variables
+
+Copy `.env.example` to `.env` and fill in:
+
+```
+OPENROUTER_API_KEY=   # required for plan + triage
+GITHUB_TOKEN=         # required for dashboard PR panel
+```
+
+For GitHub Actions (triage), add `OPENROUTER_API_KEY` as a repo secret.
+
+---
+
+## Supported AI tools
+
+| Tool | Configured via |
+|------|---------------|
+| Claude Code | `CLAUDE.md` |
+| Gemini CLI | `GEMINI.md` |
+| Antigravity | `~/.gemini/antigravity/skills/` (run `wednesday-skills sync`) |
+| Cursor | `.cursorrules` |
+| GitHub Copilot | `.github/copilot-instructions.md` |
+
+---
+
+## Project layout after install
 
 ```
 your-project/
-├── CLAUDE.md                          # Claude Code configuration
-├── .cursorrules                       # Cursor configuration
-├── .github/
-│   └── copilot-instructions.md        # GitHub Copilot configuration
+├── CLAUDE.md
+├── GEMINI.md
+├── .cursorrules
 ├── .wednesday/
+│   ├── tools.json
 │   └── skills/
+│       ├── git-os/
+│       ├── triage-loop/
+│       ├── greenfield/
+│       ├── sprint/
+│       ├── deploy-checklist/
 │       ├── wednesday-dev/
-│       │   ├── SKILL.md
-│       │   └── references/
-│       │       ├── COMPLEXITY.md
-│       │       └── NAMING.md
 │       └── wednesday-design/
-│           ├── SKILL.md
-│           └── references/
-│               ├── COMPONENT-LIBRARY.md
-│               ├── TOKENS.md
-│               ├── ANIMATIONS.md
-│               └── COMPONENTS.md
-├── src/
-├── package.json
-└── ...
+└── .github/
+    └── workflows/
+        ├── commit-lint.yml
+        └── triage.yml
 ```
 
-## Supported AI Tools
+---
 
-These skills work with:
-- **Claude Code** (Anthropic) - via `CLAUDE.md`
-- **Cursor** (cursor.com) - via `.cursorrules`
-- **GitHub Copilot** - via `.github/copilot-instructions.md`
-- **Gemini CLI** (Google)
-- **Amp** (Sourcegraph)
-- Any tool supporting the [Agent Skills](https://agentskills.io) format
+## Roadmap
 
-## How It Works
-
-The installation generates an `<available_skills>` XML block that gets injected into each agent's configuration file:
-
-```xml
-<available_skills>
-  <skill>
-    <name>wednesday-dev</name>
-    <description>Technical development guidelines...</description>
-    <location>.wednesday/skills/wednesday-dev/SKILL.md</location>
-  </skill>
-  <skill>
-    <name>wednesday-design</name>
-    <description>Design and UX guidelines...</description>
-    <location>.wednesday/skills/wednesday-design/SKILL.md</location>
-  </skill>
-</available_skills>
-```
-
-When AI agents see this in their system prompt, they know to read the SKILL.md files when working on relevant tasks.
-
-## Usage
-
-Once installed, AI assistants will discover and apply these guidelines when working on your project.
-
-### Example Prompts
-
-```
-"Create a new button component"
-→ AI will use approved components from the library (e.g., Shimmer Button from Magic UI)
-
-"Add a hero section with text animation"
-→ AI will use Text Generate Effect from Aceternity UI
-
-"Fix the complexity in this function"
-→ AI will apply refactoring strategies from the complexity guide
-```
-
-## Customization
-
-### Extending the skills
-
-You can add project-specific rules by editing the SKILL.md files:
-
-```markdown
-## Project-Specific Rules
-
-- Use `@company/ui` for internal components
-- All API calls go through `lib/api/client.ts`
-```
-
-### Overriding defaults
-
-Create a `.wednesday/config.json` to override defaults:
-
-```json
-{
-  "skills": {
-    "wednesday-dev": {
-      "complexity": {
-        "max": 10
-      }
-    }
-  }
-}
-```
-
-### Re-running configuration
-
-If you modify the skills or want to update agent configurations:
-
-```bash
-wednesday-skills configure
-```
-
-This will regenerate the agent configuration files with the latest skill metadata.
-
-## Updating
-
-If installed globally:
-
-```bash
-npm update -g @wednesday-solutions-eng/ai-agent-skills
-wednesday-skills install
-```
-
-Or just use npx (always gets latest):
-
-```bash
-npx @wednesday-solutions-eng/ai-agent-skills@latest install
-```
-
-This will overwrite the existing skills and update agent configurations.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes to the skill files
-4. Submit a pull request
+See [Docs/ROADMAP.md](Docs/ROADMAP.md).
 
 ## License
 
-MIT License - Wednesday Solutions
-
-## Links
-
-- [npm Package](https://www.npmjs.com/package/@wednesday-solutions-eng/ai-agent-skills)
-- [Agent Skills Specification](https://agentskills.io/specification)
-- [Wednesday Solutions](https://wednesday.is)
-- [Report Issues](https://github.com/wednesday-solutions/ai-agent-skills/issues)
+MIT — Wednesday Solutions

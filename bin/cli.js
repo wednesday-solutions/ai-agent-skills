@@ -352,7 +352,7 @@ function promptChecklist(availableSkills) {
       const selectedSkills = [...new Set(indices.filter(n => n <= availableSkills.length))].map(n => availableSkills[n - 1]);
       const selectedScripts = [...new Set(indices.filter(n => n > availableSkills.length))].map(n => PR_SCRIPTS[n - availableSkills.length - 1].id);
       resolve({
-        skills: selectedSkills.length ? selectedSkills : availableSkills,
+        skills: selectedSkills,
         scripts: selectedScripts,
       });
     });

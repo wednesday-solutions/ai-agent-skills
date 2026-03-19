@@ -262,21 +262,22 @@ const SKILL_META = {
 };
 
 function promptChecklist(availableSkills) {
+  // Print list first, then open readline — prevents readline from swallowing output
+  console.log('');
+  log('cyan', '  Select skills to install:');
+  console.log('  (Enter numbers separated by commas, or "all" for everything)\n');
+
+  availableSkills.forEach((skill, i) => {
+    const meta = SKILL_META[skill] || { label: skill, desc: '', recommended: false };
+    const tag = meta.recommended ? colors.green(' [recommended]') : '';
+    console.log(`  ${colors.cyan(String(i + 1).padStart(2))}. ${meta.label.padEnd(22)}${meta.desc}${tag}`);
+  });
+
+  console.log('');
+
   return new Promise(resolve => {
     const readline = require('readline');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-    console.log('');
-    log('cyan', '  Select skills to install:');
-    console.log('  (Enter numbers separated by commas, or "all" for everything)\n');
-
-    availableSkills.forEach((skill, i) => {
-      const meta = SKILL_META[skill] || { label: skill, desc: '', recommended: false };
-      const tag = meta.recommended ? colors.green(' [recommended]') : '';
-      console.log(`  ${colors.cyan(String(i + 1).padStart(2))}. ${meta.label.padEnd(22)}${meta.desc}${tag}`);
-    });
-
-    console.log('');
     rl.question('  Your selection: ', answer => {
       rl.close();
       const input = answer.trim().toLowerCase();

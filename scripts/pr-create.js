@@ -105,20 +105,11 @@ function branchCommits(base) {
 function validateBranch(branch) {
   const valid = /^(feat|fix|chore|test|hotfix)\/.+/.test(branch);
   if (!valid) {
-    fail(`Branch "${branch}" does not follow GIT-OS naming.`);
-    console.log(`
-  Branch must match: ${c.cyan('feat|fix|chore|test|hotfix/<name>')}
-
-  Examples:
-    feat/user-auth
-    fix/WED-142-token-crash
-    chore/update-deps
-
-  Rename with:
-    ${c.dim(`git branch -m ${branch} feat/<description>`)}`);
-    process.exit(1);
+    console.log(`  ${c.yellow('⚠')} Branch "${c.yellow(branch)}" does not follow GIT-OS naming.`);
+    console.log(`  ${c.dim('Recommended: feat|fix|chore|test|hotfix/<name> — continuing anyway.')}`);
+  } else {
+    ok(`Branch name valid: ${c.cyan(branch)}`);
   }
-  ok(`Branch name valid: ${c.cyan(branch)}`);
 }
 
 // ─── Step 2: Pre-push checklist ───────────────────────────────────────────────
@@ -201,7 +192,8 @@ ${stackNote}
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log(`\n  ${c.cyan('Wednesday Skills')} — PR Create\n`);
+  const dryRun = process.argv.includes('--dry-run');
+  console.log(`\n  ${c.cyan('Wednesday Skills')} — PR Create${dryRun ? c.yellow(' [dry run]') : ''}\n`);
 
   step('Validating branch name...');
   const branch = currentBranch();
@@ -222,6 +214,21 @@ async function main() {
   ok(`Base branch: ${c.cyan(base)}${isStacked ? c.yellow(' (stacked)') : ''}`);
   ok(`PR title: ${c.cyan(title)}`);
   info(`${commits.length} commit(s) on branch`);
+
+  // Show preview
+  console.log(`\n${'─'.repeat(60)}`);
+  console.log(c.cyan('  PR Preview'));
+  console.log('─'.repeat(60));
+  console.log(`  ${c.dim('Title:')}  ${title}`);
+  console.log(`  ${c.dim('Base:')}   ${base}${isStacked ? c.yellow(' (stacked)') : ''}`);
+  console.log(`  ${c.dim('Branch:')} ${branch}`);
+  console.log(`\n${body.split('\n').map(l => `  ${l}`).join('\n')}`);
+  console.log('─'.repeat(60));
+
+  if (dryRun) {
+    console.log(c.yellow('\n  Dry run — no push or PR created.\n'));
+    return;
+  }
 
   step(`Pushing ${c.cyan(branch)} to origin...`);
   try {

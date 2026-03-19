@@ -295,7 +295,7 @@ function runPlan(targetDir, args) {
 const SKILL_META = {
   'git-os':           { label: 'GIT-OS',           desc: 'Conventional commits, atomic changes, pre-push checklist', recommended: true },
   'pr-create':        { label: 'PR Create',         desc: 'Agent-driven PR creation with GIT-OS validation',          recommended: true },
-  'pr-review':        { label: 'PR Review',          desc: 'Unified PR report — 6A Gemini fix queue, 6B coverage, 6C Sonar', recommended: true },
+  'pr-review':        { label: 'PR Review',          desc: 'Gemini review fix queue — categorized by impact, fixed on approval', recommended: true },
   'greenfield':       { label: 'Greenfield Planner',desc: 'Multi-agent project planning → PLAN.md',                   recommended: false },
   'sprint':           { label: 'Sprint',             desc: 'Branch name, PR title, PR description from ticket',        recommended: false },
   'deploy-checklist': { label: 'Deploy Checklist',  desc: 'Pre/post deploy verification checklist',                   recommended: false },
@@ -695,7 +695,7 @@ function listSkills() {
   console.log('    Read before generating any commit message.');
   console.log('');
   console.log('  pr-review');
-  console.log('    Unified PR report — 6A Gemini fix queue, 6B coverage, 6C Sonar health.');
+  console.log('    Gemini review fix queue — categorized by impact, fixed on dev approval.');
   console.log('');
   console.log('  greenfield');
   console.log('    Parallel persona planning (Architect + PM + Security → PLAN.md).');

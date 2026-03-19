@@ -452,8 +452,8 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     log('green', '╚═══════════════════════════════════════════════════════════╝');
     console.log('');
 
-    // Configure agents unless skipped
-    if (!skipConfig) {
+    // Configure agents only if skills were installed
+    if (!skipConfig && selectedSkills.length > 0) {
       console.log('');
       log('blue', 'Configuring AI agents to discover skills...');
       console.log('');
@@ -462,14 +462,22 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
 
     // Final summary
     console.log('');
-    log('blue', `Skills location: ${skillsDir}`);
-    console.log('');
-    log('cyan', 'Configured agents:');
-    console.log('  • Claude Code    → CLAUDE.md');
-    console.log('  • Gemini CLI     → GEMINI.md');
-    console.log('  • Cursor         → .cursorrules');
-    console.log('  • GitHub Copilot → .github/copilot-instructions.md');
-    console.log('');
+    if (selectedSkills.length > 0) {
+      log('blue', `Skills location: ${skillsDir}`);
+      console.log('');
+      log('cyan', 'Configured agents:');
+      console.log('  • Claude Code    → CLAUDE.md');
+      console.log('  • Gemini CLI     → GEMINI.md');
+      console.log('  • Cursor         → .cursorrules');
+      console.log('  • GitHub Copilot → .github/copilot-instructions.md');
+      console.log('');
+    }
+    if (selectedScripts.length > 0) {
+      log('blue', `PR scripts: .wednesday/scripts/`);
+      log('cyan', 'Auto-run after ws-skills pr:');
+      selectedScripts.forEach(s => console.log(`  • ${s}`));
+      console.log('');
+    }
   };
 
   if (skipChecklist) {

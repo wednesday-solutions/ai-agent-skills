@@ -415,8 +415,8 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
       log('green', `  ✓ ${skill} installed`);
     });
 
-    // Copy GitHub Action workflows
-    copyGitHubAssets(packageRoot, targetDir);
+    // Copy GitHub Action workflows and scripts based on selection
+    copyGitHubAssets(packageRoot, targetDir, selectedScripts);
 
     // Copy commitlint config
     const commitlintSrc = path.join(packageRoot, '.commitlintrc.json');
@@ -574,15 +574,24 @@ function configureGemini(targetDir, instructions) {
   log('green', '  ✓ Gemini CLI configured (GEMINI.md)');
 }
 
-function copyGitHubAssets(packageRoot, targetDir) {
+function copyGitHubAssets(packageRoot, targetDir, selectedScripts = []) {
   const assetsDir = path.join(packageRoot, 'assets', 'workflows');
   if (!fs.existsSync(assetsDir)) return;
 
   const githubWorkflowsDir = path.join(targetDir, '.github', 'workflows');
   fs.mkdirSync(githubWorkflowsDir, { recursive: true });
 
+  // Core workflows always installed; script workflows only if selected
+  const scriptWorkflows = { coverage: 'pr-coverage.yml', sonar: 'pr-sonar.yml' };
+  const skipWorkflows = new Set(
+    Object.entries(scriptWorkflows)
+      .filter(([id]) => !selectedScripts.includes(id))
+      .map(([, file]) => file)
+  );
+
   const files = fs.readdirSync(assetsDir);
   files.forEach(file => {
+    if (skipWorkflows.has(file)) return;
     const src = path.join(assetsDir, file);
     const dest = path.join(githubWorkflowsDir, file);
     if (!fs.existsSync(dest)) {
@@ -590,6 +599,24 @@ function copyGitHubAssets(packageRoot, targetDir) {
       log('green', `  ✓ .github/workflows/${file} copied`);
     }
   });
+
+  // Copy selected PR scripts to .wednesday/scripts/ so CI workflows can find them
+  const scriptsSource = path.join(packageRoot, 'assets', 'scripts');
+  if (selectedScripts.length && fs.existsSync(scriptsSource)) {
+    const wednesdayScriptsDir = path.join(targetDir, '.wednesday', 'scripts');
+    fs.mkdirSync(wednesdayScriptsDir, { recursive: true });
+
+    selectedScripts.forEach(id => {
+      const file = `pr-${id}.sh`;
+      const src = path.join(scriptsSource, file);
+      const dest = path.join(wednesdayScriptsDir, file);
+      if (fs.existsSync(src) && !fs.existsSync(dest)) {
+        fs.copyFileSync(src, dest);
+        fs.chmodSync(dest, 0o755);
+        log('green', `  ✓ .wednesday/scripts/${file} copied`);
+      }
+    });
+  }
 }
 
 function configureCursor(targetDir, instructions) {

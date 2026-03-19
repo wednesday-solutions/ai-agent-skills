@@ -204,7 +204,10 @@ function loadWednesdayConfig() {
 }
 
 function runPRScript(scriptName, base) {
-  const scriptPath = path.join(__dirname, '..', 'assets', 'scripts', `pr-${scriptName}.sh`);
+  // Look in project's .wednesday/scripts/ first (installed copy), then package assets/
+  const projectScript = path.join(process.cwd(), '.wednesday', 'scripts', `pr-${scriptName}.sh`);
+  const packageScript = path.join(__dirname, '..', 'assets', 'scripts', `pr-${scriptName}.sh`);
+  const scriptPath = fs.existsSync(projectScript) ? projectScript : packageScript;
   if (!fs.existsSync(scriptPath)) {
     fail(`${scriptName} script not found — skipping`);
     return;

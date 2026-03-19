@@ -281,7 +281,11 @@ function parseSonarComment(body) {
 // ─── Report Generation ────────────────────────────────────────────────────────
 
 function buildUnifiedReport(prNumber, geminiItems, coverageData, sonarItems) {
-  // Merge all items
+  const hasCoverage = coverageData.items.length > 0;
+  const hasSonar    = sonarItems.length > 0;
+  const hasGemini   = geminiItems.length > 0;
+
+  // Merge all available items — skip sources with no data
   const all = [
     ...geminiItems.map(item => ({
       source: 'Gemini',
@@ -291,46 +295,48 @@ function buildUnifiedReport(prNumber, geminiItems, coverageData, sonarItems) {
       issue: item.summary,
       status: '⬜ pending',
     })),
-    ...coverageData.items,
-    ...sonarItems,
+    ...(hasCoverage ? coverageData.items : []),
+    ...(hasSonar    ? sonarItems        : []),
   ].sort((a, b) => a.rank - b.rank);
 
   const queueRows = all.map((item, i) =>
     `| ${i + 1} | ${item.priority} | ${item.source} | ${item.file} | ${item.issue} | ${item.status} |`
   ).join('\n');
 
-  // Coverage summary table
-  const coverageRows = coverageData.items.map(f =>
-    `| ${f.file} | ${f.stmts}% | ${f.branch} | ${f.funcs} | ${f.lines} |`
-  ).join('\n');
+  // Only render sections that have data
+  const coverageSection = hasCoverage ? `
+## Coverage Summary
+| File | Stmts | Branch | Funcs | Lines |
+|------|-------|--------|-------|-------|
+${coverageData.items.map(f => `| ${f.file} | ${f.stmts}% | ${f.branch} | ${f.funcs} | ${f.lines} |`).join('\n')}
+` : '';
 
-  // Sonar severity counts
   const sonarCounts = {};
   for (const s of sonarItems) {
     const sev = s.priority.replace('sonar-', '').toUpperCase();
     sonarCounts[sev] = (sonarCounts[sev] || 0) + 1;
   }
-  const sonarRows = Object.entries(sonarCounts)
-    .map(([k, v]) => `| ${k} | ${v} |`).join('\n');
+  const sonarSection = hasSonar ? `
+## Sonar Summary
+| Severity | Count |
+|----------|-------|
+${Object.entries(sonarCounts).map(([k, v]) => `| ${k} | ${v} |`).join('\n')}
+` : '';
+
+  const sources = [
+    hasGemini   && 'Gemini review',
+    hasCoverage && 'coverage',
+    hasSonar    && 'Sonar',
+  ].filter(Boolean).join(' + ');
 
   return `${UNIFIED_REPORT_MARKER}
 # PR Review Report — #${prNumber}
-
+${sources ? `_Sources: ${sources}_\n` : ''}
 ## Priority Queue
 | # | Priority | Source | File | Issue | Status |
 |---|----------|--------|------|-------|--------|
 ${queueRows || '| — | — | — | — | No issues found | — |'}
-
-## Coverage Summary
-| File | Stmts | Branch | Funcs | Lines |
-|------|-------|--------|-------|-------|
-${coverageRows || '| All files above 80% | — | — | — | — |'}
-
-## Sonar Summary
-| Severity | Count |
-|----------|-------|
-${sonarRows || '| No issues | 0 |'}
-
+${coverageSection}${sonarSection}
 ## How to Fix
 In Claude Code / Antigravity: \`fix items 1 and 2 from the triage report\`
 In terminal: \`wednesday-skills fix --pr ${prNumber} --items 1,2\`
@@ -438,7 +444,13 @@ async function main() {
 
   console.log(`[triage] Gemini: ${allGeminiComments.length}, Coverage gaps: ${coverageData.items.length}, Sonar: ${sonarItems.length}`);
 
-  // Categorize Gemini comments (skip if none)
+  // Nothing to report — skip
+  if (allGeminiComments.length === 0 && coverageData.items.length === 0 && sonarItems.length === 0) {
+    console.log('[triage] No issues from any source — nothing to report.');
+    return;
+  }
+
+  // Categorize Gemini comments (skip if none or no API key)
   let triaged = [];
   if (allGeminiComments.length > 0 && ANTHROPIC_API_KEY) {
     triaged = await Promise.all(
@@ -447,6 +459,12 @@ async function main() {
         return { ...c, index: i, category, score, summary };
       })
     );
+  } else if (allGeminiComments.length > 0 && !ANTHROPIC_API_KEY) {
+    // No API key — include Gemini comments uncategorized
+    triaged = allGeminiComments.map((c, i) => ({
+      ...c, index: i, category: 'logic', score: 3, summary: c.body.slice(0, 80),
+    }));
+    console.log('[triage] No API key — Gemini comments included without categorization.');
   }
 
   const report = buildUnifiedReport(PR_NUMBER, triaged, coverageData, sonarItems);

@@ -12,7 +12,7 @@
  * 6. git push + gh pr create
  */
 
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -194,6 +194,30 @@ ${stackNote}
 <!-- Add screen recordings if UI changes -->`;
 }
 
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+function loadWednesdayConfig() {
+  const configPath = path.join(process.cwd(), '.wednesday', 'config.json');
+  if (!fs.existsSync(configPath)) return {};
+  try { return JSON.parse(fs.readFileSync(configPath, 'utf8')); }
+  catch { return {}; }
+}
+
+function runPRScript(scriptName, base) {
+  const scriptPath = path.join(__dirname, '..', 'assets', 'scripts', `pr-${scriptName}.sh`);
+  if (!fs.existsSync(scriptPath)) {
+    fail(`${scriptName} script not found — skipping`);
+    return;
+  }
+  step(`Running ${scriptName} report...`);
+  const result = spawnSync('bash', [scriptPath, '--post', base], { stdio: 'inherit' });
+  if (result.status !== 0) {
+    fail(`${scriptName} report failed (exit ${result.status}) — skipping`);
+  } else {
+    ok(`${scriptName} report posted to PR`);
+  }
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -246,8 +270,9 @@ async function main() {
 
   step('Creating PR...');
   const bodyEscaped = body.replace(/'/g, `'\\''`);
+  let prUrl = null;
   try {
-    const prUrl = run(`gh pr create --title '${title}' --base ${base} --body '${bodyEscaped}'`, { capture: true });
+    prUrl = run(`gh pr create --title '${title}' --base ${base} --body '${bodyEscaped}'`, { capture: true });
     ok(c.green(`PR created: ${prUrl}`));
     console.log('');
   } catch (e) {
@@ -255,14 +280,35 @@ async function main() {
     if (msg.includes('already exists')) {
       fail('A PR for this branch already exists.');
       const existing = tryRun(`gh pr view --json url -q .url`);
-      if (existing) info(`Existing PR: ${existing}`);
+      if (existing) {
+        info(`Existing PR: ${existing}`);
+        prUrl = existing;
+      }
     } else if (msg.includes('gh: command not found') || msg.includes('not found')) {
       fail('GitHub CLI not installed. Install with: brew install gh');
+      process.exit(1);
     } else {
       fail('gh pr create failed:');
       console.log(c.red(msg));
+      process.exit(1);
     }
-    process.exit(1);
+  }
+
+  // Auto-run PR scripts configured during ws-skills install
+  const config = loadWednesdayConfig();
+  const prScripts = config.pr_scripts || {};
+
+  if (prScripts.coverage || prScripts.sonar) {
+    console.log(`\n${'─'.repeat(60)}`);
+    console.log(c.cyan('  PR Reports'));
+    console.log('─'.repeat(60));
+    info('Running scripts enabled during ws-skills install...');
+
+    if (prScripts.coverage) runPRScript('coverage', base);
+    if (prScripts.sonar)    runPRScript('sonar', base);
+
+    console.log('─'.repeat(60));
+    console.log('');
   }
 }
 

@@ -303,12 +303,20 @@ const SKILL_META = {
   'wednesday-design': { label: 'Wednesday Design',  desc: '492+ approved UI components, design tokens, animations',   recommended: false },
 };
 
+// PR scripts that can be auto-triggered on `ws-skills pr`
+const PR_SCRIPTS = [
+  { id: 'coverage', label: 'Coverage',  desc: 'Run test coverage after PR creation and post report', recommended: true },
+  { id: 'sonar',    label: 'SonarQube', desc: 'Run SonarQube analysis after PR creation and post report', recommended: false },
+];
+
 function promptChecklist(availableSkills) {
   // Print list first, then open readline — prevents readline from swallowing output
   console.log('');
-  log('cyan', '  Select skills to install:');
+  log('cyan', '  Select skills and scripts to install:');
   console.log('  (Enter numbers separated by commas, or "all" for everything)\n');
 
+  // Skills section
+  console.log(`  ${colors.yellow}── Skills ──${colors.reset}`);
   availableSkills.forEach((skill, i) => {
     const meta = SKILL_META[skill] || { label: skill, desc: '', recommended: false };
     const tag = meta.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
@@ -316,7 +324,19 @@ function promptChecklist(availableSkills) {
     console.log(`  ${num}. ${meta.label.padEnd(22)}${meta.desc}${tag}`);
   });
 
+  // PR scripts section
   console.log('');
+  console.log(`  ${colors.yellow}── PR Scripts (auto-run on ws-skills pr) ──${colors.reset}`);
+  const scriptOffset = availableSkills.length;
+  PR_SCRIPTS.forEach((script, i) => {
+    const tag = script.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
+    const num = `${colors.cyan}${String(scriptOffset + i + 1).padStart(2)}${colors.reset}`;
+    console.log(`  ${num}. ${script.label.padEnd(22)}${script.desc}${tag}`);
+  });
+
+  console.log('');
+
+  const totalItems = availableSkills.length + PR_SCRIPTS.length;
 
   return new Promise(resolve => {
     const readline = require('readline');
@@ -325,14 +345,32 @@ function promptChecklist(availableSkills) {
       rl.close();
       const input = answer.trim().toLowerCase();
       if (!input || input === 'all') {
-        resolve(availableSkills);
+        resolve({ skills: availableSkills, scripts: PR_SCRIPTS.map(s => s.id) });
         return;
       }
-      const indices = input.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= availableSkills.length);
-      const selected = [...new Set(indices)].map(n => availableSkills[n - 1]);
-      resolve(selected.length ? selected : availableSkills);
+      const indices = input.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= totalItems);
+      const selectedSkills = [...new Set(indices.filter(n => n <= availableSkills.length))].map(n => availableSkills[n - 1]);
+      const selectedScripts = [...new Set(indices.filter(n => n > availableSkills.length))].map(n => PR_SCRIPTS[n - availableSkills.length - 1].id);
+      resolve({
+        skills: selectedSkills.length ? selectedSkills : availableSkills,
+        scripts: selectedScripts,
+      });
     });
   });
+}
+
+function saveWednesdayConfig(targetDir, scripts) {
+  const configPath = path.join(targetDir, '.wednesday', 'config.json');
+  let existing = {};
+  if (fs.existsSync(configPath)) {
+    try { existing = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+  }
+  existing.pr_scripts = {
+    coverage: scripts.includes('coverage'),
+    sonar:    scripts.includes('sonar'),
+  };
+  fs.writeFileSync(configPath, JSON.stringify(existing, null, 2));
+  log('green', '  ✓ .wednesday/config.json saved');
 }
 
 function install(targetDir, skipConfig = false, skipChecklist = false) {
@@ -363,7 +401,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     .filter(s => fs.statSync(path.join(skillsSource, s)).isDirectory());
 
   // Show checklist unless --all or --skip-config passed
-  const doInstall = async (selectedSkills) => {
+  const doInstall = async ({ skills: selectedSkills, scripts: selectedScripts = [] }) => {
     // Create .wednesday/skills directory
     const skillsDir = path.join(targetDir, '.wednesday', 'skills');
     log('blue', `\nCreating skills directory: ${skillsDir}`);
@@ -387,6 +425,9 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
       fs.copyFileSync(commitlintSrc, commitlintDest);
       log('green', '  ✓ .commitlintrc.json copied');
     }
+
+    // Save PR script preferences to .wednesday/config.json
+    saveWednesdayConfig(targetDir, selectedScripts);
 
     // Write default tools.json
     ensureToolsConfig(targetDir);
@@ -432,7 +473,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
   };
 
   if (skipChecklist) {
-    doInstall(availableSkills).catch(e => { console.error(e.message); process.exit(1); });
+    doInstall({ skills: availableSkills, scripts: PR_SCRIPTS.map(s => s.id) }).catch(e => { console.error(e.message); process.exit(1); });
   } else {
     promptChecklist(availableSkills).then(doInstall).catch(e => { console.error(e.message); process.exit(1); });
   }

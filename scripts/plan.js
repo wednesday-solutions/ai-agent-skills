@@ -3,12 +3,17 @@
 /**
  * Greenfield Planning Script
  *
- * Reads BRIEF.md (or prompts for input), runs 3 Haiku agents in parallel
- * (Architect, PM, Security), then synthesizes with Sonnet into PLAN.md.
+ * Flow:
+ * 1. Load or prompt for BRIEF.md
+ * 2. Model generates 5 clarifying questions based on the brief
+ * 3. User answers each question interactively
+ * 4. 3 Haiku-equivalent agents run in parallel (Architect, PM, Security)
+ * 5. Sonnet-equivalent synthesizes all input into a detailed GSD-style PLAN.md
  *
  * Usage:
  *   wednesday-skills plan
  *   wednesday-skills plan --brief "Build a todo app with auth"
+ *   wednesday-skills plan --skip-questions   (skip Q&A, go straight to planning)
  */
 
 const https = require('https');
@@ -16,22 +21,24 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 
-// ─── Config ────────────────────────────────────────────────────────────────
+// ─── Config ─────────────────────────────────────────────────────────────────
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.OPENROUTER_API_KEY;
-const USE_OPENROUTER = !process.env.ANTHROPIC_API_KEY && !!process.env.OPENROUTER_API_KEY;
+const ANTHROPIC_API_KEY = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY;
+const USE_OPENROUTER = !!process.env.OPENROUTER_API_KEY;
 
-const HAIKU_MODEL = 'stepfun/step-3.5-flash:free';
-const SONNET_MODEL = 'stepfun/step-3.5-flash:free';
+const FAST_MODEL = 'stepfun/step-3.5-flash:free';
+const SMART_MODEL = 'stepfun/step-3.5-flash:free';
 
-// ─── API Client ─────────────────────────────────────────────────────────────
+const PERSONA_MAX_TOKENS = 4096;
+const SYNTHESIS_MAX_TOKENS = 8192;
 
-function callAnthropic(messages, model, maxTokens = 2048) {
+// ─── API Client ──────────────────────────────────────────────────────────────
+
+function callModel(messages, model, maxTokens) {
   return new Promise((resolve, reject) => {
     let body, hostname, apiPath, headers;
 
     if (USE_OPENROUTER) {
-      // OpenRouter — OpenAI-compatible endpoint
       hostname = 'openrouter.ai';
       apiPath = '/api/v1/chat/completions';
       body = JSON.stringify({ model, max_tokens: maxTokens, messages });
@@ -41,7 +48,6 @@ function callAnthropic(messages, model, maxTokens = 2048) {
         'Content-Length': String(Buffer.byteLength(body)),
       };
     } else {
-      // Anthropic direct
       hostname = 'api.anthropic.com';
       apiPath = '/v1/messages';
       body = JSON.stringify({ model, max_tokens: maxTokens, messages });
@@ -53,17 +59,12 @@ function callAnthropic(messages, model, maxTokens = 2048) {
       };
     }
 
-    const options = { hostname, path: apiPath, method: 'POST', headers };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
+    const req = https.request({ hostname, path: apiPath, method: 'POST', headers }, res => {
+      let d = '';
+      res.on('data', c => d += c);
       res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          reject(new Error(`Failed to parse response: ${data}`));
-        }
+        try { resolve(JSON.parse(d)); }
+        catch { reject(new Error(`Failed to parse response: ${d.slice(0, 200)}`)); }
       });
     });
 
@@ -74,140 +75,276 @@ function callAnthropic(messages, model, maxTokens = 2048) {
 }
 
 function extractText(response) {
-  // Anthropic format
   if (response.content?.[0]?.text) return response.content[0].text;
-  // OpenAI/OpenRouter format
   const msg = response.choices?.[0]?.message;
   if (msg?.content) return msg.content;
-  // Reasoning models (o1, DeepSeek R1, Step) put output in reasoning field
   if (msg?.reasoning) return msg.reasoning;
-  console.error('Unexpected response shape:', JSON.stringify(response).slice(0, 500));
+  console.error('Unexpected response shape:', JSON.stringify(response).slice(0, 300));
   return '';
 }
 
 function extractJSON(text) {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error(`No JSON found in response:\n---\n${text.slice(0, 1000)}\n---`);
-  try {
-    return JSON.parse(match[0]);
-  } catch (e) {
-    throw new Error(`JSON parse failed: ${e.message}\nRaw: ${match[0].slice(0, 300)}`);
+  const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+  if (!match) throw new Error(`No JSON found:\n${text.slice(0, 500)}`);
+  try { return JSON.parse(match[0]); }
+  catch {
+    // Try to fix JS-style objects: unquoted keys, single quotes, trailing commas
+    try {
+      const fixed = match[0]
+        .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, '$1"$2"$3') // quote unquoted keys
+        .replace(/'/g, '"')                                                  // single → double quotes
+        .replace(/,(\s*[}\]])/g, '$1');                                      // trailing commas
+      return JSON.parse(fixed);
+    } catch (e2) {
+      throw new Error(`JSON parse failed: ${e2.message}\n${match[0].slice(0, 300)}`);
+    }
   }
 }
 
-// ─── Persona Prompts ─────────────────────────────────────────────────────────
+// ─── Step 1: Generate clarifying questions ───────────────────────────────────
 
-const PERSONA_MAX_TOKENS = USE_OPENROUTER ? 4096 : 1024;
-const SYNTHESIS_MAX_TOKENS = USE_OPENROUTER ? 8192 : 4096;
+async function generateQuestions(brief) {
+  const prompt = `You are a technical project planner. A developer has given you this project brief:
 
-async function runArchitect(brief) {
-  const prompt = `You are a senior software architect. Analyze this project brief and output ONLY valid JSON.
+"${brief}"
 
-Brief:
-${brief}
+Generate exactly 5 clarifying questions that would most improve the quality of a technical plan.
+Focus on: scale, tech constraints, existing infrastructure, timeline, and non-obvious requirements.
 
-Output this exact JSON shape (no extra text, no markdown):
+Respond with a JSON array of 5 strings. No explanation, just the array:
+["question 1", "question 2", "question 3", "question 4", "question 5"]`;
+
+  const res = await callModel([{ role: 'user', content: prompt }], FAST_MODEL, 1024);
+  const text = extractText(res);
+  try {
+    const questions = extractJSON(text);
+    if (Array.isArray(questions) && questions.length >= 5) return questions.slice(0, 5);
+  } catch {}
+
+  // Fallback questions if model output is malformed
+  return [
+    'What is the expected number of users at launch and at scale?',
+    'Are there any preferred technologies or existing infrastructure we must work with?',
+    'What is the target timeline for the MVP?',
+    'Who are the primary end users and what is their technical level?',
+    'Are there any hard constraints — budget, compliance, integrations, or non-negotiables?',
+  ];
+}
+
+// ─── Step 2: Interactive Q&A ─────────────────────────────────────────────────
+
+function askQuestion(rl, index, question) {
+  return new Promise(resolve => {
+    rl.question(`\nQ${index + 1}. ${question}\n> `, answer => {
+      resolve(answer.trim() || '(no answer)');
+    });
+  });
+}
+
+async function runQandA(brief) {
+  console.log('\nGenerating clarifying questions...');
+  const questions = await generateQuestions(brief);
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answers = [];
+
+  console.log('\n─────────────────────────────────────────────');
+  console.log('Answer these 5 questions to improve your plan');
+  console.log('─────────────────────────────────────────────');
+
+  for (let i = 0; i < questions.length; i++) {
+    const answer = await askQuestion(rl, i, questions[i]);
+    answers.push({ question: questions[i], answer });
+  }
+
+  rl.close();
+  return answers;
+}
+
+// ─── Step 3: Persona agents ──────────────────────────────────────────────────
+
+function buildContext(brief, qna) {
+  const answersText = qna.length
+    ? '\n\nClarifications from the developer:\n' +
+      qna.map((qa, i) => `Q${i + 1}: ${qa.question}\nA: ${qa.answer}`).join('\n\n')
+    : '';
+  return brief + answersText;
+}
+
+async function runArchitect(context) {
+  const prompt = `You are a senior software architect. Analyze this project brief and clarifications.
+
+${context}
+
+Output ONLY this JSON (no markdown, no explanation):
 {
-  "systemDesign": "one paragraph describing the overall system architecture",
-  "techStack": ["technology1", "technology2"],
-  "moduleBoundaries": ["module1: description", "module2: description"],
-  "concerns": ["concern1", "concern2"]
+  "systemDesign": "2-3 sentence architecture description",
+  "techStack": [{ "layer": "frontend", "choice": "React", "reason": "..." }, ...],
+  "modules": [{ "name": "AuthModule", "responsibility": "...", "interfaces": ["..."] }, ...],
+  "infrastructure": "describe hosting, CI/CD, environments",
+  "scalingStrategy": "how the system scales",
+  "technicalRisks": ["risk 1", "risk 2"]
 }`;
 
-  const res = await callAnthropic([{ role: 'user', content: prompt }], HAIKU_MODEL, PERSONA_MAX_TOKENS);
+  const res = await callModel([{ role: 'user', content: prompt }], FAST_MODEL, PERSONA_MAX_TOKENS);
   return extractJSON(extractText(res));
 }
 
-async function runPM(brief) {
-  const prompt = `You are a product manager. Analyze this project brief and output ONLY valid JSON.
+async function runPM(context) {
+  const prompt = `You are a product manager. Analyze this project brief and clarifications.
 
-Brief:
-${brief}
+${context}
 
-Output this exact JSON shape (no extra text, no markdown):
+Output ONLY this JSON (no markdown, no explanation):
 {
-  "requirements": ["requirement1", "requirement2"],
-  "priorities": ["P0: item", "P1: item"],
-  "outOfScope": ["out1", "out2"],
-  "milestones": ["M1: description", "M2: description"]
+  "phases": [
+    {
+      "number": 1,
+      "name": "Foundation",
+      "goal": "...",
+      "tasks": ["task 1", "task 2"],
+      "acceptanceCriteria": ["criterion 1", "criterion 2"],
+      "estimatedWeeks": 2
+    }
+  ],
+  "outOfScope": ["item 1"],
+  "successMetrics": [{ "metric": "...", "target": "...", "measuredBy": "..." }],
+  "assumptions": ["assumption 1"]
 }`;
 
-  const res = await callAnthropic([{ role: 'user', content: prompt }], HAIKU_MODEL, PERSONA_MAX_TOKENS);
+  const res = await callModel([{ role: 'user', content: prompt }], FAST_MODEL, PERSONA_MAX_TOKENS);
   return extractJSON(extractText(res));
 }
 
-async function runSecurity(brief) {
-  const prompt = `You are a security engineer. Analyze this project brief and output ONLY valid JSON.
+async function runSecurity(context) {
+  const prompt = `You are a security engineer. Analyze this project brief and clarifications.
 
-Brief:
-${brief}
+${context}
 
-Output this exact JSON shape (no extra text, no markdown):
+Output ONLY this JSON (no markdown, no explanation):
 {
-  "threatSurface": ["threat1", "threat2"],
-  "dataRisks": ["risk1", "risk2"],
-  "authRecommendations": ["rec1", "rec2"],
-  "flags": ["flag1", "flag2"]
+  "threatModel": [{ "threat": "...", "likelihood": "high|medium|low", "impact": "high|medium|low" }],
+  "dataClassification": ["what PII or sensitive data is involved"],
+  "authStrategy": "recommended auth approach with reasoning",
+  "complianceFlags": ["GDPR", "SOC2", etc. if applicable],
+  "securityTasks": ["concrete task to add to the plan"],
+  "flags": ["urgent security concern 1"]
 }`;
 
-  const res = await callAnthropic([{ role: 'user', content: prompt }], HAIKU_MODEL, PERSONA_MAX_TOKENS);
+  const res = await callModel([{ role: 'user', content: prompt }], FAST_MODEL, PERSONA_MAX_TOKENS);
   return extractJSON(extractText(res));
 }
 
-async function runSynthesis(brief, architect, pm, security) {
-  const prompt = `You are a technical lead synthesizing input from three advisors into a project plan.
+// ─── Step 4: GSD-style synthesis ─────────────────────────────────────────────
 
-Project brief:
+async function runSynthesis(brief, qna, architect, pm, security) {
+  const qnaSection = qna.length
+    ? qna.map((qa, i) => `Q${i + 1}: ${qa.question}\nA: ${qa.answer}`).join('\n')
+    : 'None';
+
+  const prompt = `You are a technical lead producing a detailed project plan for a development team.
+
+## Project Brief
 ${brief}
 
-Architect analysis:
+## Developer Clarifications
+${qnaSection}
+
+## Architect Analysis
 ${JSON.stringify(architect, null, 2)}
 
-PM analysis:
+## PM Analysis
 ${JSON.stringify(pm, null, 2)}
 
-Security analysis:
+## Security Analysis
 ${JSON.stringify(security, null, 2)}
 
-Write a complete PLAN.md in markdown. Include these exact sections:
+Produce a complete, detailed PLAN.md. Use this exact structure:
+
+---
+
 # Project Plan — [extract project name from brief]
 
 ## Overview
-[2–3 sentence summary]
+[2-3 sentences. What is being built, for whom, and why.]
+
+## Clarifications
+[Table of the developer's Q&A answers]
+| Question | Answer |
+|----------|--------|
+| ... | ... |
+
+## Tech Stack
+| Layer | Choice | Reason |
+|-------|--------|--------|
+| ... | ... | ... |
 
 ## Architecture
-[From architect input — system design, tech stack, module boundaries]
+[Describe the system design in detail — components, data flow, module boundaries, infrastructure]
 
-## Requirements
-[From PM input — prioritized list]
+## Phases
 
-## Out of Scope
-[From PM input]
+### Phase 1 — [Name]
+**Goal:** [one sentence]
+**Timeline:** [X weeks]
 
-## Security Considerations
-[From security input — threats, data risks, auth recommendations]
+**Tasks:**
+- [ ] [concrete task with file path or component name where relevant]
+- [ ] ...
 
-## Milestones
-[From PM input]
+**Acceptance Criteria:**
+- [ ] [verifiable outcome]
+- [ ] ...
+
+### Phase 2 — [Name]
+[same structure]
+
+[continue for all phases]
+
+## Security Plan
+| Threat | Likelihood | Impact | Mitigation |
+|--------|-----------|--------|-----------|
+| ... | ... | ... | ... |
+
+**Auth strategy:** [recommendation]
+**Compliance flags:** [list or "None"]
+**Security tasks added to phases:** [list]
+
+## Success Metrics
+| Metric | Target | Measured By |
+|--------|--------|------------|
+| ... | ... | ... |
+
+## Risks
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|-----------|
+| ... | ... | ... | ... |
 
 ## Tensions
-[List any disagreements or tradeoffs between the three advisors. If architect says microservices but PM says ship simple, flag it. If none, write "None identified."]
+[List genuine disagreements between personas — e.g. architect wants microservices but PM says ship monolith first. If none, write "None identified."]
+
+## Assumptions
+[Bulleted list of assumptions the plan depends on]
+
+## Out of Scope
+[Bulleted list]
 
 ## Branch Naming (GIT-OS)
-- feat/<name> from main
-- fix/<name> from main
-- chore/<name> from main`;
+- \`feat/<name>\` from main
+- \`fix/<name>\` from main
+- \`chore/<name>\` from main
 
-  const res = await callAnthropic([{ role: 'user', content: prompt }], SONNET_MODEL, SYNTHESIS_MAX_TOKENS);
+---`;
+
+  const res = await callModel([{ role: 'user', content: prompt }], SMART_MODEL, SYNTHESIS_MAX_TOKENS);
   return extractText(res);
 }
 
-// ─── Cost Tracking ───────────────────────────────────────────────────────────
+// ─── Cost tracking ────────────────────────────────────────────────────────────
 
 function logUsage(targetDir) {
   const cacheDir = path.join(targetDir, '.wednesday', 'cache');
   const usageFile = path.join(cacheDir, 'usage.json');
-
   fs.mkdirSync(cacheDir, { recursive: true });
 
   let usage = { runs: [] };
@@ -218,22 +355,22 @@ function logUsage(targetDir) {
   usage.runs.push({
     type: 'greenfield-plan',
     timestamp: new Date().toISOString(),
-    estimatedCost: 0.14,
-    models: { haiku: 3, sonnet: 1 },
+    estimatedCost: 0.00,
+    model: FAST_MODEL,
   });
 
   fs.writeFileSync(usageFile, JSON.stringify(usage, null, 2));
 }
 
-// ─── CODEBASE.md Seed ────────────────────────────────────────────────────────
+// ─── CODEBASE.md seed ─────────────────────────────────────────────────────────
 
 function buildCodebaseDoc(architect) {
-  const modules = (architect.moduleBoundaries || [])
-    .map(m => `- ${m}`)
+  const modules = (architect.modules || [])
+    .map(m => `- **${m.name}**: ${m.responsibility}`)
     .join('\n');
 
   const stack = (architect.techStack || [])
-    .map(t => `- ${t}`)
+    .map(t => `- **${t.layer}**: ${t.choice} — ${t.reason}`)
     .join('\n');
 
   return `# Codebase Structure
@@ -241,51 +378,57 @@ function buildCodebaseDoc(architect) {
 > Auto-generated from greenfield planning. Update as the project evolves.
 
 ## Tech Stack
-${stack}
+${stack || '(see PLAN.md)'}
 
 ## Module Boundaries
-${modules}
+${modules || '(see PLAN.md)'}
+
+## Infrastructure
+${architect.infrastructure || '(see PLAN.md)'}
 
 ## Notes
-
 - Update this file as new modules are added
-- Reference PLAN.md for architecture decisions
+- Reference PLAN.md for architecture decisions and phase breakdown
 `;
 }
 
-// ─── Prompt for brief ────────────────────────────────────────────────────────
+// ─── Prompt for brief ─────────────────────────────────────────────────────────
 
 async function promptForBrief() {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('Describe your project (or create BRIEF.md and re-run): ', (answer) => {
+    rl.question('\nDescribe your project: ', answer => {
       rl.close();
       resolve(answer.trim());
     });
   });
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   if (!ANTHROPIC_API_KEY) {
-    console.error('Error: ANTHROPIC_API_KEY or OPENROUTER_API_KEY is required.');
-    console.error('Set it in your environment: export ANTHROPIC_API_KEY=sk-...');
+    console.error('Error: OPENROUTER_API_KEY or ANTHROPIC_API_KEY is required.');
+    console.error('Add it to .env: OPENROUTER_API_KEY=sk-or-...');
     process.exit(1);
   }
 
-  const targetDir = process.argv[2] || process.cwd();
+  const args = process.argv.slice(2);
+  const targetDir = (args[0] && !args[0].startsWith('--')) ? args[0] : process.cwd();
+  const skipQuestions = args.includes('--skip-questions');
+  const briefArgIdx = args.indexOf('--brief');
+
   const briefFile = path.join(targetDir, 'BRIEF.md');
   const planFile = path.join(targetDir, 'PLAN.md');
   const codebaseFile = path.join(targetDir, 'CODEBASE.md');
 
-  // Load or prompt for brief
+  // Load or create brief
   let brief;
-  const briefArg = process.argv.indexOf('--brief');
-  if (briefArg !== -1 && process.argv[briefArg + 1]) {
-    brief = process.argv[briefArg + 1];
+  if (briefArgIdx !== -1 && args[briefArgIdx + 1]) {
+    brief = args[briefArgIdx + 1];
     fs.mkdirSync(targetDir, { recursive: true });
     fs.writeFileSync(briefFile, brief);
+    console.log('BRIEF.md created.');
   } else if (fs.existsSync(briefFile)) {
     brief = fs.readFileSync(briefFile, 'utf8').trim();
     console.log(`Loaded BRIEF.md (${brief.length} chars)`);
@@ -293,24 +436,33 @@ async function main() {
     console.log('No BRIEF.md found.');
     brief = await promptForBrief();
     if (!brief) { console.error('No brief provided.'); process.exit(1); }
+    fs.mkdirSync(targetDir, { recursive: true });
     fs.writeFileSync(briefFile, brief);
     console.log('BRIEF.md created.');
   }
 
-  console.log('\nRunning 3 persona agents in parallel...');
+  // Q&A phase
+  let qna = [];
+  if (!skipQuestions) {
+    qna = await runQandA(brief);
+    console.log('\n─────────────────────────────────────────────');
+    console.log('Thanks! Running persona agents...');
+    console.log('─────────────────────────────────────────────');
+  }
+
+  const context = buildContext(brief, qna);
   const start = Date.now();
 
-  // Run all three Haiku agents in parallel
+  console.log('\nRunning 3 persona agents in parallel...');
   const [architect, pm, security] = await Promise.all([
-    runArchitect(brief).then(r => { console.log('  Architect done'); return r; }),
-    runPM(brief).then(r => { console.log('  PM done'); return r; }),
-    runSecurity(brief).then(r => { console.log('  Security done'); return r; }),
+    runArchitect(context).then(r => { console.log('  Architect done'); return r; }),
+    runPM(context).then(r => { console.log('  PM done'); return r; }),
+    runSecurity(context).then(r => { console.log('  Security done'); return r; }),
   ]);
 
-  console.log('\nSynthesizing with Sonnet...');
-  const plan = await runSynthesis(brief, architect, pm, security);
+  console.log('\nSynthesizing plan...');
+  const plan = await runSynthesis(brief, qna, architect, pm, security);
 
-  // Write outputs
   fs.writeFileSync(planFile, plan);
   fs.writeFileSync(codebaseFile, buildCodebaseDoc(architect));
   logUsage(targetDir);
@@ -319,11 +471,9 @@ async function main() {
   console.log(`\nDone in ${elapsed}s`);
   console.log(`  PLAN.md     → ${planFile}`);
   console.log(`  CODEBASE.md → ${codebaseFile}`);
-  console.log(`  Usage logged → .wednesday/cache/usage.json`);
-  console.log('\nEstimated cost: ~$0.14');
 }
 
 main().catch(err => {
-  console.error('Error:', err.message);
+  console.error('\nError:', err.message);
   process.exit(1);
 });

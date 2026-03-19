@@ -55,15 +55,34 @@ const COMMENT_BODY = process.env.COMMENT_BODY || '';
 const EVENT_NAME = process.env.EVENT_NAME || 'pull_request_review';
 
 const GEMINI_BOT_LOGINS = ['gemini-code-assist[bot]', 'gemini-code-assist'];
+const COVERAGE_BOT_MARKER = '<!-- wednesday-coverage-report -->';
+const SONAR_BOT_MARKER    = '<!-- wednesday-sonar-report -->';
+const UNIFIED_REPORT_MARKER = '<!-- wednesday-unified-report -->';
 
-// Priority scores — ascending = safest to fix first
-const PRIORITY_SCORES = {
-  style: 1,
-  naming: 2,
-  logic: 3,
-  performance: 4,
-  breaking: 5,
-  security: 6,
+// Unified priority order (1 = highest priority, 8 = lowest)
+// Lower number = fix first
+const PRIORITY_RANK = {
+  'sonar-blocker':   1,
+  'sonar-high':      2,
+  'gemini-security': 3,
+  'gemini-breaking': 4,
+  'coverage-gap':    5,
+  'sonar-medium':    6,
+  'gemini-logic':    7,
+  'gemini-perf':     7,
+  'gemini-naming':   8,
+  'gemini-style':    8,
+  'sonar-low':       9,
+};
+
+// Gemini category → unified key
+const GEMINI_CATEGORY_MAP = {
+  security:    'gemini-security',
+  breaking:    'gemini-breaking',
+  performance: 'gemini-perf',
+  logic:       'gemini-logic',
+  naming:      'gemini-naming',
+  style:       'gemini-style',
 };
 
 // ─── GitHub API ─────────────────────────────────────────────────────────────
@@ -204,26 +223,129 @@ Respond with JSON only, no explanation:
   }
 }
 
-// ─── Report Generation ──────────────────────────────────────────────────────
+// ─── Fetch existing coverage / sonar PR comments ─────────────────────────────
 
+async function getPRIssueComments(owner, repo, prNumber) {
+  const comments = await githubRequest('GET', `/repos/${owner}/${repo}/issues/${prNumber}/comments`);
+  return Array.isArray(comments) ? comments : [];
+}
+
+function parseCoverageComment(body) {
+  // Extract per-file coverage rows from the coverage bot comment
+  // Expected format has a markdown table with File, Stmts, Branch, Funcs, Lines columns
+  const items = [];
+  const tableMatch = body.match(/\|.*File.*\|[\s\S]*?(?=\n\n|\n##|$)/);
+  if (!tableMatch) return { items, raw: body };
+
+  const rows = tableMatch[0].split('\n').filter(r => r.startsWith('|') && !r.includes('---') && !r.includes('File'));
+  for (const row of rows) {
+    const cols = row.split('|').map(s => s.trim()).filter(Boolean);
+    if (cols.length < 4) continue;
+    const [file, stmts, branch, funcs, lines] = cols;
+    const stmtPct = parseFloat(stmts);
+    if (!isNaN(stmtPct) && stmtPct < 80) {
+      items.push({
+        source: 'coverage',
+        priority: 'coverage-gap',
+        rank: PRIORITY_RANK['coverage-gap'],
+        file,
+        issue: `Statement coverage ${stmtPct}% (below 80%)`,
+        status: '⬜ pending',
+        stmts, branch: branch || '—', funcs: funcs || '—', lines: lines || '—',
+      });
+    }
+  }
+  return { items, raw: body };
+}
+
+function parseSonarComment(body) {
+  const items = [];
+  // Sonar comments include severity labels like BLOCKER, HIGH, MEDIUM, LOW
+  const severityPattern = /\|\s*(BLOCKER|HIGH|MEDIUM|LOW)\s*\|([^|]+)\|([^|]+)\|([^|]+)\|/gi;
+  let match;
+  while ((match = severityPattern.exec(body)) !== null) {
+    const [, severity, file, line, message] = match.map(s => s?.trim());
+    const key = `sonar-${severity.toLowerCase()}`;
+    items.push({
+      source: 'sonar',
+      priority: key,
+      rank: PRIORITY_RANK[key] || 9,
+      file: file || '—',
+      issue: message || '—',
+      status: '⬜ pending',
+    });
+  }
+  return items;
+}
+
+// ─── Report Generation ────────────────────────────────────────────────────────
+
+function buildUnifiedReport(prNumber, geminiItems, coverageData, sonarItems) {
+  // Merge all items
+  const all = [
+    ...geminiItems.map(item => ({
+      source: 'Gemini',
+      priority: GEMINI_CATEGORY_MAP[item.category] || 'gemini-logic',
+      rank: PRIORITY_RANK[GEMINI_CATEGORY_MAP[item.category]] || 7,
+      file: item.path || '—',
+      issue: item.summary,
+      status: '⬜ pending',
+    })),
+    ...coverageData.items,
+    ...sonarItems,
+  ].sort((a, b) => a.rank - b.rank);
+
+  const queueRows = all.map((item, i) =>
+    `| ${i + 1} | ${item.priority} | ${item.source} | ${item.file} | ${item.issue} | ${item.status} |`
+  ).join('\n');
+
+  // Coverage summary table
+  const coverageRows = coverageData.items.map(f =>
+    `| ${f.file} | ${f.stmts}% | ${f.branch} | ${f.funcs} | ${f.lines} |`
+  ).join('\n');
+
+  // Sonar severity counts
+  const sonarCounts = {};
+  for (const s of sonarItems) {
+    const sev = s.priority.replace('sonar-', '').toUpperCase();
+    sonarCounts[sev] = (sonarCounts[sev] || 0) + 1;
+  }
+  const sonarRows = Object.entries(sonarCounts)
+    .map(([k, v]) => `| ${k} | ${v} |`).join('\n');
+
+  return `${UNIFIED_REPORT_MARKER}
+# PR Review Report — #${prNumber}
+
+## Priority Queue
+| # | Priority | Source | File | Issue | Status |
+|---|----------|--------|------|-------|--------|
+${queueRows || '| — | — | — | — | No issues found | — |'}
+
+## Coverage Summary
+| File | Stmts | Branch | Funcs | Lines |
+|------|-------|--------|-------|-------|
+${coverageRows || '| All files above 80% | — | — | — | — |'}
+
+## Sonar Summary
+| Severity | Count |
+|----------|-------|
+${sonarRows || '| No issues | 0 |'}
+
+## How to Fix
+In Claude Code / Antigravity: \`fix items 1 and 2 from the triage report\`
+In terminal: \`wednesday-skills fix --pr ${prNumber} --items 1,2\`
+
+---
+To apply fixes, reply with: \`@agent fix #1 #3\`   To fix all: \`@agent fix all\``;
+}
+
+// Legacy single-source report (kept for fallback)
 function buildReport(triaged) {
   const sorted = [...triaged].sort((a, b) => a.score - b.score);
-
   const rows = sorted
     .map((item, i) => `| ${i + 1} | ${item.category} | ${item.score} | ${item.summary} |`)
     .join('\n');
-
-  return `## PR Review Report
-
-Gemini review comments triaged and sorted by impact (lowest first — safest to fix first).
-
-| # | Category | Score | Summary |
-|---|----------|-------|---------|
-${rows}
-
----
-To apply fixes, reply with: \`@agent fix #1 #3\` (use the # numbers above)
-To fix all: \`@agent fix all\``;
+  return `## PR Review Report\n\n| # | Category | Score | Summary |\n|---|----------|-------|---------|\n${rows}\n\n---\nTo apply fixes, reply with: \`@agent fix #1 #3\``;
 }
 
 // ─── Fix Application ─────────────────────────────────────────────────────────
@@ -293,35 +415,51 @@ async function main() {
     process.exit(1);
   }
 
-  const comments = await getPRReviewComments(owner, repo, PR_NUMBER);
-  const reviews = await getPRReviews(owner, repo, PR_NUMBER);
+  // Fetch Gemini review comments + reviews
+  const [reviewComments, reviews, issueComments] = await Promise.all([
+    getPRReviewComments(owner, repo, PR_NUMBER),
+    getPRReviews(owner, repo, PR_NUMBER),
+    getPRIssueComments(owner, repo, PR_NUMBER),
+  ]);
 
-  // Collect all comment bodies (inline comments + review bodies)
-  const allComments = [
-    ...comments.map(c => ({ body: c.body, path: c.path, line: c.line })),
+  // Parse coverage and sonar from existing PR comments
+  const coverageComment = issueComments.find(c => c.body?.includes(COVERAGE_BOT_MARKER));
+  const sonarComment    = issueComments.find(c => c.body?.includes(SONAR_BOT_MARKER));
+  const existingUnified = issueComments.find(c => c.body?.includes(UNIFIED_REPORT_MARKER));
+
+  const coverageData = coverageComment ? parseCoverageComment(coverageComment.body) : { items: [] };
+  const sonarItems   = sonarComment    ? parseSonarComment(sonarComment.body)        : [];
+
+  // Collect Gemini comments
+  const allGeminiComments = [
+    ...reviewComments.map(c => ({ body: c.body, path: c.path, line: c.line })),
     ...reviews.filter(r => r.body?.trim()).map(r => ({ body: r.body, path: null, line: null })),
   ];
 
-  if (allComments.length === 0) {
-    console.log('[triage] No Gemini bot comments found on this PR.');
-    return;
+  console.log(`[triage] Gemini: ${allGeminiComments.length}, Coverage gaps: ${coverageData.items.length}, Sonar: ${sonarItems.length}`);
+
+  // Categorize Gemini comments (skip if none)
+  let triaged = [];
+  if (allGeminiComments.length > 0 && ANTHROPIC_API_KEY) {
+    triaged = await Promise.all(
+      allGeminiComments.map(async (c, i) => {
+        const { category, score, summary } = await categorizeComment(c.body);
+        return { ...c, index: i, category, score, summary };
+      })
+    );
   }
 
-  console.log(`[triage] Found ${allComments.length} Gemini comment(s). Categorizing...`);
+  const report = buildUnifiedReport(PR_NUMBER, triaged, coverageData, sonarItems);
+  console.log('[triage] Unified report generated.');
 
-  // Categorize each comment in parallel
-  const triaged = await Promise.all(
-    allComments.map(async (c, i) => {
-      const { category, score, summary } = await categorizeComment(c.body);
-      return { ...c, index: i, category, score, summary };
-    })
-  );
-
-  const report = buildReport(triaged);
-  console.log('[triage] Report generated:\n', report);
-
-  await postPRComment(owner, repo, PR_NUMBER, report);
-  console.log('[triage] Report posted to PR.');
+  // Update existing unified comment or post new one
+  if (existingUnified) {
+    await githubRequest('PATCH', `/repos/${owner}/${repo}/issues/comments/${existingUnified.id}`, { body: report });
+    console.log('[triage] Updated existing unified report comment.');
+  } else {
+    await postPRComment(owner, repo, PR_NUMBER, report);
+    console.log('[triage] Posted unified report to PR.');
+  }
 }
 
 // ─── Test mode ───────────────────────────────────────────────────────────────

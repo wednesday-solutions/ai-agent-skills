@@ -1,68 +1,92 @@
 ---
 name: triage-loop
-description: Gemini PR review comment triage and dev-approved fix loop. Fetches bot comments, categorizes by impact, posts REVIEW_REPORT, and applies fixes on dev approval.
+description: Unified PR triage skill. Merges Gemini review comments, coverage gaps, and Sonar issues into a single priority-ranked REVIEW_REPORT. Agent reads the unified report first and fixes by priority order. Sonar BLOCKERs are always fixed before any Gemini style item.
 license: MIT
 metadata:
   author: wednesday-solutions
-  version: "1.0"
+  version: "2.0"
 ---
 
-# Triage Loop — Gemini PR Review Automation
+# Triage Loop — Unified PR Review
 
 ## Flow
 
 ```
-Gemini bot posts review comment
-        ↓
-GitHub Action webhook fires
-        ↓
-Fetch all bot comments (GitHub API)
-        ↓
-Haiku: categorize + score each comment (1–6)
-        ↓
-Generate REVIEW_REPORT.md (sorted ascending by score)
-        ↓
-Post report as PR comment
-        ↓
-Dev reviews → comments "@agent fix #1 #3"
-        ↓
+Gemini bot review posted
+  OR coverage/sonar workflow completes
+          ↓
+Fetch: Gemini comments + coverage report + sonar report
+          ↓
+Merge into single priority queue
+          ↓
+Post REVIEW_REPORT as PR comment (update if already exists)
+          ↓
+Dev: "@agent fix #1 #3"
+          ↓
 Agent reads GIT-OS → applies fix → commits → pushes
 ```
 
-## Priority Scores
+## Unified Priority Order
 
-| Category | Score | Examples |
-|----------|-------|---------|
-| Style / lint | 1 | formatting, import order |
-| Naming | 2 | variable names, casing |
-| Logic | 3 | incorrect conditions, edge cases |
-| Performance | 4 | unnecessary re-renders, N+1 queries |
-| Breaking change | 5 | API contract changes |
-| Security | 6 | auth issues, injection risks |
+Fix in this order — lower rank number = fix first.
 
-Sort ascending — safest to fix first.
+| Rank | Priority Key | Source | Examples |
+|------|-------------|--------|---------|
+| 1 | sonar-blocker | SonarQube | null deref, resource leak |
+| 2 | sonar-high | SonarQube | serious bugs, security hotspots |
+| 3 | gemini-security | Gemini | auth issues, injection risks |
+| 4 | gemini-breaking | Gemini | API contract changes |
+| 5 | coverage-gap | Coverage | file below 80% statement coverage |
+| 6 | sonar-medium | SonarQube | code smells, minor bugs |
+| 7 | gemini-logic | Gemini | wrong conditions, edge cases |
+| 7 | gemini-perf | Gemini | N+1, unnecessary re-renders |
+| 8 | gemini-naming | Gemini | variable/function names |
+| 8 | gemini-style | Gemini | formatting, import order |
+| 9 | sonar-low | SonarQube | minor code smells |
 
-## REVIEW_REPORT.md Format
+**Rule: a Sonar BLOCKER is always fixed before any Gemini style item.**
+
+## REVIEW_REPORT Format
 
 ```markdown
-# PR Review Report — #<PR number>
+# PR Review Report — #<n>
 
-| # | Category | Score | Comment |
-|---|----------|-------|---------|
-| 1 | style | 1 | ... |
-| 2 | logic | 3 | ... |
+## Priority Queue
+| # | Priority | Source | File | Issue | Status |
+|---|----------|--------|------|-------|--------|
+| 1 | sonar-blocker | SonarQube | src/auth.js:12 | Null dereference | ⬜ pending |
+| 2 | gemini-security | Gemini | src/db.js | SQL not parameterized | ⬜ pending |
+...
 
-To apply fixes, comment: `@agent fix #1 #3`
+## Coverage Summary
+| File | Stmts | Branch | Funcs | Lines |
+...
+
+## Sonar Summary
+| Severity | Count |
+...
+
+## How to Fix
+In Claude Code / Antigravity: "fix items 1 and 2 from the triage report"
+In terminal: wednesday-skills fix --pr <n> --items 1,2
 ```
+
+## Reading the Report as an Agent
+
+1. Always read the unified report first (look for `# PR Review Report` comment on the PR)
+2. If no unified report exists yet, fall back to reading individual Gemini/coverage/sonar comments separately
+3. When fixing, always work in rank order — never fix a style issue while a BLOCKER is pending
+4. One commit per fix item, GIT-OS format: `fix(scope): description\n\nResolves triage item #N`
 
 ## Agent Fix Rules
 
-- Never auto-fix without explicit dev approval
-- Read git-os SKILL.md before making any commit
+- Never auto-fix without explicit dev approval (`@agent fix #N`)
+- Read `git-os` SKILL.md before making any commit
 - One commit per fix item
-- Commit format: `fix(scope): description\n\nResolves review comment #N`
+- Commit format: `fix(scope): description\n\nResolves triage item #N`
 - Push to the same PR branch
+- Update the report comment — mark fixed items as `✅ fixed`
 
 ## Failure Handling
 
-If a fix cannot be applied cleanly, post a comment explaining the conflict and wait for instruction. Never force-push or silently skip a fix.
+If a fix cannot be applied cleanly, post a comment explaining the conflict. Never force-push or silently skip a fix.

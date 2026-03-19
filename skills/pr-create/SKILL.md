@@ -108,7 +108,7 @@ Use the GIT-OS template. Fill what you can from context, leave placeholders for 
 
 ```markdown
 ### Ticket Link
-<Linear/Jira URL if ticket found, otherwise leave blank>
+<Linear/Jira URL if ticket ID found in branch name, otherwise: "_No ticket — add link if applicable_">
 
 ---
 

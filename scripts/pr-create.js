@@ -167,7 +167,9 @@ function buildTitle(branch, commits) {
 
 function buildBody(commits, ticket, base, isStacked) {
   const linearBase = 'https://linear.app/wednesday-solutions/issue';
-  const ticketLine = ticket ? `${linearBase}/${ticket}` : '<!-- Add ticket link -->';
+  const ticketLine = ticket
+    ? `${linearBase}/${ticket}`
+    : '_No ticket — add link if applicable_';
 
   const description = commits.length > 1
     ? commits.map(c => `- ${c}`).join('\n')

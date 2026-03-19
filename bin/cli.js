@@ -163,7 +163,7 @@ function main() {
   switch (command) {
     case 'install': {
       const installDir = (args[1] && !args[1].startsWith('--')) ? args[1] : process.cwd();
-      install(installDir, args.includes('--skip-config'));
+      install(installDir, args.includes('--skip-config'), args.includes('--all'));
       break;
     }
     case 'configure':
@@ -249,7 +249,49 @@ function runPlan(targetDir, args) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-function install(targetDir, skipConfig = false) {
+// Skill metadata for checklist display
+const SKILL_META = {
+  'git-os':           { label: 'GIT-OS',           desc: 'Conventional commits, atomic changes, pre-push checklist', recommended: true },
+  'pr-create':        { label: 'PR Create',         desc: 'Agent-driven PR creation with GIT-OS validation',          recommended: true },
+  'triage-loop':      { label: 'Triage Loop',       desc: 'Unified PR review report (Gemini + coverage + Sonar)',     recommended: true },
+  'greenfield':       { label: 'Greenfield Planner',desc: 'Multi-agent project planning → PLAN.md',                   recommended: false },
+  'sprint':           { label: 'Sprint',             desc: 'Branch name, PR title, PR description from ticket',        recommended: false },
+  'deploy-checklist': { label: 'Deploy Checklist',  desc: 'Pre/post deploy verification checklist',                   recommended: false },
+  'wednesday-dev':    { label: 'Wednesday Dev',     desc: 'Import ordering, complexity limits, naming conventions',   recommended: true },
+  'wednesday-design': { label: 'Wednesday Design',  desc: '492+ approved UI components, design tokens, animations',   recommended: false },
+};
+
+function promptChecklist(availableSkills) {
+  return new Promise(resolve => {
+    const readline = require('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+    console.log('');
+    log('cyan', '  Select skills to install:');
+    console.log('  (Enter numbers separated by commas, or "all" for everything)\n');
+
+    availableSkills.forEach((skill, i) => {
+      const meta = SKILL_META[skill] || { label: skill, desc: '', recommended: false };
+      const tag = meta.recommended ? colors.green(' [recommended]') : '';
+      console.log(`  ${colors.cyan(String(i + 1).padStart(2))}. ${meta.label.padEnd(22)}${meta.desc}${tag}`);
+    });
+
+    console.log('');
+    rl.question('  Your selection: ', answer => {
+      rl.close();
+      const input = answer.trim().toLowerCase();
+      if (!input || input === 'all') {
+        resolve(availableSkills);
+        return;
+      }
+      const indices = input.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= availableSkills.length);
+      const selected = [...new Set(indices)].map(n => availableSkills[n - 1]);
+      resolve(selected.length ? selected : availableSkills);
+    });
+  });
+}
+
+function install(targetDir, skipConfig = false, skipChecklist = false) {
   // Resolve to absolute path
   targetDir = path.resolve(targetDir);
 
@@ -273,81 +315,83 @@ function install(targetDir, skipConfig = false) {
     process.exit(1);
   }
 
-  // Create .wednesday/skills directory
-  const skillsDir = path.join(targetDir, '.wednesday', 'skills');
-  log('blue', `Creating skills directory: ${skillsDir}`);
-  fs.mkdirSync(skillsDir, { recursive: true });
+  const availableSkills = fs.readdirSync(skillsSource)
+    .filter(s => fs.statSync(path.join(skillsSource, s)).isDirectory());
 
-  // Copy each skill
-  const skillFolders = fs.readdirSync(skillsSource);
-  skillFolders.forEach(skill => {
-    const src = path.join(skillsSource, skill);
-    const dest = path.join(skillsDir, skill);
+  // Show checklist unless --all or --skip-config passed
+  const doInstall = async (selectedSkills) => {
+    // Create .wednesday/skills directory
+    const skillsDir = path.join(targetDir, '.wednesday', 'skills');
+    log('blue', `\nCreating skills directory: ${skillsDir}`);
+    fs.mkdirSync(skillsDir, { recursive: true });
 
-    if (fs.statSync(src).isDirectory()) {
+    selectedSkills.forEach(skill => {
+      const src = path.join(skillsSource, skill);
+      const dest = path.join(skillsDir, skill);
       log('blue', `Installing ${skill} skill...`);
       copyRecursive(src, dest);
       log('green', `  ✓ ${skill} installed`);
+    });
+
+    // Copy GitHub Action workflows
+    copyGitHubAssets(packageRoot, targetDir);
+
+    // Copy commitlint config
+    const commitlintSrc = path.join(packageRoot, '.commitlintrc.json');
+    const commitlintDest = path.join(targetDir, '.commitlintrc.json');
+    if (fs.existsSync(commitlintSrc) && !fs.existsSync(commitlintDest)) {
+      fs.copyFileSync(commitlintSrc, commitlintDest);
+      log('green', '  ✓ .commitlintrc.json copied');
     }
-  });
 
-  // Copy GitHub Action workflows
-  copyGitHubAssets(packageRoot, targetDir);
+    // Write default tools.json
+    ensureToolsConfig(targetDir);
 
-  // Copy commitlint config
-  const commitlintSrc = path.join(packageRoot, '.commitlintrc.json');
-  const commitlintDest = path.join(targetDir, '.commitlintrc.json');
-  if (fs.existsSync(commitlintSrc) && !fs.existsSync(commitlintDest)) {
-    fs.copyFileSync(commitlintSrc, commitlintDest);
-    log('green', '  ✓ .commitlintrc.json copied');
-  }
-
-  // Write default tools.json
-  ensureToolsConfig(targetDir);
-
-  // Check .gitignore
-  const gitignorePath = path.join(targetDir, '.gitignore');
-  if (fs.existsSync(gitignorePath)) {
-    const gitignore = fs.readFileSync(gitignorePath, 'utf8');
-    if (!gitignore.includes('.wednesday')) {
-      console.log('');
-      log('yellow', 'Note: .wednesday is not in your .gitignore');
-      log('yellow', 'You may want to add it if you don\'t want to commit the skills:');
-      log('blue', '  echo \'.wednesday/\' >> .gitignore');
-      console.log('');
-      log('yellow', 'Or keep it tracked to share with your team.');
+    // Check .gitignore
+    const gitignorePath = path.join(targetDir, '.gitignore');
+    if (fs.existsSync(gitignorePath)) {
+      const gitignore = fs.readFileSync(gitignorePath, 'utf8');
+      if (!gitignore.includes('.wednesday')) {
+        console.log('');
+        log('yellow', 'Note: .wednesday is not in your .gitignore');
+        log('yellow', "You may want to add it if you don't want to commit the skills:");
+        log('blue', "  echo '.wednesday/' >> .gitignore");
+        console.log('');
+        log('yellow', 'Or keep it tracked to share with your team.');
+      }
     }
-  }
 
-  console.log('');
-  log('green', '╔═══════════════════════════════════════════════════════════╗');
-  log('green', '║         Skills installed!                                 ║');
-  log('green', '╚═══════════════════════════════════════════════════════════╝');
-  console.log('');
-
-  // Configure agents unless skipped
-  if (!skipConfig) {
     console.log('');
-    log('blue', 'Configuring AI agents to discover skills...');
+    log('green', '╔═══════════════════════════════════════════════════════════╗');
+    log('green', '║         Skills installed!                                 ║');
+    log('green', '╚═══════════════════════════════════════════════════════════╝');
     console.log('');
-    configure(targetDir, 'all');
-  }
 
-  // Final summary
-  console.log('');
-  log('blue', `Skills location: ${skillsDir}`);
-  console.log('');
-  log('cyan', 'Configured agents:');
-  console.log('  • Claude Code    → CLAUDE.md');
-  console.log('  • Gemini CLI     → GEMINI.md');
-  console.log('  • Cursor         → .cursorrules');
-  console.log('  • GitHub Copilot → .github/copilot-instructions.md');
-  console.log('');
-  log('blue', 'Try these prompts with your AI assistant:');
-  console.log('  • "Create a shimmer button" → Uses Magic UI component');
-  console.log('  • "Add a hero section" → Uses approved patterns');
-  console.log('  • "Refactor this function" → Applies complexity guidelines');
-  console.log('');
+    // Configure agents unless skipped
+    if (!skipConfig) {
+      console.log('');
+      log('blue', 'Configuring AI agents to discover skills...');
+      console.log('');
+      configure(targetDir, 'all');
+    }
+
+    // Final summary
+    console.log('');
+    log('blue', `Skills location: ${skillsDir}`);
+    console.log('');
+    log('cyan', 'Configured agents:');
+    console.log('  • Claude Code    → CLAUDE.md');
+    console.log('  • Gemini CLI     → GEMINI.md');
+    console.log('  • Cursor         → .cursorrules');
+    console.log('  • GitHub Copilot → .github/copilot-instructions.md');
+    console.log('');
+  };
+
+  if (skipChecklist) {
+    doInstall(availableSkills).catch(e => { console.error(e.message); process.exit(1); });
+  } else {
+    promptChecklist(availableSkills).then(doInstall).catch(e => { console.error(e.message); process.exit(1); });
+  }
 }
 
 function configure(targetDir, agent = 'all') {

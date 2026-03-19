@@ -184,6 +184,9 @@ function main() {
     case 'plan':
       runPlan(args[1] || process.cwd(), args);
       break;
+    case 'pr':
+      runPR();
+      break;
     case 'list':
       listSkills();
       break;
@@ -220,6 +223,12 @@ function launchDashboard(projectDir, prFilter) {
     stdio: 'inherit',
     env: process.env,
   });
+  proc.on('exit', code => process.exit(code || 0));
+}
+
+function runPR() {
+  const script = path.join(__dirname, '..', 'scripts', 'pr-create.js');
+  const proc = spawn(process.execPath, [script], { stdio: 'inherit' });
   proc.on('exit', code => process.exit(code || 0));
 }
 
@@ -522,6 +531,7 @@ function showHelp() {
   console.log('  sync [dir] [--tool <name>]   Re-sync all adapters or a specific tool');
   console.log('  dashboard [--pr <number>]    Launch terminal dashboard');
   console.log('  plan [dir] [--brief "..."]   Run greenfield parallel persona planning');
+  console.log('  pr                           Validate, pre-push check, and create a PR');
   console.log('  list                         List available skills');
   console.log('  help                         Show this help message');
   console.log('');

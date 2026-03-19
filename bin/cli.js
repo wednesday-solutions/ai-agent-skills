@@ -210,21 +210,15 @@ function runSync(targetDir, toolFilter) {
 
 function launchDashboard(projectDir, prFilter) {
   projectDir = path.resolve(projectDir);
+  const runner = path.join(__dirname, '..', 'src', 'dashboard', 'run.mjs');
+  const args = [runner, projectDir];
+  if (prFilter) args.push(String(prFilter));
 
-  // Check Ink is available
-  try {
-    require.resolve('ink');
-  } catch {
-    log('red', 'Ink not installed. Run: npm install ink react');
-    log('yellow', 'Or install the full package: npm install @wednesday-solutions-eng/ai-agent-skills');
-    process.exit(1);
-  }
-
-  const { render } = require('ink');
-  const React = require('react');
-  const App = require('../src/dashboard/App.jsx');
-
-  render(React.createElement(App.default || App, { prFilter, projectDir }));
+  const proc = spawn(process.execPath, args, {
+    stdio: 'inherit',
+    env: process.env,
+  });
+  proc.on('exit', code => process.exit(code || 0));
 }
 
 function runPlan(targetDir, args) {

@@ -1,0 +1,44 @@
+name: Gemini PR Triage
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  triage:
+    name: Triage Gemini review comments
+    runs-on: ubuntu-latest
+    # Only run on PRs (not issues), and only when Gemini bot posts or dev uses @agent
+    if: |
+      (github.event_name == 'pull_request_review' && github.event.review.user.login == 'gemini-code-assist[bot]') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && startsWith(github.event.comment.body, '@agent fix'))
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install node-fetch
+
+      - name: Run triage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body || '' }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: node scripts/triage.js

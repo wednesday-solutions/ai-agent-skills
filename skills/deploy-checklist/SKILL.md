@@ -1,0 +1,54 @@
+---
+name: deploy-checklist
+description: Pre-deploy and post-deploy checklist skill. Ensures env vars, migrations, CI, rollback plan, smoke tests, and monitoring are verified before and after every deployment.
+license: MIT
+metadata:
+  author: wednesday-solutions
+  version: "1.0"
+---
+
+# Deploy Checklist Skill
+
+Run this checklist before and after every production deployment.
+
+## Pre-Deploy Checklist
+
+- [ ] All CI checks green on the deploy branch
+- [ ] Environment variables verified in target environment (no missing keys)
+- [ ] Database migrations reviewed — irreversible migrations documented
+- [ ] Migrations have been dry-run or tested in staging
+- [ ] Rollback plan documented: what to revert and how
+- [ ] Feature flags set correctly for the release
+- [ ] Downstream services notified if API contracts changed
+- [ ] Changelog updated with this release's changes
+- [ ] Deployment window confirmed (avoid peak traffic)
+
+## Deploy
+
+- [ ] Deploy initiated with correct branch / tag
+- [ ] Deployment logs monitored in real time
+- [ ] No unexpected errors during startup
+
+## Post-Deploy Checklist
+
+- [ ] Smoke test: critical user flows verified manually or via synthetic monitoring
+- [ ] Health check endpoint returns 200
+- [ ] Error rate in monitoring (Datadog, Grafana, Sentry) is normal
+- [ ] No spike in latency or DB query time
+- [ ] Monitoring alerts reviewed — no new alerts triggered
+- [ ] Changelog published / communicated to stakeholders
+- [ ] Ticket status updated (closed / released)
+
+## Rollback Trigger Criteria
+
+Initiate rollback immediately if:
+- Error rate rises above 1% of requests
+- P95 latency increases by more than 2x baseline
+- Any data integrity issue detected
+- Critical feature path returns 5xx
+
+## Notes
+
+- Never deploy on Fridays unless it's a critical hotfix
+- Always have a second engineer available during production deploys
+- Document the actual deploy time and outcome in the ticket

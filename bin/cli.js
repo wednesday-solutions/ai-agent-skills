@@ -2,11 +2,22 @@
 
 /**
  * Wednesday Agent Skills CLI
- * Installs agent skills and configures AI agents to discover them
+ * Installs agent skills and configures AI agents to discover them.
+ *
+ * Commands:
+ *   install [dir]             Install skills and configure agents
+ *   configure [dir] [agent]   Configure a specific agent
+ *   sync [--tool <name>]      Re-run all adapters (or one) via tools.json
+ *   dashboard [--pr <num>]    Launch Ink TUI dashboard
+ *   plan [dir]                Run greenfield parallel persona planning
+ *   list                      List available skills
+ *   help                      Show help
  */
 
 const fs = require('fs');
 const path = require('path');
+const { execSync, spawn } = require('child_process');
+const { syncAdapters, ensureToolsConfig } = require('../src/adapters/index.js');
 
 // Colors for terminal output
 const colors = {
@@ -156,6 +167,21 @@ function main() {
     case 'configure':
       configure(args[1] || process.cwd(), args[2]);
       break;
+    case 'sync': {
+      const toolIdx = args.indexOf('--tool');
+      const tool = toolIdx !== -1 ? args[toolIdx + 1] : null;
+      runSync(args[1] || process.cwd(), tool);
+      break;
+    }
+    case 'dashboard': {
+      const prIdx = args.indexOf('--pr');
+      const prNum = prIdx !== -1 ? args[prIdx + 1] : null;
+      launchDashboard(process.cwd(), prNum);
+      break;
+    }
+    case 'plan':
+      runPlan(args[1] || process.cwd(), args);
+      break;
     case 'list':
       listSkills();
       break;
@@ -170,6 +196,53 @@ function main() {
       process.exit(1);
   }
 }
+
+// ─── New Phase 1 commands ────────────────────────────────────────────────────
+
+function runSync(targetDir, toolFilter) {
+  targetDir = path.resolve(targetDir);
+  log('blue', `Syncing skills to AI tools${toolFilter ? ` (${toolFilter})` : ''}...`);
+  console.log('');
+  syncAdapters(targetDir, toolFilter);
+  console.log('');
+  log('green', 'Sync complete.');
+}
+
+function launchDashboard(projectDir, prFilter) {
+  projectDir = path.resolve(projectDir);
+
+  // Check Ink is available
+  try {
+    require.resolve('ink');
+  } catch {
+    log('red', 'Ink not installed. Run: npm install ink react');
+    log('yellow', 'Or install the full package: npm install @wednesday-solutions-eng/ai-agent-skills');
+    process.exit(1);
+  }
+
+  const { render } = require('ink');
+  const React = require('react');
+  const App = require('../src/dashboard/App.jsx');
+
+  render(React.createElement(App.default || App, { prFilter, projectDir }));
+}
+
+function runPlan(targetDir, args) {
+  targetDir = path.resolve(targetDir);
+  const briefArg = args.indexOf('--brief');
+  const scriptArgs = [path.join(__dirname, '..', 'scripts', 'plan.js'), targetDir];
+  if (briefArg !== -1 && args[briefArg + 1]) {
+    scriptArgs.push('--brief', args[briefArg + 1]);
+  }
+
+  log('blue', 'Starting greenfield planning...');
+  console.log('');
+
+  const proc = spawn(process.execPath, scriptArgs, { stdio: 'inherit' });
+  proc.on('exit', code => process.exit(code || 0));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function install(targetDir, skipConfig = false) {
   // Resolve to absolute path
@@ -213,6 +286,20 @@ function install(targetDir, skipConfig = false) {
     }
   });
 
+  // Copy GitHub Action workflows
+  copyGitHubAssets(packageRoot, targetDir);
+
+  // Copy commitlint config
+  const commitlintSrc = path.join(packageRoot, '.commitlintrc.json');
+  const commitlintDest = path.join(targetDir, '.commitlintrc.json');
+  if (fs.existsSync(commitlintSrc) && !fs.existsSync(commitlintDest)) {
+    fs.copyFileSync(commitlintSrc, commitlintDest);
+    log('green', '  ✓ .commitlintrc.json copied');
+  }
+
+  // Write default tools.json
+  ensureToolsConfig(targetDir);
+
   // Check .gitignore
   const gitignorePath = path.join(targetDir, '.gitignore');
   if (fs.existsSync(gitignorePath)) {
@@ -247,6 +334,7 @@ function install(targetDir, skipConfig = false) {
   console.log('');
   log('cyan', 'Configured agents:');
   console.log('  • Claude Code    → CLAUDE.md');
+  console.log('  • Gemini CLI     → GEMINI.md');
   console.log('  • Cursor         → .cursorrules');
   console.log('  • GitHub Copilot → .github/copilot-instructions.md');
   console.log('');
@@ -275,12 +363,15 @@ function configure(targetDir, agent = 'all') {
   }
 
   const instructions = generateInstructions(skills, targetDir);
-  const agents = agent === 'all' ? ['claude', 'cursor', 'copilot'] : [agent];
+  const agents = agent === 'all' ? ['claude', 'gemini', 'cursor', 'copilot'] : [agent];
 
   for (const agentType of agents) {
     switch (agentType) {
       case 'claude':
         configureClaudeCode(targetDir, instructions);
+        break;
+      case 'gemini':
+        configureGemini(targetDir, instructions);
         break;
       case 'cursor':
         configureCursor(targetDir, instructions);
@@ -321,6 +412,50 @@ function configureClaudeCode(targetDir, instructions) {
 
   fs.writeFileSync(claudeFile, content);
   log('green', '  ✓ Claude Code configured (CLAUDE.md)');
+}
+
+function configureGemini(targetDir, instructions) {
+  const geminiFile = path.join(targetDir, 'GEMINI.md');
+
+  let content = '';
+  const marker = '<!-- WEDNESDAY_SKILLS_START -->';
+  const endMarker = '<!-- WEDNESDAY_SKILLS_END -->';
+  const wrappedInstructions = `${marker}\n${instructions}\n${endMarker}`;
+
+  if (fs.existsSync(geminiFile)) {
+    content = fs.readFileSync(geminiFile, 'utf8');
+    const startIdx = content.indexOf(marker);
+    const endIdx = content.indexOf(endMarker);
+
+    if (startIdx !== -1 && endIdx !== -1) {
+      content = content.slice(0, startIdx) + wrappedInstructions + content.slice(endIdx + endMarker.length);
+    } else {
+      content = content.trim() + '\n\n' + wrappedInstructions;
+    }
+  } else {
+    content = `# Gemini Project Guidelines\n\n${wrappedInstructions}`;
+  }
+
+  fs.writeFileSync(geminiFile, content);
+  log('green', '  ✓ Gemini CLI configured (GEMINI.md)');
+}
+
+function copyGitHubAssets(packageRoot, targetDir) {
+  const assetsDir = path.join(packageRoot, 'assets', 'workflows');
+  if (!fs.existsSync(assetsDir)) return;
+
+  const githubWorkflowsDir = path.join(targetDir, '.github', 'workflows');
+  fs.mkdirSync(githubWorkflowsDir, { recursive: true });
+
+  const files = fs.readdirSync(assetsDir);
+  files.forEach(file => {
+    const src = path.join(assetsDir, file);
+    const dest = path.join(githubWorkflowsDir, file);
+    if (!fs.existsSync(dest)) {
+      fs.copyFileSync(src, dest);
+      log('green', `  ✓ .github/workflows/${file} copied`);
+    }
+  });
 }
 
 function configureCursor(targetDir, instructions) {
@@ -385,22 +520,29 @@ function showHelp() {
   console.log('Usage: wednesday-skills [command] [options]');
   console.log('');
   console.log('Commands:');
-  console.log('  install [dir]           Install skills and configure agents (default: current dir)');
-  console.log('  install [dir] --skip-config   Install skills without agent configuration');
-  console.log('  configure [dir] [agent] Configure agents to discover installed skills');
-  console.log('                          Agents: claude, cursor, copilot, all (default: all)');
-  console.log('  list                    List available skills');
-  console.log('  help                    Show this help message');
+  console.log('  install [dir]                Install skills and configure agents');
+  console.log('  install [dir] --skip-config  Install skills without agent configuration');
+  console.log('  configure [dir] [agent]      Configure agents (claude|gemini|cursor|copilot|all)');
+  console.log('  sync [dir] [--tool <name>]   Re-sync all adapters or a specific tool');
+  console.log('  dashboard [--pr <number>]    Launch terminal dashboard');
+  console.log('  plan [dir] [--brief "..."]   Run greenfield parallel persona planning');
+  console.log('  list                         List available skills');
+  console.log('  help                         Show this help message');
   console.log('');
   console.log('Examples:');
   console.log('  npx @wednesday-solutions-eng/ai-agent-skills install');
-  console.log('  npx @wednesday-solutions-eng/ai-agent-skills install ./my-project');
-  console.log('  npx @wednesday-solutions-eng/ai-agent-skills configure . claude');
-  console.log('  wednesday-skills install');
-  console.log('  wednesday-skills configure');
+  console.log('  wednesday-skills install ./my-project');
+  console.log('  wednesday-skills configure . gemini');
+  console.log('  wednesday-skills sync --tool antigravity');
+  console.log('  wednesday-skills dashboard');
+  console.log('  wednesday-skills dashboard --pr 142');
+  console.log('  wednesday-skills plan');
+  console.log('  wednesday-skills plan --brief "Build a todo app with auth"');
   console.log('');
   console.log('Agent Configuration Files:');
   console.log('  Claude Code    → CLAUDE.md');
+  console.log('  Gemini CLI     → GEMINI.md');
+  console.log('  Antigravity    → ~/.gemini/antigravity/skills/ (file-copy via sync)');
   console.log('  Cursor         → .cursorrules');
   console.log('  GitHub Copilot → .github/copilot-instructions.md');
   console.log('');
@@ -409,18 +551,27 @@ function showHelp() {
 function listSkills() {
   log('blue', 'Available skills:');
   console.log('');
+  console.log('  git-os');
+  console.log('    Conventional commits, atomic changes, GIT-OS workflow.');
+  console.log('    Read before generating any commit message.');
+  console.log('');
+  console.log('  triage-loop');
+  console.log('    Gemini PR review triage and dev-approved fix loop.');
+  console.log('');
+  console.log('  greenfield');
+  console.log('    Parallel persona planning (Architect + PM + Security → PLAN.md).');
+  console.log('');
+  console.log('  sprint');
+  console.log('    Sprint initiation — branch name, PR title, PR description template.');
+  console.log('');
+  console.log('  deploy-checklist');
+  console.log('    Pre-deploy and post-deploy verification checklist.');
+  console.log('');
   console.log('  wednesday-dev');
-  console.log('    Technical development guidelines for Wednesday Solutions projects.');
-  console.log('    - Import ordering rules');
-  console.log('    - Cyclomatic complexity limits (max 8)');
-  console.log('    - Naming conventions (PascalCase, camelCase, UPPER_SNAKE_CASE)');
+  console.log('    Technical development guidelines (imports, complexity, naming).');
   console.log('');
   console.log('  wednesday-design');
-  console.log('    Design & UX guidelines for Wednesday Solutions projects.');
-  console.log('    - 492+ approved UI components from 8 vetted libraries');
-  console.log('    - Design tokens (colors, typography, spacing, shadows)');
-  console.log('    - Animation patterns and easing functions');
-  console.log('    - Component styling patterns');
+  console.log('    Design & UX guidelines — 492+ approved UI components.');
   console.log('');
 }
 

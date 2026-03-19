@@ -109,19 +109,36 @@ function extractText(response) {
 }
 
 function extractJSON(text) {
-  const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-  if (!match) throw new Error(`No JSON found:\n${text.slice(0, 500)}`);
-  try { return JSON.parse(match[0]); }
+  // Extract the first balanced { } or [ ] block — avoids trailing content issues
+  function extractBalanced(str, open, close) {
+    const start = str.indexOf(open);
+    if (start === -1) return null;
+    let depth = 0, inStr = false, escape = false;
+    for (let i = start; i < str.length; i++) {
+      const c = str[i];
+      if (escape) { escape = false; continue; }
+      if (c === '\\' && inStr) { escape = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === open) depth++;
+      else if (c === close) { depth--; if (depth === 0) return str.slice(start, i + 1); }
+    }
+    return null;
+  }
+
+  const raw = extractBalanced(text, '{', '}') || extractBalanced(text, '[', ']');
+  if (!raw) throw new Error(`No JSON found:\n${text.slice(0, 500)}`);
+
+  try { return JSON.parse(raw); }
   catch {
-    // Try to fix JS-style objects: unquoted keys, single quotes, trailing commas
     try {
-      const fixed = match[0]
-        .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, '$1"$2"$3') // quote unquoted keys
-        .replace(/'/g, '"')                                                  // single → double quotes
-        .replace(/,(\s*[}\]])/g, '$1');                                      // trailing commas
+      const fixed = raw
+        .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, '$1"$2"$3')
+        .replace(/'/g, '"')
+        .replace(/,(\s*[}\]])/g, '$1');
       return JSON.parse(fixed);
     } catch (e2) {
-      throw new Error(`JSON parse failed: ${e2.message}\n${match[0].slice(0, 300)}`);
+      throw new Error(`JSON parse failed: ${e2.message}\n${raw.slice(0, 300)}`);
     }
   }
 }
@@ -548,22 +565,79 @@ async function main() {
   const context = buildContext(brief, qna);
   const start = Date.now();
 
-  console.log('\nRunning 3 persona agents in parallel...');
+  // ── Live progress display ──────────────────────────────────────────────────
+  const SPIN = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+  const agents = [
+    { name: 'Architect', desc: 'system design, tech stack, module boundaries', state: 'running', elapsed: 0 },
+    { name: 'PM',        desc: 'phases, acceptance criteria, success metrics',  state: 'running', elapsed: 0 },
+    { name: 'Security',  desc: 'threat model, auth strategy, compliance flags', state: 'running', elapsed: 0 },
+  ];
+  let spinIdx = 0;
+  let synthState = 'waiting';
+
+  function renderProgress() {
+    const lines = ['\n  Spawning parallel persona agents:\n'];
+    for (const a of agents) {
+      const icon = a.state === 'running' ? `\x1b[36m${SPIN[spinIdx]}\x1b[0m`
+                 : a.state === 'done'    ? '\x1b[32m✓\x1b[0m'
+                 :                        '\x1b[31m✗\x1b[0m';
+      const label = a.state === 'running' ? `\x1b[36m${a.name}\x1b[0m`
+                  : a.state === 'done'    ? `\x1b[32m${a.name}\x1b[0m`
+                  :                        `\x1b[31m${a.name}\x1b[0m`;
+      const extra = a.state === 'running' ? `\x1b[90m(${a.elapsed}s)\x1b[0m`
+                  : a.state === 'failed'  ? `\x1b[31m[partial fallback]\x1b[0m`
+                  : '';
+      lines.push(`  ${icon} ${label.padEnd(20)} ${a.desc}  ${extra}`);
+    }
+    const synthIcon = synthState === 'waiting' ? ' ' : synthState === 'running' ? `\x1b[36m${SPIN[spinIdx]}\x1b[0m` : '\x1b[32m✓\x1b[0m';
+    const synthLabel = synthState === 'running' ? '\x1b[36mSynthesis\x1b[0m' : synthState === 'done' ? '\x1b[32mSynthesis\x1b[0m' : '\x1b[90mSynthesis\x1b[0m';
+    lines.push(`\n  ${synthIcon} ${synthLabel.padEnd(20)} combining all perspectives into PLAN.md`);
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  // Move cursor up N lines and redraw
+  let lastLineCount = 0;
+  function redraw() {
+    if (lastLineCount > 0) process.stdout.write(`\x1b[${lastLineCount}A\x1b[J`);
+    const output = renderProgress();
+    lastLineCount = output.split('\n').length;
+    process.stdout.write(output);
+    spinIdx = (spinIdx + 1) % SPIN.length;
+  }
+
+  const agentStartTimes = [Date.now(), Date.now(), Date.now()];
+  const ticker = setInterval(() => {
+    for (let i = 0; i < agents.length; i++) {
+      if (agents[i].state === 'running') agents[i].elapsed = ((Date.now() - agentStartTimes[i]) / 1000).toFixed(1);
+    }
+    redraw();
+  }, 120);
+
+  redraw();
+
   const [architect, pm, security] = await Promise.all([
     runArchitect(context)
-      .then(r => { console.log('  ✓ Architect done'); return r; })
-      .catch(e => { console.warn('  ✗ Architect failed:', e.message); return {}; }),
+      .then(r => { agents[0].state = 'done'; return r; })
+      .catch(e => { agents[0].state = 'failed'; agents[0].desc = e.message.slice(0, 60); return {}; }),
     runPM(context)
-      .then(r => { console.log('  ✓ PM done'); return r; })
-      .catch(e => { console.warn('  ✗ PM failed:', e.message); return {}; }),
+      .then(r => { agents[1].state = 'done'; return r; })
+      .catch(e => { agents[1].state = 'failed'; agents[1].desc = e.message.slice(0, 60); return {}; }),
     runSecurity(context)
-      .then(r => { console.log('  ✓ Security done'); return r; })
-      .catch(e => { console.warn('  ✗ Security failed:', e.message); return {}; }),
+      .then(r => { agents[2].state = 'done'; return r; })
+      .catch(e => { agents[2].state = 'failed'; agents[2].desc = e.message.slice(0, 60); return {}; }),
   ]);
 
-  console.log('\nSynthesizing plan...');
+  synthState = 'running';
+  redraw();
+
   const plan = await runSynthesis(brief, qna, architect, pm, security);
 
+  synthState = 'done';
+  clearInterval(ticker);
+  redraw();
+
+  // ── Write outputs ──────────────────────────────────────────────────────────
   fs.mkdirSync(plansDir, { recursive: true });
   fs.writeFileSync(path.join(plansDir, 'architect.md'), buildArchitectDoc(architect));
   fs.writeFileSync(path.join(plansDir, 'pm.md'), buildPMDoc(pm));
@@ -572,11 +646,11 @@ async function main() {
   logUsage(targetDir);
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-  console.log(`\nDone in ${elapsed}s`);
-  console.log(`  .plans/architect.md → ${path.join(plansDir, 'architect.md')}`);
-  console.log(`  .plans/pm.md        → ${path.join(plansDir, 'pm.md')}`);
-  console.log(`  .plans/security.md  → ${path.join(plansDir, 'security.md')}`);
-  console.log(`  .plans/PLAN.md      → ${path.join(plansDir, 'PLAN.md')}`);
+  console.log(`\x1b[32m  Done in ${elapsed}s\x1b[0m`);
+  console.log(`\n  \x1b[90m.plans/architect.md\x1b[0m`);
+  console.log(`  \x1b[90m.plans/pm.md\x1b[0m`);
+  console.log(`  \x1b[90m.plans/security.md\x1b[0m`);
+  console.log(`  \x1b[32m.plans/PLAN.md\x1b[0m  ← your project plan\n`);
 }
 
 main().catch(err => {

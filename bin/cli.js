@@ -161,9 +161,11 @@ function main() {
   console.log('');
 
   switch (command) {
-    case 'install':
-      install(args[1] || process.cwd(), args.includes('--skip-config'));
+    case 'install': {
+      const installDir = (args[1] && !args[1].startsWith('--')) ? args[1] : process.cwd();
+      install(installDir, args.includes('--skip-config'));
       break;
+    }
     case 'configure':
       configure(args[1] || process.cwd(), args[2]);
       break;

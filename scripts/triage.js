@@ -94,6 +94,9 @@ async function postPRComment(owner, repo, prNumber, body) {
 // ─── Anthropic API (Haiku) ──────────────────────────────────────────────────
 
 function anthropicRequest(messages, model = 'claude-haiku-4-5-20251001', maxTokens = 1024) {
+  if (!ANTHROPIC_API_KEY) {
+    return Promise.reject(new Error('ANTHROPIC_API_KEY is not set'));
+  }
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ model, max_tokens: maxTokens, messages });
     const options = {
@@ -281,10 +284,33 @@ async function main() {
 // ─── Test mode ───────────────────────────────────────────────────────────────
 
 if (process.argv.includes('--test')) {
-  const testComment = 'The variable name `x` is unclear. Use a descriptive name like `userCount`.';
-  categorizeComment(testComment).then(result => {
-    console.log('Test categorization result:', result);
-  }).catch(console.error);
+  // Dry-run: test parsing + report generation without hitting any API
+  console.log('[test] Running triage in dry-run mode (no API calls)\n');
+
+  const mockComments = [
+    { body: 'The variable name `x` is unclear. Use `userCount`.', path: 'src/auth.js', line: 12 },
+    { body: 'Missing null check before accessing `user.profile`.', path: 'src/user.js', line: 45 },
+    { body: 'fetchData is called inside a render loop — potential N+1.', path: 'src/feed.js', line: 88 },
+    { body: 'SQL query is not parameterized — SQL injection risk.', path: 'src/db.js', line: 23 },
+  ];
+
+  // Simulate categorization without API
+  const mockCategories = [
+    { category: 'naming', score: 2, summary: 'Variable name `x` is unclear' },
+    { category: 'logic', score: 3, summary: 'Missing null check on user.profile' },
+    { category: 'performance', score: 4, summary: 'fetchData called inside render loop' },
+    { category: 'security', score: 6, summary: 'SQL query not parameterized' },
+  ];
+
+  const triaged = mockComments.map((c, i) => ({ ...c, index: i, ...mockCategories[i] }));
+  const report = buildReport(triaged);
+  console.log('[test] Generated report:\n');
+  console.log(report);
+  console.log('\n[test] Fix command parsing:');
+  console.log('  "@agent fix #1 #3" →', parseFixCommand('@agent fix #1 #3'));
+  console.log('  "@agent fix all"   →', parseFixCommand('@agent fix all'));
+  console.log('  "random comment"   →', parseFixCommand('random comment'));
+  console.log('\n[test] All checks passed.');
 } else {
   main().catch(err => {
     console.error('[triage] Fatal error:', err);

@@ -21,31 +21,39 @@ const readline = require('readline');
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.OPENROUTER_API_KEY;
 const USE_OPENROUTER = !process.env.ANTHROPIC_API_KEY && !!process.env.OPENROUTER_API_KEY;
 
-const HAIKU_MODEL = 'claude-haiku-4-5-20251001';
-const SONNET_MODEL = 'claude-sonnet-4-6';
+const HAIKU_MODEL = 'stepfun/step-3.5-flash:free';
+const SONNET_MODEL = 'stepfun/step-3.5-flash:free';
 
 // ─── API Client ─────────────────────────────────────────────────────────────
 
 function callAnthropic(messages, model, maxTokens = 2048) {
   return new Promise((resolve, reject) => {
-    const hostname = USE_OPENROUTER ? 'openrouter.ai' : 'api.anthropic.com';
-    const apiPath = USE_OPENROUTER ? '/api/v1/messages' : '/v1/messages';
-    const authHeader = USE_OPENROUTER
-      ? `Bearer ${ANTHROPIC_API_KEY}`
-      : null;
+    let body, hostname, apiPath, headers;
 
-    const body = JSON.stringify({ model, max_tokens: maxTokens, messages });
-    const options = {
-      hostname,
-      path: apiPath,
-      method: 'POST',
-      headers: {
-        ...(authHeader ? { 'Authorization': authHeader } : { 'x-api-key': ANTHROPIC_API_KEY }),
+    if (USE_OPENROUTER) {
+      // OpenRouter — OpenAI-compatible endpoint
+      hostname = 'openrouter.ai';
+      apiPath = '/api/v1/chat/completions';
+      body = JSON.stringify({ model, max_tokens: maxTokens, messages });
+      headers = {
+        'Authorization': `Bearer ${ANTHROPIC_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(body)),
+      };
+    } else {
+      // Anthropic direct
+      hostname = 'api.anthropic.com';
+      apiPath = '/v1/messages';
+      body = JSON.stringify({ model, max_tokens: maxTokens, messages });
+      headers = {
+        'x-api-key': ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    };
+        'Content-Length': String(Buffer.byteLength(body)),
+      };
+    }
+
+    const options = { hostname, path: apiPath, method: 'POST', headers };
 
     const req = https.request(options, (res) => {
       let data = '';
@@ -66,16 +74,31 @@ function callAnthropic(messages, model, maxTokens = 2048) {
 }
 
 function extractText(response) {
-  return response.content?.[0]?.text || '';
+  // Anthropic format
+  if (response.content?.[0]?.text) return response.content[0].text;
+  // OpenAI/OpenRouter format
+  const msg = response.choices?.[0]?.message;
+  if (msg?.content) return msg.content;
+  // Reasoning models (o1, DeepSeek R1, Step) put output in reasoning field
+  if (msg?.reasoning) return msg.reasoning;
+  console.error('Unexpected response shape:', JSON.stringify(response).slice(0, 500));
+  return '';
 }
 
 function extractJSON(text) {
   const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error(`No JSON found in response: ${text.slice(0, 200)}`);
-  return JSON.parse(match[0]);
+  if (!match) throw new Error(`No JSON found in response:\n---\n${text.slice(0, 1000)}\n---`);
+  try {
+    return JSON.parse(match[0]);
+  } catch (e) {
+    throw new Error(`JSON parse failed: ${e.message}\nRaw: ${match[0].slice(0, 300)}`);
+  }
 }
 
 // ─── Persona Prompts ─────────────────────────────────────────────────────────
+
+const PERSONA_MAX_TOKENS = USE_OPENROUTER ? 4096 : 1024;
+const SYNTHESIS_MAX_TOKENS = USE_OPENROUTER ? 8192 : 4096;
 
 async function runArchitect(brief) {
   const prompt = `You are a senior software architect. Analyze this project brief and output ONLY valid JSON.
@@ -91,7 +114,7 @@ Output this exact JSON shape (no extra text, no markdown):
   "concerns": ["concern1", "concern2"]
 }`;
 
-  const res = await callAnthropic([{ role: 'user', content: prompt }], HAIKU_MODEL, 1024);
+  const res = await callAnthropic([{ role: 'user', content: prompt }], HAIKU_MODEL, PERSONA_MAX_TOKENS);
   return extractJSON(extractText(res));
 }
 
@@ -109,7 +132,7 @@ Output this exact JSON shape (no extra text, no markdown):
   "milestones": ["M1: description", "M2: description"]
 }`;
 
-  const res = await callAnthropic([{ role: 'user', content: prompt }], HAIKU_MODEL, 1024);
+  const res = await callAnthropic([{ role: 'user', content: prompt }], HAIKU_MODEL, PERSONA_MAX_TOKENS);
   return extractJSON(extractText(res));
 }
 
@@ -127,7 +150,7 @@ Output this exact JSON shape (no extra text, no markdown):
   "flags": ["flag1", "flag2"]
 }`;
 
-  const res = await callAnthropic([{ role: 'user', content: prompt }], HAIKU_MODEL, 1024);
+  const res = await callAnthropic([{ role: 'user', content: prompt }], HAIKU_MODEL, PERSONA_MAX_TOKENS);
   return extractJSON(extractText(res));
 }
 
@@ -175,7 +198,7 @@ Write a complete PLAN.md in markdown. Include these exact sections:
 - fix/<name> from main
 - chore/<name> from main`;
 
-  const res = await callAnthropic([{ role: 'user', content: prompt }], SONNET_MODEL, 4096);
+  const res = await callAnthropic([{ role: 'user', content: prompt }], SONNET_MODEL, SYNTHESIS_MAX_TOKENS);
   return extractText(res);
 }
 
@@ -261,6 +284,7 @@ async function main() {
   const briefArg = process.argv.indexOf('--brief');
   if (briefArg !== -1 && process.argv[briefArg + 1]) {
     brief = process.argv[briefArg + 1];
+    fs.mkdirSync(targetDir, { recursive: true });
     fs.writeFileSync(briefFile, brief);
   } else if (fs.existsSync(briefFile)) {
     brief = fs.readFileSync(briefFile, 'utf8').trim();

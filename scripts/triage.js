@@ -99,22 +99,30 @@ function anthropicRequest(messages, model = 'claude-haiku-4-5-20251001', maxToke
     return Promise.reject(new Error('OPENROUTER_API_KEY is not set'));
   }
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ model, max_tokens: maxTokens, messages });
-    const hostname = USE_OPENROUTER ? 'openrouter.ai' : 'api.anthropic.com';
-    const apiPath = USE_OPENROUTER ? '/api/v1/messages' : '/v1/messages';
-    const options = {
-      hostname,
-      path: apiPath,
-      method: 'POST',
-      headers: {
-        ...(USE_OPENROUTER
-          ? { 'Authorization': `Bearer ${ANTHROPIC_API_KEY}` }
-          : { 'x-api-key': ANTHROPIC_API_KEY }),
+    let body, hostname, apiPath, headers;
+
+    if (USE_OPENROUTER) {
+      hostname = 'openrouter.ai';
+      apiPath = '/api/v1/chat/completions';
+      body = JSON.stringify({ model, max_tokens: maxTokens, messages });
+      headers = {
+        'Authorization': `Bearer ${ANTHROPIC_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(body)),
+      };
+    } else {
+      hostname = 'api.anthropic.com';
+      apiPath = '/v1/messages';
+      body = JSON.stringify({ model, max_tokens: maxTokens, messages });
+      headers = {
+        'x-api-key': ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    };
+        'Content-Length': String(Buffer.byteLength(body)),
+      };
+    }
+
+    const options = { hostname, path: apiPath, method: 'POST', headers };
 
     const req = https.request(options, (res) => {
       let data = '';
@@ -134,6 +142,9 @@ function anthropicRequest(messages, model = 'claude-haiku-4-5-20251001', maxToke
   });
 }
 
+// Free OpenRouter model for testing — swap to anthropic/claude-haiku-* for production
+const TRIAGE_MODEL = 'stepfun/step-3.5-flash:free';
+
 async function categorizeComment(commentBody) {
   const prompt = `Categorize this code review comment into exactly one category.
 
@@ -151,8 +162,8 @@ Review comment:
 Respond with JSON only, no explanation:
 {"category": "<category>", "score": <score>, "summary": "<one sentence summary under 80 chars>"}`;
 
-  const response = await anthropicRequest([{ role: 'user', content: prompt }]);
-  const text = response.content?.[0]?.text || '{}';
+  const response = await anthropicRequest([{ role: 'user', content: prompt }], TRIAGE_MODEL);
+  const text = response.content?.[0]?.text || response.choices?.[0]?.message?.content || '{}';
 
   try {
     const parsed = JSON.parse(text.match(/\{.*\}/s)?.[0] || '{}');

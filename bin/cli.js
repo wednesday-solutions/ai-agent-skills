@@ -269,8 +269,9 @@ function promptChecklist(availableSkills) {
 
   availableSkills.forEach((skill, i) => {
     const meta = SKILL_META[skill] || { label: skill, desc: '', recommended: false };
-    const tag = meta.recommended ? colors.green(' [recommended]') : '';
-    console.log(`  ${colors.cyan(String(i + 1).padStart(2))}. ${meta.label.padEnd(22)}${meta.desc}${tag}`);
+    const tag = meta.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
+    const num = `${colors.cyan}${String(i + 1).padStart(2)}${colors.reset}`;
+    console.log(`  ${num}. ${meta.label.padEnd(22)}${meta.desc}${tag}`);
   });
 
   console.log('');

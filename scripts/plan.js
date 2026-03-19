@@ -622,7 +622,7 @@ async function main() {
   const briefArgIdx = args.indexOf('--brief');
 
   const briefFile = path.join(targetDir, 'BRIEF.md');
-  const plansDir = path.join(targetDir, '.plans');
+  const plansDir = path.join(targetDir, '.wednesday', 'plans');
 
   // Load or create brief
   let brief;
@@ -759,11 +759,11 @@ async function main() {
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   console.log(`\x1b[32m  Done in ${elapsed}s\x1b[0m`);
-  console.log(`\n  \x1b[90m.plans/research.md\x1b[0m`);
-  console.log(`  \x1b[90m.plans/architect.md\x1b[0m`);
-  console.log(`  \x1b[90m.plans/pm.md\x1b[0m`);
-  console.log(`  \x1b[90m.plans/security.md\x1b[0m`);
-  console.log(`  \x1b[32m.plans/PLAN.md\x1b[0m  ← your project plan\n`);
+  console.log(`\n  \x1b[90m.wednesday/plans/research.md\x1b[0m`);
+  console.log(`  \x1b[90m.wednesday/plans/architect.md\x1b[0m`);
+  console.log(`  \x1b[90m.wednesday/plans/pm.md\x1b[0m`);
+  console.log(`  \x1b[90m.wednesday/plans/security.md\x1b[0m`);
+  console.log(`  \x1b[32m.wednesday/plans/PLAN.md\x1b[0m  ← your project plan\n`);
 }
 
 main().catch(err => {

@@ -100,10 +100,10 @@ Output: `PLAN.md`
 
 ## Output Location
 
-All files written to `.plans/` in the target directory:
+All files written to `.wednesday/plans/` in the target directory:
 
 ```
-.plans/
+.wednesday/plans/
 ├── research.md    ← domain context
 ├── architect.md   ← technical design
 ├── pm.md          ← phases and metrics

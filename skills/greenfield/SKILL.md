@@ -1,87 +1,122 @@
 ---
 name: greenfield
-description: Parallel persona planning skill for new projects. Three Haiku agents (Architect, PM, Security) analyze BRIEF.md in parallel, Sonnet synthesizes into PLAN.md with a Tensions section.
+description: Parallel persona planning for new projects. Research agent runs first to build domain context, then Architect, PM, and Security agents run in parallel. Synthesis agent combines all perspectives into a detailed GSD-style PLAN.md with Tensions section.
 license: MIT
 metadata:
   author: wednesday-solutions
-  version: "1.0"
+  version: "2.0"
 ---
 
 # Greenfield Planning Skill
 
 ## Trigger
 
-Run once per project: `wednesday-skills plan`
+Run once per project: `ws-skills plan`
 
-Reads `BRIEF.md` from the project root. If it doesn't exist, the CLI prompts for a project description and creates it.
+Reads `BRIEF.md` from the project root (or prompts for one). Asks 5 clarifying questions before planning.
 
-## Three Parallel Personas
+## Flow
 
-### Architect (Haiku)
-
-```json
-{
-  "systemDesign": "...",
-  "techStack": [...],
-  "moduleBoundaries": [...],
-  "concerns": [...]
-}
+```
+Brief + Q&A
+    ↓
+Research agent        ← domain landscape, ecosystem, hidden complexity
+    ↓
+┌───────────────────────────────────┐
+│ Architect │ PM │ Security         │  ← parallel, each gets research context
+└───────────────────────────────────┘
+    ↓
+Synthesis             ← combines all into PLAN.md
 ```
 
-### PM (Haiku)
+## Agents
 
-```json
-{
-  "requirements": [...],
-  "priorities": [...],
-  "outOfScope": [...],
-  "milestones": [...]
-}
+### 1. Research (sequential — runs first)
+
+Builds domain context that all other agents receive. Covers:
+- Existing solutions and their weaknesses
+- Standard and emerging tech stacks for this domain
+- Technologies to avoid and why
+- Non-obvious domain challenges
+- Integration landscape (auth, payments, comms, etc.)
+- Regulatory and compliance context
+- Realistic timeline based on similar projects
+- Hidden complexity — things that take 3x longer than expected
+- Success patterns from the best products in this space
+
+Output: `research.md`
+
+### 2. Architect (parallel)
+
+Receives brief + Q&A + research context.
+
+Output: `architect.md`
+- System design overview
+- Tech stack with rationale per layer
+- Module boundaries and interfaces
+- Infrastructure and CI/CD
+- Scaling strategy
+- Technical risks
+
+### 3. PM (parallel)
+
+Receives brief + Q&A + research context.
+
+Output: `pm.md`
+- Phases with tasks and acceptance criteria
+- Success metrics
+- Out of scope items
+- Assumptions
+
+### 4. Security (parallel)
+
+Receives brief + Q&A + research context.
+
+Output: `security.md`
+- Threat model (likelihood + impact)
+- Data classification
+- Auth strategy recommendation
+- Compliance flags
+- Concrete security tasks
+- Urgent flags
+
+### 5. Synthesis
+
+Combines research + all three persona outputs into a single PLAN.md covering:
+- Overview
+- Clarifications table
+- Tech stack
+- Architecture
+- Phases with tasks and acceptance criteria
+- Security plan
+- Success metrics
+- Risks
+- Tensions (unresolved disagreements between personas)
+- Assumptions
+- Out of scope
+- Branch naming (GIT-OS format)
+
+Output: `PLAN.md`
+
+## Output Location
+
+All files written to `.plans/` in the target directory:
+
+```
+.plans/
+├── research.md    ← domain context
+├── architect.md   ← technical design
+├── pm.md          ← phases and metrics
+├── security.md    ← threat model
+└── PLAN.md        ← combined PRD (primary output)
 ```
 
-### Security (Haiku)
+## Failure Handling
 
-```json
-{
-  "threatSurface": [...],
-  "dataRisks": [...],
-  "authRecommendations": [...],
-  "flags": [...]
-}
-```
-
-## Synthesis (Sonnet)
-
-Takes three JSON objects above. Outputs `PLAN.md`:
-
-```markdown
-# Project Plan — [name]
-
-## Overview
-## Architecture
-## Requirements
-## Security Considerations
-## Milestones
-## Tensions
-  - Architect: microservices vs PM: ship monolith first → decision needed
-## Branch Naming (GIT-OS)
-  - feat/<name> from main
-  - fix/<name> from main
-```
+Each agent fails independently. If one fails, the others continue and synthesis runs with whatever data is available. Failed agents show `[partial fallback]` in the progress display.
 
 ## Rules
 
-- `CODEBASE.md` seeded from Architect output after PLAN.md is generated
 - Branch naming in PLAN.md must follow GIT-OS format
-- Cost target: under $0.15 per run
-- Each persona JSON output is token-limited to keep Sonnet synthesis cost predictable
-
-## Cost Budget
-
-| Call | Model | Est. cost |
-|------|-------|-----------|
-| Architect | Haiku | ~$0.02 |
-| PM | Haiku | ~$0.02 |
-| Security | Haiku | ~$0.02 |
-| Synthesis | Sonnet | ~$0.08 |
-| **Total** | | **~$0.14** |
+- Never generate `CODEBASE.md` for greenfield projects — it doesn't exist yet
+- Cost target: under $0.20 per run

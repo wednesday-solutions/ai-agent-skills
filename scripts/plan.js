@@ -203,14 +203,101 @@ async function runQandA(brief) {
   return answers;
 }
 
-// ─── Step 3: Persona agents ──────────────────────────────────────────────────
+// ─── Step 3: Research agent (runs before personas) ───────────────────────────
 
-function buildContext(brief, qna) {
+async function runResearch(brief, qna) {
+  const qnaSection = qna.length
+    ? '\n\nDeveloper clarifications:\n' + qna.map((qa, i) => `Q${i+1}: ${qa.question}\nA: ${qa.answer}`).join('\n\n')
+    : '';
+
+  const prompt = `You are a domain research analyst. A developer is about to build this project:
+
+${brief}${qnaSection}
+
+Research this project space deeply before any technical planning begins. Output ONLY this JSON:
+{
+  "domain": "one sentence — what industry/space this operates in",
+  "existingSolutions": [{ "name": "...", "approach": "...", "weakness": "..." }],
+  "techEcosystem": {
+    "standardStacks": ["what most teams in this space use and why"],
+    "emergingOptions": ["newer alternatives worth considering"],
+    "avoidList": ["technologies that seem obvious but cause problems in this domain"]
+  },
+  "domainChallenges": ["non-obvious hard problems specific to this type of product"],
+  "integrationLandscape": ["third-party services typically required (auth, payments, comms, etc.)"],
+  "regulatoryContext": ["relevant compliance, data laws, or industry standards"],
+  "typicalTimeline": "realistic MVP timeline for a team of 3-5 based on similar projects",
+  "hiddenComplexity": ["things that seem simple but take 3x longer than expected"],
+  "successPatterns": ["what the best products in this space got right"]
+}`;
+
+  const res = await callModel([{ role: 'user', content: prompt }], FAST_MODEL, PERSONA_MAX_TOKENS);
+  return extractJSON(extractText(res));
+}
+
+function buildResearchDoc(research) {
+  const existing = (research.existingSolutions || [])
+    .map(s => `| ${s.name} | ${s.approach} | ${s.weakness} |`).join('\n');
+  const stacks = (research.techEcosystem?.standardStacks || []).map(s => `- ${s}`).join('\n');
+  const emerging = (research.techEcosystem?.emergingOptions || []).map(s => `- ${s}`).join('\n');
+  const avoid = (research.techEcosystem?.avoidList || []).map(s => `- ${s}`).join('\n');
+  const challenges = (research.domainChallenges || []).map(s => `- ${s}`).join('\n');
+  const integrations = (research.integrationLandscape || []).map(s => `- ${s}`).join('\n');
+  const regulatory = (research.regulatoryContext || []).map(s => `- ${s}`).join('\n');
+  const hidden = (research.hiddenComplexity || []).map(s => `- ⚠ ${s}`).join('\n');
+  const success = (research.successPatterns || []).map(s => `- ${s}`).join('\n');
+
+  return `# Domain Research
+
+## Domain
+${research.domain || '—'}
+
+## Existing Solutions
+| Name | Approach | Weakness |
+|------|----------|----------|
+${existing || '| — | — | — |'}
+
+## Tech Ecosystem
+**Standard stacks:**
+${stacks || '—'}
+
+**Emerging options:**
+${emerging || '—'}
+
+**Avoid:**
+${avoid || '—'}
+
+## Domain Challenges
+${challenges || '—'}
+
+## Integration Landscape
+${integrations || '—'}
+
+## Regulatory Context
+${regulatory || 'None identified'}
+
+## Typical Timeline
+${research.typicalTimeline || '—'}
+
+## Hidden Complexity
+${hidden || '—'}
+
+## Success Patterns
+${success || '—'}
+`;
+}
+
+// ─── Step 4: Persona agents ───────────────────────────────────────────────────
+
+function buildContext(brief, qna, research) {
   const answersText = qna.length
     ? '\n\nClarifications from the developer:\n' +
       qna.map((qa, i) => `Q${i + 1}: ${qa.question}\nA: ${qa.answer}`).join('\n\n')
     : '';
-  return brief + answersText;
+  const researchText = research && Object.keys(research).length
+    ? '\n\n## Domain Research (use this to inform your analysis)\n' + JSON.stringify(research, null, 2)
+    : '';
+  return brief + answersText + researchText;
 }
 
 async function runArchitect(context) {
@@ -279,7 +366,7 @@ Output ONLY this JSON (no markdown, no explanation):
 
 // ─── Step 4: GSD-style synthesis ─────────────────────────────────────────────
 
-async function runSynthesis(brief, qna, architect, pm, security) {
+async function runSynthesis(brief, qna, research, architect, pm, security) {
   const qnaSection = qna.length
     ? qna.map((qa, i) => `Q${i + 1}: ${qa.question}\nA: ${qa.answer}`).join('\n')
     : 'None';
@@ -291,6 +378,9 @@ ${brief}
 
 ## Developer Clarifications
 ${qnaSection}
+
+## Domain Research
+${JSON.stringify(research, null, 2)}
 
 ## Architect Analysis
 ${JSON.stringify(architect, null, 2)}
@@ -562,41 +652,47 @@ async function main() {
     console.log('─────────────────────────────────────────────');
   }
 
-  const context = buildContext(brief, qna);
   const start = Date.now();
 
   // ── Live progress display ──────────────────────────────────────────────────
   const SPIN = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
-  const agents = [
-    { name: 'Architect', desc: 'system design, tech stack, module boundaries', state: 'running', elapsed: 0 },
-    { name: 'PM',        desc: 'phases, acceptance criteria, success metrics',  state: 'running', elapsed: 0 },
-    { name: 'Security',  desc: 'threat model, auth strategy, compliance flags', state: 'running', elapsed: 0 },
-  ];
+
+  const stages = {
+    research:  { name: 'Research',  desc: 'domain landscape, ecosystem, hidden complexity', state: 'running', elapsed: 0, startedAt: Date.now() },
+    architect: { name: 'Architect', desc: 'system design, tech stack, module boundaries',   state: 'waiting', elapsed: 0, startedAt: 0 },
+    pm:        { name: 'PM',        desc: 'phases, acceptance criteria, success metrics',    state: 'waiting', elapsed: 0, startedAt: 0 },
+    security:  { name: 'Security',  desc: 'threat model, auth strategy, compliance flags',  state: 'waiting', elapsed: 0, startedAt: 0 },
+    synthesis: { name: 'Synthesis', desc: 'combining all perspectives into PLAN.md',        state: 'waiting', elapsed: 0, startedAt: 0 },
+  };
   let spinIdx = 0;
-  let synthState = 'waiting';
+
+  function stageIcon(s) {
+    if (s.state === 'running') return `\x1b[36m${SPIN[spinIdx]}\x1b[0m`;
+    if (s.state === 'done')    return '\x1b[32m✓\x1b[0m';
+    if (s.state === 'failed')  return '\x1b[31m✗\x1b[0m';
+    return '\x1b[90m·\x1b[0m';
+  }
+  function stageLabel(s) {
+    if (s.state === 'running') return `\x1b[36m${s.name}\x1b[0m`;
+    if (s.state === 'done')    return `\x1b[32m${s.name}\x1b[0m`;
+    if (s.state === 'failed')  return `\x1b[31m${s.name}\x1b[0m`;
+    return `\x1b[90m${s.name}\x1b[0m`;
+  }
 
   function renderProgress() {
-    const lines = ['\n  Spawning parallel persona agents:\n'];
-    for (const a of agents) {
-      const icon = a.state === 'running' ? `\x1b[36m${SPIN[spinIdx]}\x1b[0m`
-                 : a.state === 'done'    ? '\x1b[32m✓\x1b[0m'
-                 :                        '\x1b[31m✗\x1b[0m';
-      const label = a.state === 'running' ? `\x1b[36m${a.name}\x1b[0m`
-                  : a.state === 'done'    ? `\x1b[32m${a.name}\x1b[0m`
-                  :                        `\x1b[31m${a.name}\x1b[0m`;
-      const extra = a.state === 'running' ? `\x1b[90m(${a.elapsed}s)\x1b[0m`
-                  : a.state === 'failed'  ? `\x1b[31m[partial fallback]\x1b[0m`
-                  : '';
-      lines.push(`  ${icon} ${label.padEnd(20)} ${a.desc}  ${extra}`);
+    const lines = ['\n'];
+    const keys = Object.keys(stages);
+    for (let i = 0; i < keys.length; i++) {
+      const s = stages[keys[i]];
+      const elapsed = s.state === 'running' ? ` \x1b[90m(${s.elapsed}s)\x1b[0m` : '';
+      const fallback = s.state === 'failed' ? ` \x1b[31m[partial fallback]\x1b[0m` : '';
+      const sep = i === 0 ? '' : i === 1 ? `\n  \x1b[90m── parallel ────────────────────────────────────\x1b[0m\n` : '';
+      lines.push(`${sep}  ${stageIcon(s)} ${stageLabel(s).padEnd(26)} \x1b[90m${s.desc}\x1b[0m${elapsed}${fallback}`);
     }
-    const synthIcon = synthState === 'waiting' ? ' ' : synthState === 'running' ? `\x1b[36m${SPIN[spinIdx]}\x1b[0m` : '\x1b[32m✓\x1b[0m';
-    const synthLabel = synthState === 'running' ? '\x1b[36mSynthesis\x1b[0m' : synthState === 'done' ? '\x1b[32mSynthesis\x1b[0m' : '\x1b[90mSynthesis\x1b[0m';
-    lines.push(`\n  ${synthIcon} ${synthLabel.padEnd(20)} combining all perspectives into PLAN.md`);
     lines.push('');
     return lines.join('\n');
   }
 
-  // Move cursor up N lines and redraw
   let lastLineCount = 0;
   function redraw() {
     if (lastLineCount > 0) process.stdout.write(`\x1b[${lastLineCount}A\x1b[J`);
@@ -606,48 +702,65 @@ async function main() {
     spinIdx = (spinIdx + 1) % SPIN.length;
   }
 
-  const agentStartTimes = [Date.now(), Date.now(), Date.now()];
   const ticker = setInterval(() => {
-    for (let i = 0; i < agents.length; i++) {
-      if (agents[i].state === 'running') agents[i].elapsed = ((Date.now() - agentStartTimes[i]) / 1000).toFixed(1);
+    for (const s of Object.values(stages)) {
+      if (s.state === 'running') s.elapsed = ((Date.now() - s.startedAt) / 1000).toFixed(1);
     }
     redraw();
   }, 120);
 
   redraw();
 
-  const [architect, pm, security] = await Promise.all([
-    runArchitect(context)
-      .then(r => { agents[0].state = 'done'; return r; })
-      .catch(e => { agents[0].state = 'failed'; agents[0].desc = e.message.slice(0, 60); return {}; }),
-    runPM(context)
-      .then(r => { agents[1].state = 'done'; return r; })
-      .catch(e => { agents[1].state = 'failed'; agents[1].desc = e.message.slice(0, 60); return {}; }),
-    runSecurity(context)
-      .then(r => { agents[2].state = 'done'; return r; })
-      .catch(e => { agents[2].state = 'failed'; agents[2].desc = e.message.slice(0, 60); return {}; }),
-  ]);
+  // ── Phase 1: Research ──────────────────────────────────────────────────────
+  const research = await runResearch(brief, qna)
+    .then(r  => { stages.research.state = 'done'; return r; })
+    .catch(e => { stages.research.state = 'failed'; stages.research.desc = e.message.slice(0, 55); return {}; });
 
-  synthState = 'running';
+  // ── Phase 2: Parallel personas (enriched with research) ───────────────────
+  for (const key of ['architect', 'pm', 'security']) {
+    stages[key].state = 'running';
+    stages[key].startedAt = Date.now();
+  }
   redraw();
 
-  const plan = await runSynthesis(brief, qna, architect, pm, security);
+  const context = buildContext(brief, qna, research);
 
-  synthState = 'done';
+  const [architect, pm, security] = await Promise.all([
+    runArchitect(context)
+      .then(r => { stages.architect.state = 'done'; return r; })
+      .catch(e => { stages.architect.state = 'failed'; stages.architect.desc = e.message.slice(0, 55); return {}; }),
+    runPM(context)
+      .then(r => { stages.pm.state = 'done'; return r; })
+      .catch(e => { stages.pm.state = 'failed'; stages.pm.desc = e.message.slice(0, 55); return {}; }),
+    runSecurity(context)
+      .then(r => { stages.security.state = 'done'; return r; })
+      .catch(e => { stages.security.state = 'failed'; stages.security.desc = e.message.slice(0, 55); return {}; }),
+  ]);
+
+  // ── Phase 3: Synthesis ────────────────────────────────────────────────────
+  stages.synthesis.state = 'running';
+  stages.synthesis.startedAt = Date.now();
+  redraw();
+
+  const plan = await runSynthesis(brief, qna, research, architect, pm, security);
+
+  stages.synthesis.state = 'done';
   clearInterval(ticker);
   redraw();
 
   // ── Write outputs ──────────────────────────────────────────────────────────
   fs.mkdirSync(plansDir, { recursive: true });
+  fs.writeFileSync(path.join(plansDir, 'research.md'),  buildResearchDoc(research));
   fs.writeFileSync(path.join(plansDir, 'architect.md'), buildArchitectDoc(architect));
-  fs.writeFileSync(path.join(plansDir, 'pm.md'), buildPMDoc(pm));
-  fs.writeFileSync(path.join(plansDir, 'security.md'), buildSecurityDoc(security));
-  fs.writeFileSync(path.join(plansDir, 'PLAN.md'), plan);
+  fs.writeFileSync(path.join(plansDir, 'pm.md'),        buildPMDoc(pm));
+  fs.writeFileSync(path.join(plansDir, 'security.md'),  buildSecurityDoc(security));
+  fs.writeFileSync(path.join(plansDir, 'PLAN.md'),      plan);
   logUsage(targetDir);
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   console.log(`\x1b[32m  Done in ${elapsed}s\x1b[0m`);
-  console.log(`\n  \x1b[90m.plans/architect.md\x1b[0m`);
+  console.log(`\n  \x1b[90m.plans/research.md\x1b[0m`);
+  console.log(`  \x1b[90m.plans/architect.md\x1b[0m`);
   console.log(`  \x1b[90m.plans/pm.md\x1b[0m`);
   console.log(`  \x1b[90m.plans/security.md\x1b[0m`);
   console.log(`  \x1b[32m.plans/PLAN.md\x1b[0m  ← your project plan\n`);

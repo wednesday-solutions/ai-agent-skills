@@ -58,7 +58,7 @@ if (!filter || filter === 'install') {
   assert('install exits 0', result.status === 0, result.stderr);
   assert('skills dir created', fs.existsSync(path.join(TMP, '.wednesday', 'skills')));
   assert('git-os skill installed', fs.existsSync(path.join(TMP, '.wednesday', 'skills', 'git-os', 'SKILL.md')));
-  assert('triage-loop skill installed', fs.existsSync(path.join(TMP, '.wednesday', 'skills', 'triage-loop', 'SKILL.md')));
+  assert('pr-review skill installed', fs.existsSync(path.join(TMP, '.wednesday', 'skills', 'pr-review', 'SKILL.md')));
   assert('greenfield skill installed', fs.existsSync(path.join(TMP, '.wednesday', 'skills', 'greenfield', 'SKILL.md')));
   assert('sprint skill installed', fs.existsSync(path.join(TMP, '.wednesday', 'skills', 'sprint', 'SKILL.md')));
   assert('deploy-checklist skill installed', fs.existsSync(path.join(TMP, '.wednesday', 'skills', 'deploy-checklist', 'SKILL.md')));

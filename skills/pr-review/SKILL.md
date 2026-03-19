@@ -1,13 +1,13 @@
 ---
-name: triage-loop
-description: Unified PR triage skill. Merges Gemini review comments, coverage gaps, and Sonar issues into a single priority-ranked REVIEW_REPORT. Agent reads the unified report first and fixes by priority order. Sonar BLOCKERs are always fixed before any Gemini style item.
+name: pr-review
+description: Unified PR review skill. Merges Gemini review comments, coverage report, and Sonar report into a single 6A/6B/6C checklist. Agent reads the report and fixes Gemini items in priority order. Coverage and Sonar are informational health sections.
 license: MIT
 metadata:
   author: wednesday-solutions
   version: "2.0"
 ---
 
-# Triage Loop — Unified PR Review
+# PR Review — Unified Report
 
 ## Flow
 

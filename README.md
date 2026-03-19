@@ -32,7 +32,7 @@ Run in your project root. Done in seconds.
 |---------|-------------|
 | `git-os` skill | Every agent follows conventional commits — no bad commit messages |
 | `commit-lint` CI | GitHub Action blocks PRs with non-conventional commits |
-| `triage-loop` skill | Gemini PR review comments auto-sorted by impact, fixed on your approval |
+| `pr-review` skill | Unified PR report — Gemini fix queue (6A), coverage health (6B), Sonar health (6C) |
 | `triage` CI | GitHub Action that runs triage when Gemini bot posts a review |
 | `greenfield` skill | Run `wednesday-skills plan` — 3 AI personas produce `PLAN.md` in minutes |
 | `sprint` skill | Give a ticket → get branch name, PR title, and description template |
@@ -132,7 +132,7 @@ your-project/
 │   ├── tools.json
 │   └── skills/
 │       ├── git-os/
-│       ├── triage-loop/
+│       ├── pr-review/
 │       ├── greenfield/
 │       ├── sprint/
 │       ├── deploy-checklist/

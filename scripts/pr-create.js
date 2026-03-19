@@ -82,14 +82,19 @@ function detectBase(branch) {
   const base = mainBase();
   if (!base) return 'main';
 
-  const remotes = tryRun('git branch -r --format="%(refname:short) %(objectname)"') || '';
+  // Only consider branches that follow GIT-OS feature branch naming as potential stack bases
+  const featureBranchPattern = /^(feat|fix|chore|test|hotfix)\/.+/;
+
+  const remotes = tryRun('git branch -r --format=%(refname:short) %(objectname)') || '';
   for (const line of remotes.split('\n')) {
-    const parts = line.trim().split(' ');
-    if (parts.length < 2) continue;
-    const [ref, sha] = parts;
-    const name = ref.replace('origin/', '');
-    if (name === 'main' || name === 'HEAD' || name === branch) continue;
-    if (sha.startsWith(base.slice(0, 7)) || base.startsWith(sha)) return name;
+    const spaceIdx = line.trim().indexOf(' ');
+    if (spaceIdx === -1) continue;
+    const ref = line.trim().slice(0, spaceIdx);
+    const sha = line.trim().slice(spaceIdx + 1);
+    const name = ref.replace(/^origin\//, '');
+    if (!featureBranchPattern.test(name)) continue;
+    if (name === branch) continue;
+    if (sha === base) return name;
   }
   return 'main';
 }

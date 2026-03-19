@@ -20,7 +20,8 @@ const { execSync } = require('child_process');
 // ─── Config ────────────────────────────────────────────────────────────────
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const ANTHROPIC_API_KEY = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY;
+const USE_OPENROUTER = !!process.env.OPENROUTER_API_KEY;
 const PR_NUMBER = process.env.PR_NUMBER;
 const REPO_FULL_NAME = process.env.REPO_FULL_NAME; // "owner/repo"
 const COMMENT_BODY = process.env.COMMENT_BODY || '';
@@ -95,16 +96,20 @@ async function postPRComment(owner, repo, prNumber, body) {
 
 function anthropicRequest(messages, model = 'claude-haiku-4-5-20251001', maxTokens = 1024) {
   if (!ANTHROPIC_API_KEY) {
-    return Promise.reject(new Error('ANTHROPIC_API_KEY is not set'));
+    return Promise.reject(new Error('OPENROUTER_API_KEY is not set'));
   }
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ model, max_tokens: maxTokens, messages });
+    const hostname = USE_OPENROUTER ? 'openrouter.ai' : 'api.anthropic.com';
+    const apiPath = USE_OPENROUTER ? '/api/v1/messages' : '/v1/messages';
     const options = {
-      hostname: 'api.anthropic.com',
-      path: '/v1/messages',
+      hostname,
+      path: apiPath,
       method: 'POST',
       headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
+        ...(USE_OPENROUTER
+          ? { 'Authorization': `Bearer ${ANTHROPIC_API_KEY}` }
+          : { 'x-api-key': ANTHROPIC_API_KEY }),
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
@@ -246,7 +251,7 @@ async function main() {
 
   // Handle new Gemini review — triage all comments
   if (!ANTHROPIC_API_KEY) {
-    console.error('ANTHROPIC_API_KEY is required for triage');
+    console.error('OPENROUTER_API_KEY is required for triage');
     process.exit(1);
   }
 

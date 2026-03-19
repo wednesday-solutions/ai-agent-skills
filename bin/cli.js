@@ -187,6 +187,16 @@ function main() {
     case 'pr':
       runPR();
       break;
+    case 'coverage': {
+      const covBase = args[1] && !args[1].startsWith('--') ? args[1] : 'develop';
+      runCoverage(covBase, args.includes('--dry-run'), args.includes('--post'));
+      break;
+    }
+    case 'sonar': {
+      const sonarBase = args[1] && !args[1].startsWith('--') ? args[1] : 'develop';
+      runSonar(sonarBase, args.includes('--dry-run'), args.includes('--post'));
+      break;
+    }
     case 'list':
       listSkills();
       break;
@@ -230,6 +240,38 @@ function runPR() {
   const script = path.join(__dirname, '..', 'scripts', 'pr-create.js');
   const proc = spawn(process.execPath, [script], { stdio: 'inherit' });
   proc.on('exit', code => process.exit(code || 0));
+}
+
+function runCoverage(baseBranch, dryRun, post) {
+  const script = path.join(__dirname, '..', 'assets', 'scripts', 'pr-coverage.sh');
+  if (!fs.existsSync(script)) {
+    log('red', 'Error: pr-coverage.sh not found. Run "ws-skills install" first.');
+    process.exit(1);
+  }
+  const flags = [];
+  if (dryRun) flags.push('--dry-run');
+  if (post)   flags.push('--post');
+  log('blue', `Running coverage report (base: ${baseBranch})...`);
+  console.log('');
+  const { spawnSync } = require('child_process');
+  const result = spawnSync('bash', [script, ...flags, baseBranch], { stdio: 'inherit' });
+  process.exit(result.status || 0);
+}
+
+function runSonar(baseBranch, dryRun, post) {
+  const script = path.join(__dirname, '..', 'assets', 'scripts', 'pr-sonar.sh');
+  if (!fs.existsSync(script)) {
+    log('red', 'Error: pr-sonar.sh not found. Run "ws-skills install" first.');
+    process.exit(1);
+  }
+  const flags = [];
+  if (dryRun) flags.push('--dry-run');
+  if (post)   flags.push('--post');
+  log('blue', `Running sonar report (base: ${baseBranch})...`);
+  console.log('');
+  const { spawnSync } = require('child_process');
+  const result = spawnSync('bash', [script, ...flags, baseBranch], { stdio: 'inherit' });
+  process.exit(result.status || 0);
 }
 
 function runPlan(targetDir, args) {
@@ -578,6 +620,8 @@ function showHelp() {
   console.log('  dashboard [--pr <number>]    Launch terminal dashboard');
   console.log('  plan [dir] [--brief "..."]   Run greenfield parallel persona planning');
   console.log('  pr                           Validate, pre-push check, and create a PR');
+  console.log('  coverage [base] [--post]     Run test coverage report and post to PR');
+  console.log('  sonar [base] [--post]        Run SonarQube report and post to PR');
   console.log('  list                         List available skills');
   console.log('  help                         Show this help message');
   console.log('');
@@ -590,6 +634,8 @@ function showHelp() {
   console.log('  wednesday-skills dashboard --pr 142');
   console.log('  wednesday-skills plan');
   console.log('  wednesday-skills plan --brief "Build a todo app with auth"');
+  console.log('  wednesday-skills coverage develop --post');
+  console.log('  wednesday-skills sonar develop --dry-run');
   console.log('');
   console.log('Agent Configuration Files:');
   console.log('  Claude Code    → CLAUDE.md');

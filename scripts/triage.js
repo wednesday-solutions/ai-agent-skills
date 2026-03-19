@@ -280,69 +280,74 @@ function parseSonarComment(body) {
 
 // ─── Report Generation ────────────────────────────────────────────────────────
 
-function buildUnifiedReport(prNumber, geminiItems, coverageData, sonarItems) {
-  const hasCoverage = coverageData.items.length > 0;
-  const hasSonar    = sonarItems.length > 0;
+function buildUnifiedReport(prNumber, geminiItems, coverageComment, sonarComment) {
   const hasGemini   = geminiItems.length > 0;
+  const hasCoverage = !!coverageComment;
+  const hasSonar    = !!sonarComment;
 
-  // Merge all available items — skip sources with no data
-  const all = [
-    ...geminiItems.map(item => ({
-      source: 'Gemini',
-      priority: GEMINI_CATEGORY_MAP[item.category] || 'gemini-logic',
-      rank: PRIORITY_RANK[GEMINI_CATEGORY_MAP[item.category]] || 7,
-      file: item.path || '—',
-      issue: item.summary,
-      status: '⬜ pending',
-    })),
-    ...(hasCoverage ? coverageData.items : []),
-    ...(hasSonar    ? sonarItems        : []),
-  ].sort((a, b) => a.rank - b.rank);
+  // ── 6A: Gemini fix queue ──────────────────────────────────────────────────
+  const sorted = [...geminiItems].sort((a, b) => {
+    const rankA = PRIORITY_RANK[GEMINI_CATEGORY_MAP[a.category]] || 7;
+    const rankB = PRIORITY_RANK[GEMINI_CATEGORY_MAP[b.category]] || 7;
+    return rankA - rankB;
+  });
 
-  const queueRows = all.map((item, i) =>
-    `| ${i + 1} | ${item.priority} | ${item.source} | ${item.file} | ${item.issue} | ${item.status} |`
+  const fixRows = sorted.map((item, i) =>
+    `| ${i + 1} | ${item.category} | ${item.path || '—'} | ${item.summary} | ⬜ pending |`
   ).join('\n');
 
-  // Only render sections that have data
-  const coverageSection = hasCoverage ? `
-## Coverage Summary
-| File | Stmts | Branch | Funcs | Lines |
-|------|-------|--------|-------|-------|
-${coverageData.items.map(f => `| ${f.file} | ${f.stmts}% | ${f.branch} | ${f.funcs} | ${f.lines} |`).join('\n')}
-` : '';
+  const geminiSection = hasGemini
+    ? `## 6A · Gemini Review — Fix Queue
+| # | Category | File | Issue | Status |
+|---|----------|------|-------|--------|
+${fixRows}
 
-  const sonarCounts = {};
-  for (const s of sonarItems) {
-    const sev = s.priority.replace('sonar-', '').toUpperCase();
-    sonarCounts[sev] = (sonarCounts[sev] || 0) + 1;
-  }
-  const sonarSection = hasSonar ? `
-## Sonar Summary
-| Severity | Count |
-|----------|-------|
-${Object.entries(sonarCounts).map(([k, v]) => `| ${k} | ${v} |`).join('\n')}
-` : '';
+To fix: \`@agent fix #1 #2\`   Fix all: \`@agent fix all\``
+    : `## 6A · Gemini Review
+_No review comments._`;
 
-  const sources = [
-    hasGemini   && 'Gemini review',
-    hasCoverage && 'coverage',
-    hasSonar    && 'Sonar',
-  ].filter(Boolean).join(' + ');
+  // ── 6B: Coverage (informational — updated when dev runs ws-skills coverage) ─
+  const coverageSection = hasCoverage
+    ? `## 6B · Coverage
+_Run \`ws-skills coverage\` to refresh._
+
+${coverageComment.body.replace(/<!--.*?-->/gs, '').replace(/^## Coverage.*?\n/m, '').trim()}`
+    : `## 6B · Coverage
+⬜ Not run yet — run \`ws-skills coverage\` to post a report.`;
+
+  // ── 6C: Sonar (informational — updated when dev runs ws-skills sonar) ───────
+  const sonarSection = hasSonar
+    ? `## 6C · Sonar
+_Run \`ws-skills sonar\` to refresh._
+
+${sonarComment.body.replace(/<!--.*?-->/gs, '').replace(/^## SonarQube.*?\n/m, '').trim()}`
+    : `## 6C · Sonar
+⬜ Not run yet — run \`ws-skills sonar\` to post a report.`;
+
+  // ── Checklist summary ─────────────────────────────────────────────────────
+  const geminiCheck   = hasGemini   ? `- [ ] 6A · Gemini review — ${sorted.length} item(s) to fix` : '- [x] 6A · Gemini review — no issues';
+  const coverageCheck = hasCoverage ? '- [x] 6B · Coverage — report posted' : '- [ ] 6B · Coverage — not run yet';
+  const sonarCheck    = hasSonar    ? '- [x] 6C · Sonar — report posted'    : '- [ ] 6C · Sonar — not run yet';
 
   return `${UNIFIED_REPORT_MARKER}
 # PR Review Report — #${prNumber}
-${sources ? `_Sources: ${sources}_\n` : ''}
-## Priority Queue
-| # | Priority | Source | File | Issue | Status |
-|---|----------|--------|------|-------|--------|
-${queueRows || '| — | — | — | — | No issues found | — |'}
-${coverageSection}${sonarSection}
-## How to Fix
-In Claude Code / Antigravity: \`fix items 1 and 2 from the triage report\`
-In terminal: \`wednesday-skills fix --pr ${prNumber} --items 1,2\`
+
+## Checklist
+${geminiCheck}
+${coverageCheck}
+${sonarCheck}
 
 ---
-To apply fixes, reply with: \`@agent fix #1 #3\`   To fix all: \`@agent fix all\``;
+
+${geminiSection}
+
+---
+
+${coverageSection}
+
+---
+
+${sonarSection}`;
 }
 
 // Legacy single-source report (kept for fallback)
@@ -433,19 +438,16 @@ async function main() {
   const sonarComment    = issueComments.find(c => c.body?.includes(SONAR_BOT_MARKER));
   const existingUnified = issueComments.find(c => c.body?.includes(UNIFIED_REPORT_MARKER));
 
-  const coverageData = coverageComment ? parseCoverageComment(coverageComment.body) : { items: [] };
-  const sonarItems   = sonarComment    ? parseSonarComment(sonarComment.body)        : [];
-
   // Collect Gemini comments
   const allGeminiComments = [
     ...reviewComments.map(c => ({ body: c.body, path: c.path, line: c.line })),
     ...reviews.filter(r => r.body?.trim()).map(r => ({ body: r.body, path: null, line: null })),
   ];
 
-  console.log(`[triage] Gemini: ${allGeminiComments.length}, Coverage gaps: ${coverageData.items.length}, Sonar: ${sonarItems.length}`);
+  console.log(`[triage] Gemini: ${allGeminiComments.length}, Coverage: ${coverageComment ? 'yes' : 'no'}, Sonar: ${sonarComment ? 'yes' : 'no'}`);
 
-  // Nothing to report — skip
-  if (allGeminiComments.length === 0 && coverageData.items.length === 0 && sonarItems.length === 0) {
+  // Nothing to report — skip only if truly nothing
+  if (allGeminiComments.length === 0 && !coverageComment && !sonarComment) {
     console.log('[triage] No issues from any source — nothing to report.');
     return;
   }
@@ -467,7 +469,7 @@ async function main() {
     console.log('[triage] No API key — Gemini comments included without categorization.');
   }
 
-  const report = buildUnifiedReport(PR_NUMBER, triaged, coverageData, sonarItems);
+  const report = buildUnifiedReport(PR_NUMBER, triaged, coverageComment || null, sonarComment || null);
   console.log('[triage] Unified report generated.');
 
   // Update existing unified comment or post new one

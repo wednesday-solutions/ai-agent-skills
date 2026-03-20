@@ -269,6 +269,7 @@ function main() {
       runFillGaps(fgDir, {
         file: fileIdx !== -1 ? args[fileIdx + 1] : null,
         minRisk: riskIdx !== -1 ? parseInt(args[riskIdx + 1]) : 50,
+        silent: args.includes('--silent'),
       });
       break;
     }
@@ -395,16 +396,20 @@ function runSummarize(targetDir) {
 
 function runFillGaps(targetDir, opts) {
   targetDir = path.resolve(targetDir);
-  log('blue', `Filling coverage gaps (min-risk: ${opts.minRisk})...`);
-  if (opts.file) log('cyan', `  File: ${opts.file}`);
-  console.log('');
+  if (!opts.silent) {
+    log('blue', `Filling coverage gaps (min-risk: ${opts.minRisk})...`);
+    if (opts.file) log('cyan', `  File: ${opts.file}`);
+    console.log('');
+  }
 
   brownfield.fillGaps(targetDir, opts).then(count => {
-    console.log('');
-    log('green', `  ✓ ${count} gap edges resolved`);
-  }).catch(e => {
-    log('red', `Error: ${e.message}`);
-    process.exit(1);
+    if (!opts.silent) {
+      console.log('');
+      log('green', `  ✓ ${count} gap edges resolved`);
+    }
+  }).catch(() => {
+    // Silent fail in hook context — missing API key etc.
+    if (!opts.silent) process.exit(1);
   });
 }
 
@@ -590,6 +595,54 @@ function runOnboard(targetDir) {
   }
 
   askNext(0);
+}
+
+/**
+ * Write .claude/settings.json hook so Claude Code auto-runs
+ * `wednesday-skills analyze --incremental --silent` on every session.
+ * Merges with existing settings — never overwrites user config.
+ */
+function installClaudeHook(targetDir) {
+  const claudeDir = path.join(targetDir, '.claude');
+  const settingsPath = path.join(claudeDir, 'settings.json');
+
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  let settings = {};
+  if (fs.existsSync(settingsPath)) {
+    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+  }
+
+  // Full automation chain — all LLM calls run in background so Claude Code is never blocked
+  const hookCommand = [
+    // 1. Always: incremental analyze (43ms when nothing changed)
+    'if [ ! -f .wednesday/codebase/dep-graph.json ]; then exit 0; fi',
+    'wednesday-skills analyze --incremental --silent 2>/dev/null',
+    // 2. One-time: summarize if summaries.json missing and API key is set
+    '[ ! -f .wednesday/codebase/summaries.json ] && [ -n "$OPENROUTER_API_KEY" ] && wednesday-skills summarize 2>/dev/null &',
+    // 3. Ongoing: fill gaps if summaries exist and API key is set (background, exits instantly if no gaps)
+    '[ -f .wednesday/codebase/summaries.json ] && [ -n "$OPENROUTER_API_KEY" ] && wednesday-skills fill-gaps --min-risk 50 --silent 2>/dev/null &',
+    'true',
+  ].join('\n');
+
+  // Build hooks section, merging with existing
+  settings.hooks = settings.hooks || {};
+  settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || [];
+
+  // Check if our hook is already registered
+  const alreadyInstalled = settings.hooks.UserPromptSubmit.some(
+    h => h.hooks?.some(hh => hh.command?.includes('wednesday-skills analyze'))
+  );
+
+  if (!alreadyInstalled) {
+    settings.hooks.UserPromptSubmit.push({
+      matcher: '',
+      hooks: [{ type: 'command', command: hookCommand }],
+    });
+  }
+
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  log('green', '  ✓ Claude Code hook installed (.claude/settings.json)');
 }
 
 // ─── New Phase 1 commands ────────────────────────────────────────────────────
@@ -822,6 +875,11 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
       if (hooksInstalled) {
         log('green', '  ✓ Git hooks installed (post-commit, post-merge)');
       }
+    }
+
+    // Write .claude/settings.json hook to auto-analyze on every Claude Code session
+    if (hasBrownfield) {
+      installClaudeHook(targetDir);
     }
 
     // Check .gitignore

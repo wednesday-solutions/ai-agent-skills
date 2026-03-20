@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync, spawn } = require('child_process');
 const { syncAdapters, ensureToolsConfig } = require('../src/adapters/index.js');
+const brownfield = require('../src/brownfield/index.js');
 
 // Colors for terminal output
 const colors = {
@@ -124,8 +125,55 @@ function generateSkillsXML(skills, baseDir) {
 /**
  * Generate instructions text for agent configuration
  */
+function generateBrownfieldInstructions() {
+  return `## Codebase intelligence
+
+If .wednesday/codebase/dep-graph.json exists, this project has
+been analyzed. Use these skills for all structural questions:
+
+<available_skills>
+  <skill>
+    <name>brownfield-query</name>
+    <description>
+      Use when asked what a module does, what breaks if a file
+      changes, what a dependency conflict means, or anything
+      structural about the codebase.
+    </description>
+    <location>.wednesday/skills/brownfield-query/SKILL.md</location>
+  </skill>
+
+  <skill>
+    <name>brownfield-fix</name>
+    <description>
+      Use before editing any file in a brownfield project.
+      Checks risk score and blast radius before any change.
+    </description>
+    <location>.wednesday/skills/brownfield-fix/SKILL.md</location>
+  </skill>
+
+  <skill>
+    <name>brownfield-gaps</name>
+    <description>
+      Use when coverage is low on a file or when dynamic
+      patterns are unannotated. Triggers targeted subagents.
+    </description>
+    <location>.wednesday/skills/brownfield-gaps/SKILL.md</location>
+  </skill>
+</available_skills>
+
+## Rules for codebase questions
+- Always read from .wednesday/codebase/ — never read raw source
+- dep-graph.json for structure and relationships
+- summaries.json for module purpose
+- MASTER.md for architecture, data flow, danger zones
+- Graph updates automatically on every commit via post-commit hook
+`;
+}
+
 function generateInstructions(skills, baseDir) {
   const skillsXML = generateSkillsXML(skills, baseDir);
+  const hasBrownfield = skills.some(s => ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'].includes(s.name));
+  const brownfieldSection = hasBrownfield ? '\n' + generateBrownfieldInstructions() : '';
 
   return `## Wednesday Agent Skills
 
@@ -147,7 +195,7 @@ For example:
 
 - The wednesday-design skill contains 492+ approved UI components. Always check the component library before creating custom components.
 - The wednesday-dev skill enforces import ordering, complexity limits (max 8), and naming conventions.
-`;
+${brownfieldSection}`;
 }
 
 function main() {
@@ -197,6 +245,78 @@ function main() {
       runSonar(sonarBase, args.includes('--dry-run'), args.includes('--post'));
       break;
     }
+    case 'analyze': {
+      const analyzeDir = (args[1] && !args[1].startsWith('--')) ? args[1] : process.cwd();
+      runAnalyze(analyzeDir, {
+        incremental: args.includes('--incremental'),
+        full: args.includes('--full'),
+        watch: args.includes('--watch'),
+        silent: args.includes('--silent'),
+        refreshAnalysis: args.includes('--refresh-analysis'),
+        withGitHistory: args.includes('--git-history'),
+      });
+      break;
+    }
+    case 'summarize': {
+      const sumDir = (args[1] && !args[1].startsWith('--')) ? args[1] : process.cwd();
+      runSummarize(sumDir);
+      break;
+    }
+    case 'fill-gaps': {
+      const fgDir = process.cwd();
+      const fileIdx = args.indexOf('--file');
+      const riskIdx = args.indexOf('--min-risk');
+      runFillGaps(fgDir, {
+        file: fileIdx !== -1 ? args[fileIdx + 1] : null,
+        minRisk: riskIdx !== -1 ? parseInt(args[riskIdx + 1]) : 50,
+      });
+      break;
+    }
+    case 'blast': {
+      const blastFile = args[1];
+      if (!blastFile) { log('red', 'Usage: wednesday-skills blast <file>'); process.exit(1); }
+      runBlast(blastFile, process.cwd());
+      break;
+    }
+    case 'score': {
+      const scoreFile = args[1];
+      if (!scoreFile) { log('red', 'Usage: wednesday-skills score <file>'); process.exit(1); }
+      runScore(scoreFile, process.cwd());
+      break;
+    }
+    case 'dead':
+      runDead(process.cwd());
+      break;
+    case 'legacy':
+      runLegacy(process.cwd());
+      break;
+    case 'api-surface': {
+      const apiFile = args[1];
+      runApiSurface(apiFile, process.cwd());
+      break;
+    }
+    case 'trace': {
+      const traceFile = args[1];
+      const traceFn = args[2];
+      if (!traceFile) { log('red', 'Usage: wednesday-skills trace <file> [fn]'); process.exit(1); }
+      runTrace(traceFile, traceFn, process.cwd());
+      break;
+    }
+    case 'plan-refactor': {
+      const goalArg = args.slice(1).join(' ').replace(/^["']|["']$/g, '');
+      if (!goalArg) { log('red', 'Usage: wednesday-skills plan-refactor "goal description"'); process.exit(1); }
+      runPlanRefactor(goalArg, process.cwd());
+      break;
+    }
+    case 'plan-migration': {
+      const migGoal = args.slice(1).join(' ').replace(/^["']|["']$/g, '');
+      if (!migGoal) { log('red', 'Usage: wednesday-skills plan-migration "goal description"'); process.exit(1); }
+      runPlanMigration(migGoal, process.cwd());
+      break;
+    }
+    case 'onboard':
+      runOnboard(process.cwd());
+      break;
     case 'list':
       listSkills();
       break;
@@ -210,6 +330,266 @@ function main() {
       showHelp();
       process.exit(1);
   }
+}
+
+// ─── Phase 2 brownfield commands ─────────────────────────────────────────────
+
+function runAnalyze(targetDir, opts) {
+  targetDir = path.resolve(targetDir);
+  if (!opts.silent) {
+    log('blue', `Analyzing codebase: ${targetDir}`);
+    if (opts.incremental) log('cyan', '  Mode: incremental');
+    else if (opts.full) log('cyan', '  Mode: full');
+    console.log('');
+  }
+
+  brownfield.analyze(targetDir, opts).then(result => {
+    if (!opts.silent) {
+      console.log('');
+      log('green', `  ✓ Graph updated: ${result.changed} files in ${result.elapsed}ms`);
+      log('blue', `  dep-graph.json: ${path.join(targetDir, '.wednesday', 'codebase', 'dep-graph.json')}`);
+    }
+
+    if (opts.watch) {
+      log('cyan', '  Watching for changes...');
+      watchAndAnalyze(targetDir, opts);
+    }
+  }).catch(e => {
+    if (!opts.silent) log('red', `Error: ${e.message}`);
+    process.exit(opts.silent ? 0 : 1); // never fail silently in hooks
+  });
+}
+
+function watchAndAnalyze(targetDir, opts) {
+  const debounce = {};
+  const { collectFiles } = require('../src/brownfield/engine/graph');
+  const files = collectFiles(targetDir);
+
+  files.forEach(file => {
+    require('fs').watch(file, () => {
+      clearTimeout(debounce[file]);
+      debounce[file] = setTimeout(() => {
+        brownfield.analyze(targetDir, { ...opts, incremental: true, silent: true });
+      }, 500);
+    });
+  });
+}
+
+function runSummarize(targetDir) {
+  targetDir = path.resolve(targetDir);
+  log('blue', 'Generating summaries and MASTER.md...');
+  console.log('');
+
+  brownfield.summarize(targetDir).then(result => {
+    console.log('');
+    log('green', `  ✓ summaries.json updated`);
+    log('green', `  ✓ MASTER.md generated: ${result.masterPath}`);
+    if (result.qaReport.flagged.length > 0) {
+      log('yellow', `  ⚠ ${result.qaReport.flagged.length} generic summaries flagged`);
+    }
+  }).catch(e => {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  });
+}
+
+function runFillGaps(targetDir, opts) {
+  targetDir = path.resolve(targetDir);
+  log('blue', `Filling coverage gaps (min-risk: ${opts.minRisk})...`);
+  if (opts.file) log('cyan', `  File: ${opts.file}`);
+  console.log('');
+
+  brownfield.fillGaps(targetDir, opts).then(count => {
+    console.log('');
+    log('green', `  ✓ ${count} gap edges resolved`);
+  }).catch(e => {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  });
+}
+
+function runBlast(file, targetDir) {
+  targetDir = path.resolve(targetDir);
+  try {
+    const result = brownfield.blast(file, targetDir);
+    console.log('');
+    log('cyan', `Blast radius: ${file}`);
+    console.log(`  Dependents: ${result.count}`);
+    if (result.crossLang.length > 0) {
+      log('yellow', `  Cross-language: ${result.crossLang.join(', ')}`);
+    }
+    if (result.files.length > 0) {
+      console.log(`  Affected files:`);
+      result.files.slice(0, 20).forEach(f => console.log(`    - ${f}`));
+      if (result.files.length > 20) console.log(`    ... and ${result.files.length - 20} more`);
+    }
+  } catch (e) {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+function runScore(file, targetDir) {
+  targetDir = path.resolve(targetDir);
+  try {
+    const result = brownfield.scoreFile(file, targetDir);
+    console.log('');
+    log('cyan', `Risk score: ${file}`);
+    console.log(`  Score: ${result.score}/100 — ${result.band}`);
+    console.log(`  Action: ${result.action}`);
+    console.log(`  Dependents: ${result.details.dependents}`);
+    console.log(`  Public contract: ${result.details.isPublicContract}`);
+    console.log(`  Test coverage: ${result.details.testCoverage}%`);
+
+    if (result.score >= 81) {
+      log('red', '\n  ⚠ CRITICAL: Require explicit approval before modifying');
+    } else if (result.score >= 61) {
+      log('yellow', '\n  ⚠ HIGH: List dependents and get senior review');
+    }
+  } catch (e) {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+function runDead(targetDir) {
+  targetDir = path.resolve(targetDir);
+  try {
+    const result = brownfield.dead(targetDir);
+    console.log('');
+    log('cyan', 'Dead code analysis:');
+    console.log(`  Dead files: ${result.deadFiles.length}`);
+    result.deadFiles.slice(0, 30).forEach(f => console.log(`    - ${f}`));
+    const unusedCount = Object.keys(result.unusedExports || {}).length;
+    if (unusedCount > 0) {
+      console.log(`  Files with unused exports: ${unusedCount}`);
+    }
+  } catch (e) {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+function runLegacy(targetDir) {
+  targetDir = path.resolve(targetDir);
+  try {
+    const report = brownfield.legacy(targetDir);
+    console.log('');
+    log('cyan', 'Legacy health report:');
+    console.log(`  God files: ${report.godFiles.length}`);
+    report.godFiles.forEach(gf => console.log(`    - ${gf.file} (${gf.exports} exports, ${gf.concerns})`));
+    console.log(`  Circular deps: ${report.circularDeps.length}`);
+    report.circularDeps.forEach(c => console.log(`    - ${c.files.join(' → ')} [${c.risk}]`));
+    console.log(`  Unannotated dynamic patterns: ${report.unannotatedDynamic.length}`);
+    console.log(`  Danger zones: ${report.dangerZones.length}`);
+    report.dangerZones.forEach(dz => console.log(`    - ${dz.file}: ${dz.reason}`));
+  } catch (e) {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+function runApiSurface(file, targetDir) {
+  targetDir = path.resolve(targetDir);
+  try {
+    const graph = brownfield.loadGraph(targetDir);
+    if (!graph) { log('red', 'Run analyze first.'); process.exit(1); }
+    const { apiSurface } = require('../src/brownfield/analysis/api-surface');
+    const rel = file ? require('path').relative(targetDir, require('path').resolve(targetDir, file)) : null;
+
+    if (rel) {
+      const result = apiSurface(rel, graph.nodes);
+      console.log('');
+      log('cyan', `API surface: ${rel}`);
+      console.log(`  Public contracts: ${result.publicContracts.join(', ') || 'none'}`);
+      console.log(`  Internal exports: ${result.internalExports.join(', ') || 'none'}`);
+      console.log(`  Imported by: ${result.importedByCount} files`);
+    }
+  } catch (e) {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+function runTrace(file, fn, targetDir) {
+  targetDir = path.resolve(targetDir);
+  try {
+    const result = brownfield.callTrace(file, fn, targetDir);
+    console.log('');
+    log('cyan', `Call chain: ${file}${fn ? `:${fn}` : ''}`);
+    result.chain.forEach(c => {
+      const indent = '  '.repeat(c.depth + 1);
+      console.log(`${indent}${c.file} [${c.exports.slice(0, 3).join(', ')}]`);
+    });
+  } catch (e) {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+function runPlanRefactor(goal, targetDir) {
+  targetDir = path.resolve(targetDir);
+  log('blue', `Planning refactor: "${goal}"`);
+  console.log('');
+
+  brownfield.planRefactor(goal, targetDir).then(result => {
+    console.log('');
+    log('green', `  ✓ Plan saved: ${result.outPath}`);
+    console.log('');
+    console.log(result.plan);
+  }).catch(e => {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  });
+}
+
+function runPlanMigration(goal, targetDir) {
+  targetDir = path.resolve(targetDir);
+  log('blue', `Planning migration: "${goal}"`);
+  console.log('');
+
+  brownfield.planMigration(goal, targetDir).then(result => {
+    console.log('');
+    log('green', `  ✓ Strategy saved: ${result.outPath}`);
+    console.log('');
+    console.log(result.strategy);
+  }).catch(e => {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  });
+}
+
+function runOnboard(targetDir) {
+  targetDir = path.resolve(targetDir);
+  const readline = require('readline');
+  const { ONBOARDING_QUESTIONS } = require('../src/brownfield/summarization/onboarding');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answers = [];
+
+  log('blue', 'Codebase Onboarding Interview');
+  console.log('');
+
+  function askNext(idx) {
+    if (idx >= ONBOARDING_QUESTIONS.length) {
+      rl.close();
+      brownfield.onboard(answers, targetDir).then(guide => {
+        console.log('');
+        log('green', '=== Your Onboarding Guide ===');
+        console.log('');
+        console.log(guide);
+      }).catch(e => {
+        log('red', `Error: ${e.message}`);
+        process.exit(1);
+      });
+      return;
+    }
+    rl.question(`  ${ONBOARDING_QUESTIONS[idx]}\n  > `, answer => {
+      answers.push(answer.trim());
+      askNext(idx + 1);
+    });
+  }
+
+  askNext(0);
 }
 
 // ─── New Phase 1 commands ────────────────────────────────────────────────────
@@ -300,7 +680,10 @@ const SKILL_META = {
   'sprint':           { label: 'Sprint',             desc: 'Branch name, PR title, PR description from ticket',        recommended: false },
   'deploy-checklist': { label: 'Deploy Checklist',  desc: 'Pre/post deploy verification checklist',                   recommended: false },
   'wednesday-dev':    { label: 'Wednesday Dev',     desc: 'Import ordering, complexity limits, naming conventions',   recommended: true },
-  'wednesday-design': { label: 'Wednesday Design',  desc: '492+ approved UI components, design tokens, animations',   recommended: false },
+  'wednesday-design':  { label: 'Wednesday Design',   desc: '492+ approved UI components, design tokens, animations',   recommended: false },
+  'brownfield-query':  { label: 'Brownfield Query',   desc: 'Answer structural questions from dep-graph + MASTER.md',    recommended: false },
+  'brownfield-fix':    { label: 'Brownfield Fix',     desc: 'Risk check + blast radius before editing any file',         recommended: false },
+  'brownfield-gaps':   { label: 'Brownfield Gaps',    desc: 'Fill coverage gaps via targeted subagents',                 recommended: false },
 };
 
 // PR scripts that can be auto-triggered on `ws-skills pr`
@@ -431,6 +814,15 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
 
     // Write default tools.json
     ensureToolsConfig(targetDir);
+
+    // Install git hooks for brownfield intelligence (if brownfield skills selected)
+    const hasBrownfield = selectedSkills.some(s => s.startsWith('brownfield'));
+    if (hasBrownfield || selectedSkills.includes('git-os')) {
+      const hooksInstalled = brownfield.installHooks(targetDir);
+      if (hooksInstalled) {
+        log('green', '  ✓ Git hooks installed (post-commit, post-merge)');
+      }
+    }
 
     // Check .gitignore
     const gitignorePath = path.join(targetDir, '.gitignore');
@@ -698,6 +1090,23 @@ function showHelp() {
   console.log('  pr                           Validate, pre-push check, and create a PR');
   console.log('  coverage [base] [--post]     Run test coverage report and post to PR');
   console.log('  sonar [base] [--post]        Run SonarQube report and post to PR');
+  console.log('');
+  console.log('Brownfield Intelligence (Phase 2):');
+  console.log('  analyze [dir]                Build/update dependency graph');
+  console.log('  analyze --incremental        Only re-parse changed files (< 1s)');
+  console.log('  analyze --full               Force full re-parse');
+  console.log('  analyze --watch              Watch mode for development');
+  console.log('  summarize [dir]              Generate summaries.json + MASTER.md');
+  console.log('  fill-gaps [--file <f>]       Run subagents on coverage gaps');
+  console.log('  blast <file>                 Show blast radius (BFS reverse traversal)');
+  console.log('  score <file>                 Show risk score (0–100)');
+  console.log('  dead                         List dead files and unused exports');
+  console.log('  legacy                       Legacy health: god files, circular deps, debt');
+  console.log('  api-surface [file]           Show public contracts vs internal exports');
+  console.log('  trace <file> [fn]            Trace call chain from file/function');
+  console.log('  plan-refactor "goal"         AI refactor plan (Sonnet, ~$0.12)');
+  console.log('  plan-migration "goal"        AI migration strategy (Sonnet, ~$0.15)');
+  console.log('  onboard                      Interactive onboarding guide (Haiku)');
   console.log('  list                         List available skills');
   console.log('  help                         Show this help message');
   console.log('');
@@ -746,6 +1155,15 @@ function listSkills() {
   console.log('');
   console.log('  wednesday-design');
   console.log('    Design & UX guidelines — 492+ approved UI components.');
+  console.log('');
+  console.log('  brownfield-query');
+  console.log('    Answer structural questions from dep-graph.json + MASTER.md.');
+  console.log('');
+  console.log('  brownfield-fix');
+  console.log('    Safe file edits — risk check and blast radius before any change.');
+  console.log('');
+  console.log('  brownfield-gaps');
+  console.log('    Trigger gap subagents — improve coverage on dynamic patterns.');
   console.log('');
 }
 

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Wednesday Skills — post-merge hook
+# Zero LLM. Full analysis refresh only.
+# Subagent trigger happens separately — never in a hook.
+
+if command -v wednesday-skills &> /dev/null; then
+  wednesday-skills analyze --refresh-analysis --silent 2>/dev/null
+elif [ -f "./node_modules/.bin/wednesday-skills" ]; then
+  ./node_modules/.bin/wednesday-skills analyze --refresh-analysis --silent 2>/dev/null
+fi
+
+exit 0

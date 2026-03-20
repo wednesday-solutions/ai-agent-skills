@@ -708,7 +708,7 @@ function runOnboard(targetDir) {
  * `wednesday-skills analyze --incremental --silent` on every session.
  * Merges with existing settings — never overwrites user config.
  */
-function installClaudeHook(targetDir) {
+function installClaudeHook(targetDir, withAI = false) {
   const claudeDir = path.join(targetDir, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.json');
 
@@ -719,18 +719,23 @@ function installClaudeHook(targetDir) {
     try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
   }
 
-  // Full automation chain — LLM calls run in background, never block Claude Code
-  const hookCommand = [
-    // 1. First time: no graph yet → run full map in background and exit
+  // Base chain — always runs (zero LLM)
+  const baseLines = [
+    // First time: no graph → run full map in background
     'if [ ! -f .wednesday/codebase/dep-graph.json ]; then wednesday-skills map 2>/dev/null & exit 0; fi',
-    // 2. Always: incremental analyze (43ms when nothing changed)
+    // Always: incremental analyze (43ms when nothing changed)
     'wednesday-skills analyze --incremental --silent 2>/dev/null',
-    // 3. One-time: summarize in background if summaries.json missing and API key is set
+  ];
+
+  // AI chain — only added when brownfield-ai was selected at install
+  const aiLines = withAI ? [
+    // One-time: summarize in background if summaries missing and API key set
     '[ ! -f .wednesday/codebase/summaries.json ] && [ -n "$OPENROUTER_API_KEY" ] && wednesday-skills summarize 2>/dev/null &',
-    // 4. Ongoing: fill gaps in background if summaries exist and API key is set
+    // Ongoing: fill gaps in background when API key set
     '[ -f .wednesday/codebase/summaries.json ] && [ -n "$OPENROUTER_API_KEY" ] && wednesday-skills fill-gaps --min-risk 50 --silent 2>/dev/null &',
-    'true',
-  ].join('\n');
+  ] : [];
+
+  const hookCommand = [...baseLines, ...aiLines, 'true'].join('\n');
 
   // Build hooks section, merging with existing
   settings.hooks = settings.hooks || {};
@@ -841,9 +846,11 @@ const SKILL_META = {
   'deploy-checklist': { label: 'Deploy Checklist',  desc: 'Pre/post deploy verification checklist',                   recommended: false },
   'wednesday-dev':    { label: 'Wednesday Dev',     desc: 'Import ordering, complexity limits, naming conventions',   recommended: true },
   'wednesday-design':  { label: 'Wednesday Design',   desc: '492+ approved UI components, design tokens, animations',   recommended: false },
-  'brownfield-query':  { label: 'Brownfield Query',   desc: 'Answer structural questions from dep-graph + MASTER.md',    recommended: false },
-  'brownfield-fix':    { label: 'Brownfield Fix',     desc: 'Risk check + blast radius before editing any file',         recommended: false },
-  'brownfield-gaps':   { label: 'Brownfield Gaps',    desc: 'Fill coverage gaps via targeted subagents',                 recommended: false },
+  // Brownfield bundles — shown as two items, expand to skill files + hooks at install time
+  'brownfield':        { label: 'Brownfield',         desc: 'Dep graph, blast radius, risk scores, git hooks (zero LLM)', recommended: true,
+                         bundle: ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'] },
+  'brownfield-ai':     { label: 'Brownfield AI',      desc: 'Summaries, MASTER.md, gap filling via Haiku — needs OPENROUTER_API_KEY', recommended: false,
+                         requires: 'brownfield', bundle: ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'] },
 };
 
 // PR scripts that can be auto-triggered on `ws-skills pr`
@@ -852,25 +859,60 @@ const PR_SCRIPTS = [
   { id: 'sonar',    label: 'SonarQube', desc: 'Run SonarQube analysis after PR creation and post report', recommended: false },
 ];
 
-function promptChecklist(availableSkills) {
-  // Print list first, then open readline — prevents readline from swallowing output
+// Individual brownfield skills hidden from checklist — exposed as bundles
+const BROWNFIELD_INDIVIDUAL = new Set(['brownfield-query', 'brownfield-fix', 'brownfield-gaps']);
+
+/**
+ * Build the display list for the checklist:
+ * - hides individual brownfield-* skills
+ * - appends the two brownfield bundle items at the end
+ */
+function buildChecklistItems(rawSkills) {
+  const individual = rawSkills.filter(s => !BROWNFIELD_INDIVIDUAL.has(s));
+  // Add bundles as virtual entries at the end
+  const bundles = ['brownfield', 'brownfield-ai'];
+  return [...individual, ...bundles];
+}
+
+/**
+ * Expand selected checklist items into actual skill folder names to install.
+ * brownfield / brownfield-ai → ['brownfield-query','brownfield-fix','brownfield-gaps']
+ */
+function expandSkills(selectedItems) {
+  const expanded = new Set();
+  for (const item of selectedItems) {
+    const meta = SKILL_META[item];
+    if (meta?.bundle) {
+      meta.bundle.forEach(s => expanded.add(s));
+    } else {
+      expanded.add(item);
+    }
+  }
+  return [...expanded];
+}
+
+function promptChecklist(rawSkills) {
+  const checklistItems = buildChecklistItems(rawSkills);
+
   console.log('');
   log('cyan', '  Select skills and scripts to install:');
   console.log('  (Enter numbers separated by commas, or "all" for everything)\n');
 
   // Skills section
   console.log(`  ${colors.yellow}── Skills ──${colors.reset}`);
-  availableSkills.forEach((skill, i) => {
+  checklistItems.forEach((skill, i) => {
     const meta = SKILL_META[skill] || { label: skill, desc: '', recommended: false };
     const tag = meta.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
+    // Mark brownfield-ai as requiring brownfield
+    const req = meta.requires ? `${colors.yellow} [requires Brownfield]${colors.reset}` : '';
     const num = `${colors.cyan}${String(i + 1).padStart(2)}${colors.reset}`;
-    console.log(`  ${num}. ${meta.label.padEnd(22)}${meta.desc}${tag}`);
+    console.log(`  ${num}. ${meta.label.padEnd(22)}${meta.desc}${tag}${req}`);
   });
 
   // PR scripts section
   console.log('');
   console.log(`  ${colors.yellow}── PR Scripts (auto-run on ws-skills pr) ──${colors.reset}`);
-  const scriptOffset = availableSkills.length;
+  const scriptOffset = checklistItems.length;
   PR_SCRIPTS.forEach((script, i) => {
     const tag = script.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
     const num = `${colors.cyan}${String(scriptOffset + i + 1).padStart(2)}${colors.reset}`;
@@ -879,7 +921,7 @@ function promptChecklist(availableSkills) {
 
   console.log('');
 
-  const totalItems = availableSkills.length + PR_SCRIPTS.length;
+  const totalItems = checklistItems.length + PR_SCRIPTS.length;
 
   return new Promise(resolve => {
     const readline = require('readline');
@@ -887,16 +929,30 @@ function promptChecklist(availableSkills) {
     rl.question('  Your selection: ', answer => {
       rl.close();
       const input = answer.trim().toLowerCase();
+
       if (!input || input === 'all') {
-        resolve({ skills: availableSkills, scripts: PR_SCRIPTS.map(s => s.id) });
+        resolve({
+          skills: expandSkills(checklistItems),
+          scripts: PR_SCRIPTS.map(s => s.id),
+          selectedBundles: checklistItems,
+        });
         return;
       }
+
       const indices = input.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= totalItems);
-      const selectedSkills = [...new Set(indices.filter(n => n <= availableSkills.length))].map(n => availableSkills[n - 1]);
-      const selectedScripts = [...new Set(indices.filter(n => n > availableSkills.length))].map(n => PR_SCRIPTS[n - availableSkills.length - 1].id);
+      const selectedItems = [...new Set(indices.filter(n => n <= checklistItems.length))].map(n => checklistItems[n - 1]);
+
+      // If brownfield-ai selected without brownfield, auto-add brownfield
+      if (selectedItems.includes('brownfield-ai') && !selectedItems.includes('brownfield')) {
+        selectedItems.unshift('brownfield');
+      }
+
+      const selectedScripts = [...new Set(indices.filter(n => n > checklistItems.length))].map(n => PR_SCRIPTS[n - checklistItems.length - 1].id);
+
       resolve({
-        skills: selectedSkills,
+        skills: expandSkills(selectedItems),
         scripts: selectedScripts,
+        selectedBundles: selectedItems,
       });
     });
   });
@@ -944,7 +1000,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     .filter(s => fs.statSync(path.join(skillsSource, s)).isDirectory());
 
   // Show checklist unless --all or --skip-config passed
-  const doInstall = async ({ skills: selectedSkills, scripts: selectedScripts = [] }) => {
+  const doInstall = async ({ skills: selectedSkills, scripts: selectedScripts = [], selectedBundles = [] }) => {
     // Create .wednesday/skills directory
     const skillsDir = path.join(targetDir, '.wednesday', 'skills');
     log('blue', `\nCreating skills directory: ${skillsDir}`);
@@ -975,8 +1031,11 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     // Write default tools.json
     ensureToolsConfig(targetDir);
 
-    // Install git hooks for brownfield intelligence (if brownfield skills selected)
-    const hasBrownfield = selectedSkills.some(s => s.startsWith('brownfield'));
+    // Install git hooks for brownfield intelligence (if brownfield selected)
+    const hasBrownfield = selectedBundles.includes('brownfield') || selectedBundles.includes('brownfield-ai')
+      || selectedSkills.some(s => s.startsWith('brownfield'));
+    const hasBrownfieldAI = selectedBundles.includes('brownfield-ai');
+
     if (hasBrownfield || selectedSkills.includes('git-os')) {
       const hooksInstalled = brownfield.installHooks(targetDir);
       if (hooksInstalled) {
@@ -984,9 +1043,9 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
       }
     }
 
-    // Write .claude/settings.json hook to auto-analyze on every Claude Code session
+    // Write .claude/settings.json hook — LLM steps only if brownfield-ai selected
     if (hasBrownfield) {
-      installClaudeHook(targetDir);
+      installClaudeHook(targetDir, hasBrownfieldAI);
     }
 
     // Check .gitignore
@@ -1038,7 +1097,12 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
   };
 
   if (skipChecklist) {
-    doInstall({ skills: availableSkills, scripts: PR_SCRIPTS.map(s => s.id) }).catch(e => { console.error(e.message); process.exit(1); });
+    const allItems = buildChecklistItems(availableSkills);
+    doInstall({
+      skills: expandSkills(allItems),
+      scripts: PR_SCRIPTS.map(s => s.id),
+      selectedBundles: allItems,
+    }).catch(e => { console.error(e.message); process.exit(1); });
   } else {
     promptChecklist(availableSkills).then(doInstall).catch(e => { console.error(e.message); process.exit(1); });
   }
@@ -1322,14 +1386,13 @@ function listSkills() {
   console.log('  wednesday-design');
   console.log('    Design & UX guidelines — 492+ approved UI components.');
   console.log('');
-  console.log('  brownfield-query');
-  console.log('    Answer structural questions from dep-graph.json + MASTER.md.');
+  console.log('  brownfield');
+  console.log('    Dep graph, blast radius, risk scores, git hooks. Zero LLM.');
+  console.log('    Includes: brownfield-query, brownfield-fix, brownfield-gaps skills.');
   console.log('');
-  console.log('  brownfield-fix');
-  console.log('    Safe file edits — risk check and blast radius before any change.');
-  console.log('');
-  console.log('  brownfield-gaps');
-  console.log('    Trigger gap subagents — improve coverage on dynamic patterns.');
+  console.log('  brownfield-ai  [requires brownfield]');
+  console.log('    Summaries, MASTER.md, gap filling via Haiku subagents.');
+  console.log('    Needs OPENROUTER_API_KEY. Runs in background, never blocks.');
   console.log('');
 }
 

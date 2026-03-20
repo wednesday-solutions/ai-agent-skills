@@ -70,6 +70,13 @@ fix(auth): Prevent token expiry crash
 ---
 ```
 
+## Tools
+
+| Action | Tool |
+|--------|------|
+| Create the branch | `Bash` — `git checkout -b <branch>` |
+| Output branch name, PR title, description | Text response — no file writes needed |
+
 ## Example
 
 **Ticket:** "Add password reset email flow"

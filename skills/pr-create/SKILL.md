@@ -143,6 +143,14 @@ Return the PR URL from the `gh pr create` output.
 
 ---
 
+## Tools
+
+| Action | Tool |
+|--------|------|
+| All git and gh CLI commands | `Bash` |
+| Read `package.json` to check available scripts | `Read` |
+| Read `git-os` SKILL.md | `Read` |
+
 ## Error Handling
 
 | Situation | Action |

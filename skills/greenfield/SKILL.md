@@ -98,6 +98,15 @@ Combines research + all three persona outputs into a single PLAN.md covering:
 
 Output: `PLAN.md`
 
+## Tools
+
+| Action | Tool |
+|--------|------|
+| Read `BRIEF.md` | `Read` |
+| Write persona output files (`architect.md`, `pm.md`, etc.) | `Write` |
+| Spawn Architect, PM, Security personas in parallel | `Agent` (3 calls in one message) |
+| Search the brief for keywords | `Grep` |
+
 ## Output Location
 
 All files written to `.wednesday/plans/` in the target directory:

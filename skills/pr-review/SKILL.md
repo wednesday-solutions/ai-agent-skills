@@ -42,6 +42,16 @@ Fix in this order — lower number = fix first.
 To fix: `@agent fix #1 #2`   Fix all: `@agent fix all`
 ```
 
+## Tools
+
+| Action | Tool |
+|--------|------|
+| Read a file before applying a fix | `Read` |
+| Apply a fix to a file | `Edit` |
+| Run git commands (commit, push) | `Bash` |
+| Search for a pattern across files | `Grep` |
+| Find files by name | `Glob` |
+
 ## Agent Fix Rules
 
 - Never auto-fix without explicit dev approval (`@agent fix #N`)

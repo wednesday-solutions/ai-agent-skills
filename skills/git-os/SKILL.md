@@ -103,7 +103,17 @@ CI is a safety net, not the first line of defense.
 ---
 ```
 
-## 6. What Never To Do
+## 6. Tool Usage
+
+| Action | Tool | Notes |
+|--------|------|-------|
+| Run git commands | `Bash` | `git commit`, `git push`, `git log`, etc. |
+| Read a file before editing | `Read` | Always read first — never edit blind |
+| Edit a file | `Edit` | Never use `Bash` with `sed` or `awk` to modify files |
+| Search file contents | `Grep` | Never use `Bash grep` |
+| Find files | `Glob` | Never use `Bash find` |
+
+## 7. What Never To Do
 
 - Commit without a type
 - Bundle multiple concerns in one commit
@@ -113,7 +123,7 @@ CI is a safety net, not the first line of defense.
 
 Commits should look human-authored. No fingerprints.
 
-## 7. Agent Commit Format
+## 8. Agent Commit Format
 
 When an agent generates a commit for a fix from a review comment:
 
@@ -123,7 +133,7 @@ fix(scope): description from review comment
 Resolves review comment #N
 ```
 
-## 8. Commit-Lint Hook (Claude Code)
+## 9. Commit-Lint Hook (Claude Code)
 
 Add this to `.claude/settings.json` in the project to enforce commit format automatically before every `git commit`:
 

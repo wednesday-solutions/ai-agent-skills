@@ -47,6 +47,15 @@ Initiate rollback immediately if:
 - Any data integrity issue detected
 - Critical feature path returns 5xx
 
+## Tools
+
+| Action | Tool |
+|--------|------|
+| Run lint, test, build scripts | `Bash` |
+| Check health endpoint | `Bash` — `curl -s <url>/health` |
+| Read config or env files | `Read` |
+| Check CI status | `Bash` — `gh run list` or `gh pr checks` |
+
 ## Notes
 
 - Never deploy on Fridays unless it's a critical hotfix

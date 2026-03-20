@@ -330,6 +330,12 @@ function main() {
     case 'onboard':
       runOnboard(process.cwd());
       break;
+    case 'guide':
+      brownfield.guide(process.cwd()).then(r => {
+        log('green', `✓ GUIDE.md written: ${r.outPath}`);
+        if (r.llmCalls > 0) log('cyan', `  LLM batches: ${r.llmCalls} | Cached: ${r.cached}`);
+      }).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
+      break;
     case 'list':
       listSkills();
       break;
@@ -422,6 +428,18 @@ async function runMap(targetDir) {
   log('green', `   ✓ ${reportPath}`);
   console.log('');
 
+  // ── Step 6: Generate GUIDE.md ─────────────────────────────────────────────
+  log('cyan', '⑥ Generating plain-English GUIDE.md...');
+  if (!apiKey) {
+    log('yellow', '   OPENROUTER_API_KEY not set — using structural guide (no LLM)');
+  }
+  const guideResult = await brownfield.guide(targetDir);
+  log('green', `   ✓ ${guideResult.outPath}`);
+  if (guideResult.llmCalls > 0 && apiKey) {
+    log('cyan', `   LLM calls: ${guideResult.llmCalls} batches | Cached: ${guideResult.cached} files`);
+  }
+  console.log('');
+
   // ── Summary ───────────────────────────────────────────────────────────────
   log('blue', '┌─────────────────────────────────────────────┐');
   log('blue', '│  Mapping complete                           │');
@@ -435,6 +453,7 @@ async function runMap(targetDir) {
   console.log('');
   console.log(`  MASTER.md:        ${masterPath}`);
   console.log(`  MAP_REPORT.md:    ${reportPath}`);
+  console.log(`  GUIDE.md:         ${guideResult.outPath}`);
   console.log('');
   log('cyan', '  From here, the graph updates automatically on every git commit.');
   log('cyan', '  Ask Claude Code "what does X do" or "what breaks if I change X".');

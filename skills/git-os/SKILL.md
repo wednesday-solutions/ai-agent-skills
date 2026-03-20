@@ -122,3 +122,27 @@ fix(scope): description from review comment
 
 Resolves review comment #N
 ```
+
+## 8. Commit-Lint Hook (Claude Code)
+
+Add this to `.claude/settings.json` in the project to enforce commit format automatically before every `git commit`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"$CLAUDE_TOOL_INPUT\" | grep -q '\"git commit' && npx --no-install commitlint --edit || true"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This intercepts any Bash tool call containing `git commit` and runs commitlint against the message before the commit lands. Requires `.commitlintrc.json` to be present (copied automatically by `ws-skills install`).

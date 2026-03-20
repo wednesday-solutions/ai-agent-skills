@@ -20,11 +20,11 @@ Reads `BRIEF.md` from the project root (or prompts for one). Asks 5 clarifying q
 ```
 Brief + Q&A
     ↓
-Research agent        ← domain landscape, ecosystem, hidden complexity
+Research agent (sequential)   ← domain landscape, ecosystem, hidden complexity
     ↓
-┌───────────────────────────────────┐
-│ Architect │ PM │ Security         │  ← parallel, each gets research context
-└───────────────────────────────────┘
+┌─────────────────────────────────────┐
+│ Architect │ PM │ Security (parallel)│  ← spawn 3 subagents simultaneously
+└─────────────────────────────────────┘
     ↓
 Synthesis             ← combines all into PLAN.md
 ```
@@ -46,11 +46,19 @@ Builds domain context that all other agents receive. Covers:
 
 Output: `research.md`
 
-### 2. Architect (parallel)
+### 2–4. Architect, PM, Security (parallel subagents)
 
-Receives brief + Q&A + research context.
+Spawn all three simultaneously using the Agent tool. Each receives the full brief, Q&A, and research output as context.
 
-Output: `architect.md`
+```
+Agent 1 — Architect
+Agent 2 — PM           ← launch all three in a single message, do not wait
+Agent 3 — Security
+```
+
+Wait for all three to complete before running Synthesis.
+
+**Architect** output: `architect.md`
 - System design overview
 - Tech stack with rationale per layer
 - Module boundaries and interfaces
@@ -58,21 +66,13 @@ Output: `architect.md`
 - Scaling strategy
 - Technical risks
 
-### 3. PM (parallel)
-
-Receives brief + Q&A + research context.
-
-Output: `pm.md`
+**PM** output: `pm.md`
 - Phases with tasks and acceptance criteria
 - Success metrics
 - Out of scope items
 - Assumptions
 
-### 4. Security (parallel)
-
-Receives brief + Q&A + research context.
-
-Output: `security.md`
+**Security** output: `security.md`
 - Threat model (likelihood + impact)
 - Data classification
 - Auth strategy recommendation

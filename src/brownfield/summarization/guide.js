@@ -31,6 +31,12 @@ function classifyRole(file, node) {
   if (node.lang === 'graphql')                             return 'GraphQL schema';
   if (node.lang === 'go')                                  return 'Go package';
   if (node.lang === 'kotlin')                              return 'Android module';
+  if (node.lang === 'swift') {
+    if (node.meta?.isViewController) return 'iOS ViewController';
+    if (node.meta?.isView)           return 'SwiftUI View';
+    if (node.meta?.isObservableObject) return 'iOS ViewModel';
+    return 'iOS module';
+  }
   return 'module';
 }
 
@@ -50,9 +56,13 @@ const ROLE_PURPOSE = {
   'middleware':     (name) => `Runs in the middle of every request for ${name} — checks, transforms, or blocks traffic.`,
   'state store':    (name) => `Holds shared application state for ${name} so multiple components can read and update it.`,
   'GraphQL schema': (name) => `Defines the ${name} types and operations available in the GraphQL API.`,
-  'Go package':     (name) => `A Go package providing ${name} functionality. Exported symbols start with a capital letter.`,
-  'Android module': (name) => `An Android/Kotlin module for ${name}. May include Activities, Fragments, or ViewModels.`,
-  'module':         (name) => `Provides ${name} functionality to other parts of the app.`,
+  'Go package':          (name) => `A Go package providing ${name} functionality. Exported symbols start with a capital letter.`,
+  'Android module':      (name) => `An Android/Kotlin module for ${name}. May include Activities, Fragments, or ViewModels.`,
+  'iOS ViewController':  (name) => `An iOS screen controller for ${name}. Manages what the user sees and responds to their taps.`,
+  'SwiftUI View':        (name) => `A SwiftUI screen or component that draws the ${name} part of the app UI.`,
+  'iOS ViewModel':       (name) => `An observable data holder for ${name} — keeps the UI in sync with the app state.`,
+  'iOS module':          (name) => `A Swift module providing ${name} functionality to the iOS app.`,
+  'module':              (name) => `Provides ${name} functionality to other parts of the app.`,
 };
 
 function purposeSentence(file, node) {

@@ -10,17 +10,18 @@ const fs = require('fs');
 const path = require('path');
 
 const { detectLang, loadAliases } = require('../core/parser');
-const tsAdapter = require('../adapters/typescript');
-const goAdapter = require('../adapters/go');
-const gqlAdapter = require('../adapters/graphql');
+const tsAdapter     = require('../adapters/typescript');
+const goAdapter     = require('../adapters/go');
+const gqlAdapter    = require('../adapters/graphql');
 const kotlinAdapter = require('../adapters/kotlin');
+const swiftAdapter  = require('../adapters/swift');
 const nestjsParser = require('../parsers/nestjs');
 const gitHistory = require('../parsers/git-history');
 const cocoapodsParser = require('../parsers/cocoapods');
 const spmParser = require('../parsers/spm');
 const serverlessParser = require('../parsers/serverless');
 
-const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'kotlin']);
+const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'kotlin', 'swift']);
 
 /**
  * Collect all analysable files under rootDir
@@ -28,12 +29,14 @@ const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'k
 function collectFiles(rootDir, opts = {}) {
   const ignore = new Set([
     'node_modules', '.git', 'dist', 'build', '.next', 'coverage',
-    '.wednesday', 'vendor', '__pycache__', '.gradle', 'android/build',
-    'ios/build', 'ios/Pods', ...(opts.ignore || []),
+    '.wednesday', 'vendor', '__pycache__', '.gradle',
+    'Pods', 'DerivedData', '.build', 'xcuserdata',   // iOS/Swift
+    'Carthage', 'fastlane',
+    ...(opts.ignore || []),
   ]);
 
   const files = [];
-  const exts = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.go', '.graphql', '.gql', '.kt', '.kts']);
+  const exts = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.go', '.graphql', '.gql', '.kt', '.kts', '.swift']);
 
   function walk(dir) {
     let entries;
@@ -70,6 +73,8 @@ function parseFile(filePath, rootDir, aliases, goModulePath) {
       return gqlAdapter.parse(filePath, rootDir);
     case 'kotlin':
       return kotlinAdapter.parse(filePath, rootDir);
+    case 'swift':
+      return swiftAdapter.parse(filePath, rootDir);
     default:
       return null;
   }

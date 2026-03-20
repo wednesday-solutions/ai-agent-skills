@@ -136,6 +136,7 @@ wednesday-skills blast src/services/auth.ts    # see what depends on it
 | Serverless | 75% | 93% |
 | React Native | 90% | 93% |
 | Kotlin (basic) | 70% | 70% |
+| Swift / SwiftUI / UIKit | 75% | 75% |
 
 **Cost:** Full scan of 500 files costs $0.00 (zero LLM). Summaries ~$0.10 one-time. Ongoing < $0.05/month per project.
 

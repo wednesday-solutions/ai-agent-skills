@@ -34,8 +34,9 @@ const EXT_MAP = {
   '.go':   'go',
   '.graphql': 'graphql',
   '.gql':  'graphql',
-  '.kt':   'kotlin',
-  '.kts':  'kotlin',
+  '.kt':    'kotlin',
+  '.kts':   'kotlin',
+  '.swift': 'swift',
 };
 
 /**

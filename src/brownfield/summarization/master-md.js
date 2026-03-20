@@ -204,8 +204,14 @@ function classifyRole(file, node) {
   if (/\/middleware\//.test(f) || /middleware/i.test(name)) return 'middleware';
   if (/\/store[s]?\/|\/redux\/|\/context\//.test(f)) return 'state-management';
   if (/\.graphql$|\.gql$/.test(f)) return 'graphql-schema';
-  if (node.lang === 'go') return 'go-module';
+  if (node.lang === 'go')     return 'go-module';
   if (node.lang === 'kotlin') return 'android-module';
+  if (node.lang === 'swift') {
+    if (node.meta?.isViewController) return 'ios-viewcontroller';
+    if (node.meta?.isView)           return 'swiftui-view';
+    if (node.meta?.isObservableObject) return 'ios-viewmodel';
+    return 'ios-module';
+  }
   return 'module';
 }
 

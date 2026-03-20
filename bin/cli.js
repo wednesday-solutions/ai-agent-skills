@@ -360,6 +360,7 @@ function main() {
 async function runMap(targetDir) {
   targetDir = path.resolve(targetDir);
   const apiKey = process.env.OPENROUTER_API_KEY || null;
+  const mapStart = Date.now();
 
   console.log('');
   log('blue', '┌─────────────────────────────────────────────┐');
@@ -391,10 +392,11 @@ async function runMap(targetDir) {
   console.log('');
 
   // ── Step 3: Fill gaps (only if API key available and gaps exist) ──────────
+  let gapsFilled = 0;
   if (highRiskWithGaps > 0 && apiKey) {
     log('cyan', `③ Filling ${highRiskWithGaps} high-risk coverage gaps via subagents...`);
-    const resolved = await brownfield.fillGaps(targetDir, { minRisk: 50 });
-    log('green', `   ✓ ${resolved} dynamic edges resolved`);
+    gapsFilled = await brownfield.fillGaps(targetDir, { minRisk: 50 });
+    log('green', `   ✓ ${gapsFilled} dynamic edges resolved`);
     console.log('');
 
     // ── Step 4: Re-generate MASTER.md with filled edges ───────────────────
@@ -410,6 +412,16 @@ async function runMap(targetDir) {
     console.log('');
   }
 
+  // ── Step 5: Generate MAP_REPORT.md ────────────────────────────────────────
+  log('cyan', '⑤ Writing MAP_REPORT.md...');
+  const { buildLegacyReport } = require('../src/brownfield/analysis/legacy-health');
+  const legacyReport = buildLegacyReport(graph.nodes);
+  const reportPath = brownfield.generateMapReport(
+    targetDir, graph, summaries, legacyReport, gapsFilled, Date.now() - mapStart
+  );
+  log('green', `   ✓ ${reportPath}`);
+  console.log('');
+
   // ── Summary ───────────────────────────────────────────────────────────────
   log('blue', '┌─────────────────────────────────────────────┐');
   log('blue', '│  Mapping complete                           │');
@@ -417,8 +429,12 @@ async function runMap(targetDir) {
   console.log('');
   console.log(`  Files mapped:     ${nodeCount}`);
   console.log(`  Summaries:        ${Object.keys(summaries).length}`);
+  console.log(`  Gaps resolved:    ${gapsFilled}`);
+  console.log(`  Danger zones:     ${legacyReport.dangerZones?.length || 0}`);
+  console.log(`  Dead files:       ${legacyReport.godFiles !== undefined ? require('../src/brownfield/analysis/dead-code').findDeadCode(graph.nodes).deadFiles.length : '?'}`);
+  console.log('');
   console.log(`  MASTER.md:        ${masterPath}`);
-  console.log(`  Remaining gaps:   ${highRiskWithGaps > 0 && !apiKey ? highRiskWithGaps : 0}`);
+  console.log(`  MAP_REPORT.md:    ${reportPath}`);
   console.log('');
   log('cyan', '  From here, the graph updates automatically on every git commit.');
   log('cyan', '  Ask Claude Code "what does X do" or "what breaks if I change X".');

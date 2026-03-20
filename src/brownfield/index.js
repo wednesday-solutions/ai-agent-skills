@@ -149,15 +149,25 @@ async function analyze(rootDir, opts = {}) {
   // Write analysis files if full scan or refresh
   if (!opts.incremental || opts.refreshAnalysis) {
     const legacy = buildLegacyReport(graph.nodes);
-    const blastMap = {};
     const scoreMap = scoreAll(graph.nodes);
     const apiMap = buildApiSurface(graph.nodes);
-    const { deadFiles } = findDeadCode(graph.nodes);
+    const { deadFiles, unusedExports } = findDeadCode(graph.nodes);
+
+    // blast-radius.json — top 50 files by dependent count
+    const blastMap = Object.entries(graph.nodes)
+      .map(([file]) => ({ file, ...blastRadius(file, graph.nodes) }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 50)
+      .reduce((acc, { file, count, files: deps, crossLang }) => {
+        acc[file] = { count, dependents: deps, crossLang };
+        return acc;
+      }, {});
 
     fs.mkdirSync(p.analysisDir, { recursive: true });
+    fs.writeFileSync(path.join(p.analysisDir, 'blast-radius.json'),  JSON.stringify(blastMap, null, 2));
     fs.writeFileSync(path.join(p.analysisDir, 'safety-scores.json'), JSON.stringify(scoreMap, null, 2));
-    fs.writeFileSync(path.join(p.analysisDir, 'api-surface.json'), JSON.stringify(apiMap, null, 2));
-    fs.writeFileSync(path.join(p.analysisDir, 'dead-code.json'), JSON.stringify({ deadFiles, circularDeps: legacy.circularDeps }, null, 2));
+    fs.writeFileSync(path.join(p.analysisDir, 'api-surface.json'),   JSON.stringify(apiMap, null, 2));
+    fs.writeFileSync(path.join(p.analysisDir, 'dead-code.json'),     JSON.stringify({ deadFiles, unusedExports, circularDeps: legacy.circularDeps }, null, 2));
 
     // Conflict detection
     await analyzeAndWriteConflicts(rootDir, p.analysisDir, apiKey);
@@ -248,6 +258,127 @@ async function summarize(rootDir, opts = {}) {
   return { summaries, masterPath, qaReport };
 }
 
+/**
+ * Generate MAP_REPORT.md — full summary of the mapping run
+ * Stored at .wednesday/codebase/MAP_REPORT.md
+ */
+function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, elapsed) {
+  const p = paths(rootDir);
+  const nodes = graph.nodes;
+  const all = Object.values(nodes);
+
+  const scoreMap = scoreAll(nodes);
+  const { deadFiles } = findDeadCode(nodes);
+
+  // Coverage by language
+  const byLang = graph.stats.byLang || {};
+  const langRows = Object.entries(byLang)
+    .sort((a, b) => b[1] - a[1])
+    .map(([lang, count]) => `| ${lang} | ${count} |`)
+    .join('\n');
+
+  // Top high-risk files
+  const highRisk = all
+    .filter(n => n.riskScore > 60)
+    .sort((a, b) => b.riskScore - a.riskScore)
+    .slice(0, 10);
+
+  const highRiskRows = highRisk
+    .map(n => `| ${n.file} | ${n.riskScore} | ${n.importedBy.length} | ${scoreMap[n.file]?.band || '?'} |`)
+    .join('\n');
+
+  // Gap summary
+  const totalGaps = all.reduce((s, n) => s + n.gaps.length, 0);
+  const gapsByType = all.flatMap(n => n.gaps).reduce((acc, g) => {
+    acc[g.type] = (acc[g.type] || 0) + 1;
+    return acc;
+  }, {});
+  const gapRows = Object.entries(gapsByType)
+    .map(([type, count]) => `| ${type} | ${count} |`)
+    .join('\n');
+
+  // Danger zones
+  const dangerRows = (legacyReport.dangerZones || []).slice(0, 10)
+    .map(d => `| ${d.file} | ${d.reason} | ${d.contact} |`)
+    .join('\n');
+
+  const lines = [
+    `# Codebase Map Report`,
+    `> Generated: ${new Date().toISOString()}`,
+    `> Project: ${rootDir}`,
+    `> Total time: ${elapsed}ms`,
+    '',
+    '## Summary',
+    '',
+    `| Metric | Value |`,
+    `|--------|-------|`,
+    `| Files mapped | ${all.length} |`,
+    `| Total edges | ${graph.stats.totalEdges} |`,
+    `| Summaries generated | ${Object.keys(summaries).length} |`,
+    `| High-risk files (score > 60) | ${graph.stats.highRiskFiles} |`,
+    `| Dead files | ${deadFiles.length} |`,
+    `| Circular dependencies | ${legacyReport.circularDeps?.length || 0} |`,
+    `| God files | ${legacyReport.godFiles?.length || 0} |`,
+    `| Coverage gaps | ${totalGaps} |`,
+    `| Gaps resolved (subagents) | ${gapsFilled} |`,
+    `| Danger zones | ${legacyReport.dangerZones?.length || 0} |`,
+    '',
+    '## Files by language',
+    '',
+    '| Language | Files |',
+    '|----------|-------|',
+    langRows,
+    '',
+    '## High-risk files',
+    '',
+    '> Files with risk score > 60. Read before modifying.',
+    '',
+    '| File | Score | Dependents | Band |',
+    '|------|-------|------------|------|',
+    highRiskRows || '| *none* | — | — | — |',
+    '',
+    '## Coverage gaps',
+    '',
+    totalGaps > 0 ? [
+      '| Gap type | Count |',
+      '|----------|-------|',
+      gapRows,
+      '',
+      `> Run \`wednesday-skills fill-gaps --min-risk 50\` to resolve gaps (requires OPENROUTER_API_KEY)`,
+    ].join('\n') : '> No gaps detected. Graph coverage is complete.',
+    '',
+    '## Danger zones',
+    '',
+    legacyReport.dangerZones?.length > 0 ? [
+      '| File | Reason | Contact |',
+      '|------|--------|---------|',
+      dangerRows,
+    ].join('\n') : '> No danger zones detected.',
+    '',
+    '## Output files',
+    '',
+    '| File | Description |',
+    '|------|-------------|',
+    '| `.wednesday/codebase/dep-graph.json` | Full dependency graph |',
+    '| `.wednesday/codebase/summaries.json` | Module summaries |',
+    '| `.wednesday/codebase/MASTER.md` | Architecture overview |',
+    '| `.wednesday/codebase/analysis/blast-radius.json` | Top 50 files by blast radius |',
+    '| `.wednesday/codebase/analysis/safety-scores.json` | Risk scores (0–100) per file |',
+    '| `.wednesday/codebase/analysis/dead-code.json` | Dead files + circular deps |',
+    '| `.wednesday/codebase/analysis/api-surface.json` | Public contracts per file |',
+    '| `.wednesday/codebase/analysis/conflicts.json` | Dependency conflicts |',
+    '',
+    '---',
+    '*Generated by wednesday-skills map — graph analysis only, no raw source read*',
+  ];
+
+  const content = lines.join('\n');
+  const outPath = path.join(p.codebaseDir, 'MAP_REPORT.md');
+  fs.mkdirSync(p.codebaseDir, { recursive: true });
+  fs.writeFileSync(outPath, content);
+  return outPath;
+}
+
 // ── Export all commands for CLI use ──────────────────────────────────────────
 module.exports = {
   analyze,
@@ -314,6 +445,8 @@ module.exports = {
     const apiKey = process.env.OPENROUTER_API_KEY || null;
     return generateOnboarding(answers, graph || { nodes: {} }, summaries, apiKey);
   },
+
+  generateMapReport,
 
   installHooks: (rootDir) => {
     const hooksDir = path.join(rootDir, '.git', 'hooks');

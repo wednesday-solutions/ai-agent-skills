@@ -302,11 +302,44 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
     .map(d => `| ${d.file} | ${d.reason} | ${d.contact} |`)
     .join('\n');
 
+  // Most-imported modules (core layer)
+  const topModules = all
+    .filter(n => n.importedBy.length >= 3 && !n.isBarrel)
+    .sort((a, b) => b.importedBy.length - a.importedBy.length)
+    .slice(0, 8);
+
+  const entryFiles = all.filter(n => n.isEntryPoint);
+  const uiFiles = all.filter(n => {
+    const lf = n.file.toLowerCase();
+    return /\/(component[s]?|page[s]?|screen[s]?|view[s]?)\//.test(lf);
+  });
+  const serviceFiles = all.filter(n => /service/i.test(n.file) && !n.file.includes('.test.'));
+
   const lines = [
     `# Codebase Map Report`,
     `> Generated: ${new Date().toISOString()}`,
     `> Project: ${rootDir}`,
     `> Total time: ${elapsed}ms`,
+    '',
+    '## New dev guide',
+    '',
+    '> Not sure where to start? Follow this path.',
+    '',
+    entryFiles.length > 0
+      ? `**Step 1 — Entry points** (${entryFiles.length} found):\n${entryFiles.slice(0,5).map(n => `- \`${n.file}\``).join('\n')}`
+      : '**Step 1 —** No explicit entry points detected. Look for `index.*` or `main.*` files.',
+    '',
+    topModules.length > 0
+      ? `**Step 2 — Core modules** (highest import count):\n${topModules.map(n => `- \`${n.file}\` — ${n.importedBy.length} consumers`).join('\n')}`
+      : '',
+    '',
+    uiFiles.length > 0
+      ? `**Step 3 — UI layer** (${uiFiles.length} components/pages detected):\n${uiFiles.slice(0,5).map(n => `- \`${n.file}\``).join('\n')}${uiFiles.length > 5 ? `\n  ...and ${uiFiles.length - 5} more. See MASTER.md module map.` : ''}`
+      : '',
+    '',
+    serviceFiles.length > 0
+      ? `**Step 4 — Service layer** (${serviceFiles.length} service files):\n${serviceFiles.slice(0,5).map(n => `- \`${n.file}\``).join('\n')}${serviceFiles.length > 5 ? `\n  ...and ${serviceFiles.length - 5} more.` : ''}`
+      : '',
     '',
     '## Summary',
     '',
@@ -355,13 +388,43 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
       dangerRows,
     ].join('\n') : '> No danger zones detected.',
     '',
+    '## Dead code candidates',
+    '',
+    deadFiles.length > 0
+      ? [
+          `> ${deadFiles.length} files have no importers. They may be unused or only used at runtime (e.g. entry points, dynamically loaded).`,
+          '',
+          '| File | Language | Risk |',
+          '|------|----------|------|',
+          ...deadFiles.slice(0, 20).map(f => {
+            const n = nodes[f] || {};
+            return `| \`${f}\` | ${n.lang || '?'} | ${n.riskScore || 0} |`;
+          }),
+          deadFiles.length > 20 ? `\n> ...and ${deadFiles.length - 20} more. Run \`wednesday-skills dead\` for full list.` : '',
+        ].join('\n')
+      : '> No dead code detected — every file is imported by at least one other.',
+    '',
+    '## All files quick index',
+    '',
+    '> Full file list sorted by risk score. Columns: risk icon, file, language, risk score, dependents.',
+    '',
+    '| | File | Lang | Risk | Deps |',
+    '|--|------|------|------|------|',
+    ...all
+      .sort((a, b) => b.riskScore - a.riskScore)
+      .map(n => {
+        const icon = n.riskScore >= 81 ? '🔴' : n.riskScore >= 61 ? '🟠' : n.riskScore >= 31 ? '🟡' : '🟢';
+        return `| ${icon} | \`${n.file}\` | ${n.lang} | ${n.riskScore} | ${n.importedBy.length} |`;
+      }),
+    '',
     '## Output files',
     '',
     '| File | Description |',
     '|------|-------------|',
     '| `.wednesday/codebase/dep-graph.json` | Full dependency graph |',
     '| `.wednesday/codebase/summaries.json` | Module summaries |',
-    '| `.wednesday/codebase/MASTER.md` | Architecture overview |',
+    '| `.wednesday/codebase/MASTER.md` | Architecture overview (per-file developer guide) |',
+    '| `.wednesday/codebase/MAP_REPORT.md` | This file — map summary + onboarding guide |',
     '| `.wednesday/codebase/analysis/blast-radius.json` | Top 50 files by blast radius |',
     '| `.wednesday/codebase/analysis/safety-scores.json` | Risk scores (0–100) per file |',
     '| `.wednesday/codebase/analysis/dead-code.json` | Dead files + circular deps |',

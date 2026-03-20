@@ -721,8 +721,8 @@ function installClaudeHook(targetDir, withAI = false) {
 
   // Base chain — always runs (zero LLM)
   const baseLines = [
-    // First time: no graph → run full map in background
-    'if [ ! -f .wednesday/codebase/dep-graph.json ]; then wednesday-skills map 2>/dev/null & exit 0; fi',
+    // No graph yet → skip silently. User must run "map the codebase" explicitly.
+    'if [ ! -f .wednesday/codebase/dep-graph.json ]; then exit 0; fi',
     // Always: incremental analyze (43ms when nothing changed)
     'wednesday-skills analyze --incremental --silent 2>/dev/null',
   ];

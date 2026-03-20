@@ -11,7 +11,17 @@ metadata:
 
 ## Trigger
 
-When Gemini bot posts a review on a PR, this skill categorizes every comment by impact and posts a fix queue. When the dev approves fixes with `@agent fix #N`, the agent applies them in priority order.
+Load this skill when a dev wants to **act on PR review comments**:
+- "Fix the review comments"
+- "Triage the PR feedback"
+- "Apply fixes from the review"
+- "@agent fix #1 #3"
+- "@agent fix all"
+- "What do I need to fix in this PR?"
+
+Also triggered automatically by GitHub Actions when Gemini bot posts a PR review.
+
+**Do NOT use this skill for:** creating a new PR (use `pr-create`), or committing code (use `git-os`). This skill only runs on an already-open PR that has review comments on it.
 
 ## Priority Order
 

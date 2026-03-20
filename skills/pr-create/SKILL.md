@@ -11,7 +11,14 @@ metadata:
 
 ## Trigger
 
-When a dev says "create PR", "open PR", or "push and create PR", run this skill.
+Load this skill when a dev wants to **push code and open a pull request**:
+- "Create a PR"
+- "Open a PR"
+- "Push and create PR"
+- "Submit this for review"
+- "Ship this branch"
+
+**Do NOT use this skill for:** generating a branch name from a ticket (use `sprint`), or applying review fixes after a PR is open (use `pr-review`). This skill runs at the end of a feature — code is already written and committed.
 
 Read `.wednesday/skills/git-os/SKILL.md` before doing anything.
 

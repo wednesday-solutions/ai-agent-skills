@@ -9,6 +9,19 @@ metadata:
 
 # Deploy Checklist Skill
 
+## Trigger
+
+Load this skill when a dev is about to deploy or has just deployed:
+- "We're deploying to production"
+- "Pre-deploy check"
+- "Post-deploy verification"
+- "Run the deploy checklist"
+- "Is it safe to deploy?"
+
+**Do NOT use this skill for:** committing code (use `git-os`), creating a PR (use `pr-create`), or planning a project (use `greenfield`). This skill only applies at the deployment stage — code is already merged.
+
+---
+
 Run this checklist before and after every production deployment.
 
 ## Pre-Deploy Checklist

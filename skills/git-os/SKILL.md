@@ -9,6 +9,19 @@ metadata:
 
 # GIT-OS — Automation-First Git Workflow
 
+## Trigger
+
+Load this skill **before any of the following actions** — do not proceed without reading it first:
+- Creating a branch
+- Writing a commit message
+- Running `git commit`
+- Running `git push`
+- Creating or updating a PR title
+
+**Do NOT use this skill for:** reviewing PR comments (use `pr-review`), creating a PR (use `pr-create`), planning a project (use `greenfield`).
+
+---
+
 My Git history powers automation. Commits drive version bumps, changelogs, release notes, deployments, and CI behavior. If commits are wrong → automation breaks.
 
 ## 1. Branching Model

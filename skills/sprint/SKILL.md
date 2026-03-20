@@ -9,6 +9,18 @@ metadata:
 
 # Sprint Initiation Skill
 
+## Trigger
+
+Load this skill when a dev provides a **ticket** and wants to start working on it:
+- "Start this ticket"
+- "Set up WED-142"
+- "Create a branch for this issue"
+- "Give me the branch name and PR template for this ticket"
+
+**Do NOT use this skill for:** actually creating the PR on GitHub (use `pr-create`), or planning a new project from scratch (use `greenfield`). This skill only outputs text — it does not push anything.
+
+---
+
 ## Input
 
 Provide the ticket title and description (from Linear, Jira, GitHub Issues, etc.).

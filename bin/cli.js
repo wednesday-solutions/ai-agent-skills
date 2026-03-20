@@ -167,6 +167,13 @@ been analyzed. Use these skills for all structural questions:
 - summaries.json for module purpose
 - MASTER.md for architecture, data flow, danger zones
 - Graph updates automatically on every commit via post-commit hook
+
+## Initial mapping
+If asked to "map the codebase", "analyse the codebase", "understand the codebase",
+or "build the knowledge graph" — run this command via Bash tool:
+  wednesday-skills map
+This runs the full pipeline: parse → summarize → fill gaps → MASTER.md.
+After it completes, read .wednesday/codebase/MASTER.md to confirm success.
 `;
 }
 
@@ -243,6 +250,11 @@ function main() {
     case 'sonar': {
       const sonarBase = args[1] && !args[1].startsWith('--') ? args[1] : 'develop';
       runSonar(sonarBase, args.includes('--dry-run'), args.includes('--post'));
+      break;
+    }
+    case 'map': {
+      const mapDir = (args[1] && !args[1].startsWith('--')) ? args[1] : process.cwd();
+      runMap(mapDir).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
       break;
     }
     case 'analyze': {
@@ -334,6 +346,84 @@ function main() {
 }
 
 // ─── Phase 2 brownfield commands ─────────────────────────────────────────────
+
+/**
+ * Full codebase mapping pipeline — runs once to initialise intelligence.
+ * After this, git hooks keep everything incremental.
+ *
+ * Pipeline:
+ *   1. analyze --full          → dep-graph.json
+ *   2. summarize               → summaries.json + MASTER.md
+ *   3. fill-gaps --min-risk 50 → resolve dynamic patterns via subagents
+ *   4. re-summarize            → regenerate MASTER.md with filled edges
+ */
+async function runMap(targetDir) {
+  targetDir = path.resolve(targetDir);
+  const apiKey = process.env.OPENROUTER_API_KEY || null;
+
+  console.log('');
+  log('blue', '┌─────────────────────────────────────────────┐');
+  log('blue', '│  Codebase mapping — full pipeline           │');
+  log('blue', '└─────────────────────────────────────────────┘');
+  console.log('');
+
+  // ── Step 1: Full analysis ─────────────────────────────────────────────────
+  log('cyan', '① Parsing codebase...');
+  const { graph, elapsed } = await brownfield.analyze(targetDir, { full: true, withGitHistory: true });
+  const nodeCount = Object.keys(graph.nodes).length;
+  const gapCount = Object.values(graph.nodes).reduce((s, n) => s + n.gaps.length, 0);
+  const highRiskWithGaps = Object.values(graph.nodes).filter(n => n.riskScore > 50 && n.gaps.length > 0).length;
+  log('green', `   ✓ ${nodeCount} files mapped in ${elapsed}ms`);
+  log('cyan', `   Gaps found: ${gapCount} total, ${highRiskWithGaps} on high-risk files`);
+  console.log('');
+
+  // ── Step 2: Summarize ─────────────────────────────────────────────────────
+  log('cyan', '② Generating summaries and MASTER.md...');
+  if (!apiKey) {
+    log('yellow', '   OPENROUTER_API_KEY not set — using structural summaries (no LLM)');
+  }
+  const { summaries, masterPath, qaReport } = await brownfield.summarize(targetDir);
+  log('green', `   ✓ ${Object.keys(summaries).length} module summaries written`);
+  log('green', `   ✓ MASTER.md generated`);
+  if (qaReport.flagged.length > 0) {
+    log('yellow', `   ⚠ ${qaReport.flagged.length} generic summaries (set OPENROUTER_API_KEY for better summaries)`);
+  }
+  console.log('');
+
+  // ── Step 3: Fill gaps (only if API key available and gaps exist) ──────────
+  if (highRiskWithGaps > 0 && apiKey) {
+    log('cyan', `③ Filling ${highRiskWithGaps} high-risk coverage gaps via subagents...`);
+    const resolved = await brownfield.fillGaps(targetDir, { minRisk: 50 });
+    log('green', `   ✓ ${resolved} dynamic edges resolved`);
+    console.log('');
+
+    // ── Step 4: Re-generate MASTER.md with filled edges ───────────────────
+    log('cyan', '④ Regenerating MASTER.md with resolved edges...');
+    await brownfield.summarize(targetDir);
+    log('green', '   ✓ MASTER.md updated');
+    console.log('');
+  } else if (highRiskWithGaps > 0) {
+    log('yellow', `③ Skipping gap fill — set OPENROUTER_API_KEY to resolve ${highRiskWithGaps} dynamic patterns`);
+    console.log('');
+  } else {
+    log('green', '③ No high-risk gaps — graph coverage is complete');
+    console.log('');
+  }
+
+  // ── Summary ───────────────────────────────────────────────────────────────
+  log('blue', '┌─────────────────────────────────────────────┐');
+  log('blue', '│  Mapping complete                           │');
+  log('blue', '└─────────────────────────────────────────────┘');
+  console.log('');
+  console.log(`  Files mapped:     ${nodeCount}`);
+  console.log(`  Summaries:        ${Object.keys(summaries).length}`);
+  console.log(`  MASTER.md:        ${masterPath}`);
+  console.log(`  Remaining gaps:   ${highRiskWithGaps > 0 && !apiKey ? highRiskWithGaps : 0}`);
+  console.log('');
+  log('cyan', '  From here, the graph updates automatically on every git commit.');
+  log('cyan', '  Ask Claude Code "what does X do" or "what breaks if I change X".');
+  console.log('');
+}
 
 function runAnalyze(targetDir, opts) {
   targetDir = path.resolve(targetDir);
@@ -613,14 +703,15 @@ function installClaudeHook(targetDir) {
     try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
   }
 
-  // Full automation chain — all LLM calls run in background so Claude Code is never blocked
+  // Full automation chain — LLM calls run in background, never block Claude Code
   const hookCommand = [
-    // 1. Always: incremental analyze (43ms when nothing changed)
-    'if [ ! -f .wednesday/codebase/dep-graph.json ]; then exit 0; fi',
+    // 1. First time: no graph yet → run full map in background and exit
+    'if [ ! -f .wednesday/codebase/dep-graph.json ]; then wednesday-skills map 2>/dev/null & exit 0; fi',
+    // 2. Always: incremental analyze (43ms when nothing changed)
     'wednesday-skills analyze --incremental --silent 2>/dev/null',
-    // 2. One-time: summarize if summaries.json missing and API key is set
+    // 3. One-time: summarize in background if summaries.json missing and API key is set
     '[ ! -f .wednesday/codebase/summaries.json ] && [ -n "$OPENROUTER_API_KEY" ] && wednesday-skills summarize 2>/dev/null &',
-    // 3. Ongoing: fill gaps if summaries exist and API key is set (background, exits instantly if no gaps)
+    // 4. Ongoing: fill gaps in background if summaries exist and API key is set
     '[ -f .wednesday/codebase/summaries.json ] && [ -n "$OPENROUTER_API_KEY" ] && wednesday-skills fill-gaps --min-risk 50 --silent 2>/dev/null &',
     'true',
   ].join('\n');
@@ -1150,6 +1241,7 @@ function showHelp() {
   console.log('  sonar [base] [--post]        Run SonarQube report and post to PR');
   console.log('');
   console.log('Brownfield Intelligence (Phase 2):');
+  console.log('  map [dir]                    Full pipeline: parse → summarize → fill gaps');
   console.log('  analyze [dir]                Build/update dependency graph');
   console.log('  analyze --incremental        Only re-parse changed files (< 1s)');
   console.log('  analyze --full               Force full re-parse');

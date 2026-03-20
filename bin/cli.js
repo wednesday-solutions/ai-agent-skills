@@ -342,9 +342,15 @@ function main() {
     case 'guide':
       brownfield.guide(process.cwd()).then(r => {
         log('green', `✓ GUIDE.md written: ${r.outPath}`);
-        if (r.llmCalls > 0) log('cyan', `  LLM batches: ${r.llmCalls} | Cached: ${r.cached}`);
       }).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
       break;
+    case 'summary': {
+      try {
+        const r = brownfield.summary(process.cwd());
+        log('green', `✓ SUMMARY.md written: ${r.outPath}`);
+      } catch (e) { log('red', `Error: ${e.message}`); process.exit(1); }
+      break;
+    }
     case 'list':
       listSkills();
       break;
@@ -438,9 +444,15 @@ async function runMap(targetDir) {
   console.log('');
 
   // ── Step 6: Generate GUIDE.md ─────────────────────────────────────────────
-  log('cyan', '⑥ Generating GUIDE.md...');
+  log('cyan', '⑥ Generating GUIDE.md (per-file detail + directory index)...');
   const guideResult = await brownfield.guide(targetDir);
   log('green', `   ✓ ${guideResult.outPath}`);
+  console.log('');
+
+  // ── Step 7: Generate SUMMARY.md ───────────────────────────────────────────
+  log('cyan', '⑦ Generating SUMMARY.md (1-2 page overview)...');
+  const summaryResult = brownfield.summary(targetDir);
+  log('green', `   ✓ ${summaryResult.outPath}`);
   console.log('');
 
   // ── Summary ───────────────────────────────────────────────────────────────
@@ -454,9 +466,10 @@ async function runMap(targetDir) {
   console.log(`  Danger zones:     ${legacyReport.dangerZones?.length || 0}`);
   console.log(`  Dead files:       ${legacyReport.godFiles !== undefined ? require('../src/brownfield/analysis/dead-code').findDeadCode(graph.nodes).deadFiles.length : '?'}`);
   console.log('');
+  console.log(`  SUMMARY.md:       ${summaryResult.outPath}   ← start here`);
+  console.log(`  GUIDE.md:         ${guideResult.outPath}`);
   console.log(`  MASTER.md:        ${masterPath}`);
   console.log(`  MAP_REPORT.md:    ${reportPath}`);
-  console.log(`  GUIDE.md:         ${guideResult.outPath}`);
   console.log('');
   log('cyan', '  From here, the graph updates automatically on every git commit.');
   log('cyan', '  Ask Claude Code "what does X do" or "what breaks if I change X".');

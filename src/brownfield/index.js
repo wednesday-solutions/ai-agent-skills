@@ -24,7 +24,7 @@ const { generateOnboarding, ONBOARDING_QUESTIONS } = require('./summarization/on
 const { planRefactor } = require('./reasoning/refactor-planner');
 const { planMigration } = require('./reasoning/migration-strategy');
 const { qaMasterMd } = require('./reasoning/master-qa');
-const { generateGuide } = require('./summarization/guide');
+const { generateGuide, generateSummary } = require('./summarization/guide');
 
 /**
  * Resolve standard paths for a project
@@ -518,6 +518,15 @@ module.exports = {
     const summaries = loadSummaries(rootDir);
     const p = paths(rootDir);
     return generateGuide(graph, summaries, p.codebaseDir);
+  },
+
+  summary: (rootDir) => {
+    const graph = loadGraph(rootDir);
+    if (!graph) throw new Error('Run wednesday-skills map first to build the dependency graph.');
+    const summaries = loadSummaries(rootDir);
+    const legacy = buildLegacyReport(graph.nodes);
+    const p = paths(rootDir);
+    return generateSummary(graph, summaries, legacy, p.codebaseDir);
   },
 
   installHooks: (rootDir) => {

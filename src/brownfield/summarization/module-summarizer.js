@@ -30,7 +30,7 @@ Write 2 sentences. Start with what it DOES.`;
 async function callHaiku(prompt, apiKey) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5-20251001',
+      model: 'anthropic/claude-haiku-4-5',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 80,
       temperature: 0,

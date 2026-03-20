@@ -17,6 +17,15 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync, spawn } = require('child_process');
+
+// Load .env from cwd if present (no dotenv dependency needed)
+const envPath = path.join(process.cwd(), '.env');
+if (fs.existsSync(envPath)) {
+  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+  }
+}
 const { syncAdapters, ensureToolsConfig } = require('../src/adapters/index.js');
 const brownfield = require('../src/brownfield/index.js');
 
@@ -429,15 +438,9 @@ async function runMap(targetDir) {
   console.log('');
 
   // ── Step 6: Generate GUIDE.md ─────────────────────────────────────────────
-  log('cyan', '⑥ Generating plain-English GUIDE.md...');
-  if (!apiKey) {
-    log('yellow', '   OPENROUTER_API_KEY not set — using structural guide (no LLM)');
-  }
+  log('cyan', '⑥ Generating GUIDE.md...');
   const guideResult = await brownfield.guide(targetDir);
   log('green', `   ✓ ${guideResult.outPath}`);
-  if (guideResult.llmCalls > 0 && apiKey) {
-    log('cyan', `   LLM calls: ${guideResult.llmCalls} batches | Cached: ${guideResult.cached} files`);
-  }
   console.log('');
 
   // ── Summary ───────────────────────────────────────────────────────────────

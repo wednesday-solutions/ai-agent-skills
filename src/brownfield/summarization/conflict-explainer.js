@@ -75,7 +75,7 @@ Give 3 specific resolution steps. Be concise. Start with the quickest fix.`;
 
   return new Promise(resolve => {
     const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5-20251001',
+      model: 'anthropic/claude-haiku-4-5',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 200,
       temperature: 0,

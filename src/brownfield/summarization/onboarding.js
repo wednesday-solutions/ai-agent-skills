@@ -46,7 +46,7 @@ Write a focused 200-word onboarding guide. Include: 1) what to read first, 2) ke
 
   return new Promise(resolve => {
     const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5-20251001',
+      model: 'anthropic/claude-haiku-4-5',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 350,
       temperature: 0.1,

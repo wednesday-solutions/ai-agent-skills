@@ -96,7 +96,7 @@ Is this useful for a developer who has never seen this codebase? Answer: yes/no 
 async function callHaiku(prompt, apiKey) {
   return new Promise(resolve => {
     const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5-20251001',
+      model: 'anthropic/claude-haiku-4-5',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 100,
       temperature: 0,

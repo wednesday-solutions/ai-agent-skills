@@ -483,7 +483,7 @@ Write 3 specific sentences describing the architecture. Name actual patterns and
 
   return new Promise(resolve => {
     const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5-20251001',
+      model: 'anthropic/claude-haiku-4-5',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 200,
       temperature: 0,

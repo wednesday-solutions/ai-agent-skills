@@ -517,8 +517,7 @@ module.exports = {
     if (!graph) throw new Error('Run wednesday-skills map first to build the dependency graph.');
     const summaries = loadSummaries(rootDir);
     const p = paths(rootDir);
-    const apiKey = process.env.OPENROUTER_API_KEY || null;
-    return generateGuide(graph, summaries, p.codebaseDir, p.cacheDir, apiKey);
+    return generateGuide(graph, summaries, p.codebaseDir);
   },
 
   installHooks: (rootDir) => {

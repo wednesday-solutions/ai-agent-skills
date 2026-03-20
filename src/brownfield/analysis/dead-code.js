@@ -6,30 +6,57 @@
 'use strict';
 
 /**
- * Find dead files and exports
- * @returns {{ deadFiles: string[], unusedExports: Object }}
+ * Files that are definitely not dead even if nothing imports them:
+ * - Standalone scripts (bin/, scripts/, tools/, tasks/, cli/)
+ * - Config files (*.config.ts/js, vite.config, webpack.config, etc.)
+ * - Test setup files (setup.ts, jest.setup.js, setupTests.js)
+ * - Files with dynamic import gaps (they may be loaded at runtime)
+ * - Test files — they import everything but nothing imports them
+ */
+function isSafelyUnimported(file, node) {
+  const f = file.toLowerCase();
+  const base = require('path').basename(f);
+
+  // Standalone script directories
+  if (/^\/?(?:bin|scripts?|tools?|tasks?|cli|hack|seed|fixture|migration)\//.test(f)) return true;
+
+  // Config / setup files by name pattern
+  if (/\.(config|setup|test|spec)\.[jt]sx?$/.test(f)) return true;
+  if (/jest\.setup|setupTests|vitest\.setup|babel\.config|webpack\.config|vite\.config|next\.config|tailwind\.config|postcss\.config|rollup\.config|esbuild\.config/.test(base)) return true;
+
+  // Test files
+  if (/\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/.test(f)) return true;
+
+  // Files with unresolved dynamic import gaps — may be loaded at runtime
+  if (node.gaps.some(g => g.type === 'dynamic-require' || g.type === 'dynamic-import')) return true;
+
+  return false;
+}
+
+/**
+ * Find dead files.
+ * A file is dead when nothing imports it AND it's not an entry point,
+ * barrel, config, script, test, or dynamically loaded file.
+ * @returns {{ deadFiles: string[] }}
  */
 function findDeadCode(nodes) {
   const deadFiles = [];
-  const unusedExports = {};
 
   for (const [file, node] of Object.entries(nodes)) {
-    // Skip entry points and config files
-    if (node.isEntryPoint) continue;
-    if (node.lang === 'config') continue;
+    if (node.isEntryPoint)          continue;
+    if (node.isBarrel)              continue;
+    if (node.lang === 'config')     continue;
+    if (isSafelyUnimported(file, node)) continue;
 
-    // Dead file: not imported by anyone
-    if (node.importedBy.length === 0 && !node.isBarrel) {
+    if (node.importedBy.length === 0) {
       deadFiles.push(file);
-    }
-
-    // Unused exports: file is imported by nobody, yet has exports
-    if (node.importedBy.length === 0 && node.exports.length > 0) {
-      unusedExports[file] = node.exports;
     }
   }
 
-  return { deadFiles, unusedExports };
+  // unusedExports removed — the previous logic (flag all exports from 0-importer files)
+  // was identical to dead files and created false positives. True per-export unused
+  // detection requires named import tracking which is a separate feature.
+  return { deadFiles, unusedExports: {} };
 }
 
 /**

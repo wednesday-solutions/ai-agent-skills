@@ -105,7 +105,9 @@ function resolveImport(fromFile, importPath, rootDir) {
  */
 function resolveAlias(importPath, aliases) {
   if (!aliases) return null;
+
   for (const [alias, targets] of Object.entries(aliases)) {
+    if (alias === '__baseUrl__') continue; // handled separately below
     const prefix = alias.replace(/\*$/, '');
     if (importPath.startsWith(prefix)) {
       const suffix = importPath.slice(prefix.length);
@@ -113,27 +115,70 @@ function resolveAlias(importPath, aliases) {
       return target + suffix;
     }
   }
+
+  // baseUrl fallback: treat import as relative to baseUrl directory
+  if (aliases['__baseUrl__'] && !importPath.startsWith('.') && !importPath.startsWith('/')) {
+    const baseUrl = aliases['__baseUrl__'];
+    const candidate = path.join(baseUrl, importPath);
+    if (fs.existsSync(candidate) || fs.existsSync(candidate + '.ts') || fs.existsSync(candidate + '.tsx')) {
+      return candidate; // absolute path — resolveImport will relativise it
+    }
+  }
+
   return null;
 }
 
 /**
- * Load path aliases from tsconfig.json / jsconfig.json in rootDir
+ * Parse a tsconfig/jsconfig file, following "extends" chains.
+ * Returns merged compilerOptions.paths (aliases).
+ */
+function parseTsConfig(file, visited = new Set()) {
+  if (visited.has(file) || !fs.existsSync(file)) return null;
+  visited.add(file);
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    const stripped = raw.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const config = JSON.parse(stripped);
+    const dir = path.dirname(file);
+
+    // Resolve "extends" first so child paths override parent
+    let parentPaths = null;
+    if (config.extends) {
+      const extFile = path.resolve(dir, config.extends.endsWith('.json') ? config.extends : config.extends + '.json');
+      parentPaths = parseTsConfig(extFile, visited);
+    }
+
+    // baseUrl helps resolve non-aliased absolute imports like `import Button from 'components/Button'`
+    const baseUrl = config?.compilerOptions?.baseUrl;
+    const paths   = config?.compilerOptions?.paths || {};
+
+    // If baseUrl is set, add a catch-all alias mapping '' → baseUrl
+    const merged = { ...parentPaths };
+    if (baseUrl) {
+      merged['__baseUrl__'] = path.resolve(dir, baseUrl);
+    }
+    return Object.assign(merged, paths);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load path aliases from tsconfig.json / jsconfig.json.
+ * Searches rootDir first, then common monorepo sub-dirs.
  */
 function loadAliases(rootDir) {
-  const candidates = ['tsconfig.json', 'jsconfig.json'];
+  const candidates = [
+    'tsconfig.json', 'jsconfig.json',
+    'tsconfig.base.json', 'tsconfig.app.json',
+    'apps/frontend/tsconfig.json', 'apps/web/tsconfig.json',
+    'packages/app/tsconfig.json', 'src/tsconfig.json',
+  ];
+
   for (const name of candidates) {
     const file = path.join(rootDir, name);
-    if (!fs.existsSync(file)) continue;
-    try {
-      const raw = fs.readFileSync(file, 'utf8');
-      // Strip comments before JSON.parse
-      const stripped = raw.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-      const config = JSON.parse(stripped);
-      const paths = config?.compilerOptions?.paths;
-      if (paths) return paths;
-    } catch {
-      // Ignore parse errors
-    }
+    const result = parseTsConfig(file);
+    if (result && Object.keys(result).length > 0) return result;
   }
   return null;
 }

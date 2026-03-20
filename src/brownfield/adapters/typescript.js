@@ -148,10 +148,15 @@ function parse(filePath, rootDir, aliases) {
 }
 
 function addImport(set, rawPath, fromFile, rootDir, aliases) {
-  // Try alias resolution first
   if (aliases) {
     const aliased = resolveAlias(rawPath, aliases);
-    if (aliased) rawPath = aliased;
+    if (aliased) {
+      // aliased may be absolute (from baseUrl) — relativise before passing to resolveImport
+      rawPath = path.isAbsolute(aliased)
+        ? path.relative(path.dirname(fromFile), aliased)
+        : aliased;
+      if (!rawPath.startsWith('.')) rawPath = './' + rawPath;
+    }
   }
   const resolved = resolveImport(fromFile, rawPath, rootDir);
   set.add(resolved);

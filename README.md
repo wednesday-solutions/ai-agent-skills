@@ -1,6 +1,6 @@
 # Wednesday Agent Skills
 
-AI skills for Wednesday Solutions projects — git discipline, PR automation, terminal dashboard, and greenfield planning.
+AI skills for Wednesday Solutions projects — git discipline, PR automation, terminal dashboard, greenfield planning, and brownfield codebase intelligence.
 
 ---
 
@@ -32,13 +32,16 @@ Run in your project root. Done in seconds.
 |---------|-------------|
 | `git-os` skill | Every agent follows conventional commits — no bad commit messages |
 | `commit-lint` CI | GitHub Action blocks PRs with non-conventional commits |
-| `pr-review` skill | Unified PR report — Gemini fix queue (6A), coverage health (6B), Sonar health (6C) |
+| `pr-review` skill | Gemini fix queue — categorized by impact, fixed on dev approval |
 | `triage` CI | GitHub Action that runs triage when Gemini bot posts a review |
 | `greenfield` skill | Run `wednesday-skills plan` — 3 AI personas produce `PLAN.md` in minutes |
 | `sprint` skill | Give a ticket → get branch name, PR title, and description template |
 | `deploy-checklist` skill | Pre and post deploy verification checklist |
 | `wednesday-dev` skill | Import ordering, complexity limits (max 8), naming conventions |
 | `wednesday-design` skill | 492+ approved UI components, design tokens, animation patterns |
+| `brownfield-query` skill | Answer structural questions from dep graph — never guesses |
+| `brownfield-fix` skill | Risk check + blast radius before editing any file |
+| `brownfield-gaps` skill | Fill dynamic coverage gaps via targeted Haiku subagents |
 
 **Config files written automatically:**
 - `CLAUDE.md` — Claude Code
@@ -52,16 +55,89 @@ Run in your project root. Done in seconds.
 ## CLI commands
 
 ```bash
+# Install + configure
 wednesday-skills install                  # install + configure all agents
 wednesday-skills install --skip-config    # install skills only
 wednesday-skills configure . gemini       # re-configure a specific agent
 wednesday-skills sync                     # re-sync all tool adapters
 wednesday-skills sync --tool antigravity  # sync to Antigravity only
+
+# Dashboard + planning
 wednesday-skills dashboard                # launch terminal dashboard
 wednesday-skills dashboard --pr 142       # focus dashboard on one PR
 wednesday-skills plan                     # run greenfield planning
+
+# Brownfield intelligence
+wednesday-skills analyze                  # build/update dependency graph
+wednesday-skills analyze --incremental    # only re-parse changed files (< 1s)
+wednesday-skills analyze --full           # force full re-parse
+wednesday-skills analyze --watch          # watch mode for development
+wednesday-skills summarize                # generate summaries.json + MASTER.md
+wednesday-skills fill-gaps --file <f>     # run subagents on coverage gaps
+wednesday-skills blast <file>             # blast radius — what breaks if you change this
+wednesday-skills score <file>             # risk score 0–100
+wednesday-skills dead                     # list dead files and unused exports
+wednesday-skills legacy                   # god files, circular deps, tech debt map
+wednesday-skills trace <file>             # call chain from a file
+wednesday-skills plan-refactor "goal"     # AI refactor plan (Sonnet)
+wednesday-skills plan-migration "goal"    # AI migration strategy (Sonnet)
+wednesday-skills onboard                  # interactive onboarding guide
+
 wednesday-skills list                     # list installed skills
 ```
+
+---
+
+## Brownfield intelligence
+
+Point any agent at a codebase it has never seen. It reads the graph — not raw source.
+
+```bash
+# First time setup (run once per project)
+wednesday-skills analyze
+wednesday-skills summarize   # needs OPENROUTER_API_KEY for LLM summaries
+
+# After that — graph updates automatically on every commit (< 1s, zero LLM)
+```
+
+After setup, Claude Code reads `.wednesday/codebase/` instead of raw files:
+
+```
+Ask: "what does userService do"          → reads summaries.json
+Ask: "what breaks if I change auth.ts"   → runs blast radius on dep graph
+Ask: "fix this file"                     → checks risk score first, warns if > 80
+```
+
+**Safe change workflow:**
+```bash
+wednesday-skills score src/services/auth.ts    # check risk before touching
+wednesday-skills blast src/services/auth.ts    # see what depends on it
+# make your change
+# post-commit hook updates the graph automatically
+```
+
+**Risk score bands:**
+
+| Score | Band | Action |
+|-------|------|--------|
+| 0–30 | Low | Proceed |
+| 31–60 | Medium | Review |
+| 61–80 | High | Senior review |
+| 81–100 | Critical | Explicit approval required |
+
+**Language coverage:**
+
+| Language | Static | + Gap subagents |
+|----------|--------|-----------------|
+| TypeScript / JavaScript | 95% | 95% |
+| Go | 92% | 92% |
+| GraphQL | 90% | 90% |
+| NestJS | 60% | 88% |
+| Serverless | 75% | 93% |
+| React Native | 90% | 93% |
+| Kotlin (basic) | 70% | 70% |
+
+**Cost:** Full scan of 500 files costs $0.00 (zero LLM). Summaries ~$0.10 one-time. Ongoing < $0.05/month per project.
 
 ---
 
@@ -101,11 +177,11 @@ Requires `OPENROUTER_API_KEY` in `.env`. Outputs `PLAN.md` and `CODEBASE.md`.
 Copy `.env.example` to `.env` and fill in:
 
 ```
-OPENROUTER_API_KEY=   # required for plan + triage
+OPENROUTER_API_KEY=   # required for plan, triage, summarize, fill-gaps
 GITHUB_TOKEN=         # required for dashboard PR panel
 ```
 
-For GitHub Actions (triage), add `OPENROUTER_API_KEY` as a repo secret.
+For GitHub Actions (triage, stale deps), add `OPENROUTER_API_KEY` as a repo secret.
 
 ---
 
@@ -129,26 +205,43 @@ your-project/
 ├── GEMINI.md
 ├── .cursorrules
 ├── .wednesday/
+│   ├── config.json
 │   ├── tools.json
-│   └── skills/
-│       ├── git-os/
-│       ├── pr-review/
-│       ├── greenfield/
-│       ├── sprint/
-│       ├── deploy-checklist/
-│       ├── wednesday-dev/
-│       └── wednesday-design/
+│   ├── skills/
+│   │   ├── git-os/
+│   │   ├── pr-review/
+│   │   ├── greenfield/
+│   │   ├── sprint/
+│   │   ├── deploy-checklist/
+│   │   ├── wednesday-dev/
+│   │   ├── wednesday-design/
+│   │   ├── brownfield-query/
+│   │   ├── brownfield-fix/
+│   │   └── brownfield-gaps/
+│   ├── codebase/              # generated by wednesday-skills analyze
+│   │   ├── dep-graph.json
+│   │   ├── summaries.json
+│   │   ├── MASTER.md
+│   │   └── analysis/
+│   │       ├── safety-scores.json
+│   │       ├── dead-code.json
+│   │       ├── api-surface.json
+│   │       └── conflicts.json
+│   └── hooks/
+│       ├── post-commit        # zero LLM, < 1s
+│       └── post-merge
 └── .github/
     └── workflows/
         ├── commit-lint.yml
-        └── triage.yml
+        ├── triage.yml
+        └── stale-deps.yml     # weekly dependency check
 ```
 
 ---
 
 ## Roadmap
 
-See [Docs/ROADMAP.md](Docs/ROADMAP.md).
+See [Docs/Plans/phase_2.md](Docs/Plans/phase_2.md).
 
 ## License
 

@@ -4,6 +4,17 @@ AI skills for Wednesday Solutions projects — git discipline, PR automation, te
 
 ---
 
+## Requirements
+
+- Node.js ≥ 18
+- npm ≥ 8
+- `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` — for LLM features (plan, summarize, fill-gaps, chat, gen-tests)
+- `GITHUB_TOKEN` — for the terminal dashboard PR panel
+
+Add keys to `.env` in your project root before running LLM-dependent commands. The install step itself requires no API keys.
+
+---
+
 ## Install
 
 **Option 1 — npx (no setup)**
@@ -22,7 +33,12 @@ wednesday-skills install
 bash install.sh
 ```
 
-Run in your project root. Done in seconds.
+Run in your project root. The installer:
+1. Copies skills into `.wednesday/skills/`
+2. Writes agent config files (`CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `.github/copilot-instructions.md`)
+3. Installs git hooks (`post-commit`, `post-merge`) for automatic graph updates
+4. Prompts for optional coverage and Sonar integration
+5. Symlinks skills into `~/.claude/skills/` for Claude Code discovery
 
 ---
 
@@ -44,6 +60,9 @@ Run in your project root. Done in seconds.
 | `brownfield-gaps` skill | Fill dynamic coverage gaps via targeted Haiku subagents |
 | `brownfield-chat` skill | Plain-English questions answered from the graph — zero LLM for most queries |
 | `brownfield-drift` skill | Architecture drift detection against PLAN.md constraints |
+| `git-os-lite` skill | Public conventional commits — lightweight version of git-os for open source projects |
+| Skill registry | Search, add, remove, and publish community skills (`wednesday-skills search/add/remove`) |
+| Usage analytics | Local-only call tracking per skill — cost and stale skill reporting (`wednesday-skills stats`) |
 
 **Config files written automatically:**
 - `CLAUDE.md` — Claude Code
@@ -334,6 +353,21 @@ wednesday-skills gen-tests                # generate tests for high-risk uncover
 wednesday-skills gen-tests --min-risk 70  # critical files only
 
 wednesday-skills list                     # list installed skills
+
+# Skill registry
+wednesday-skills search <term>            # search community skill registry
+wednesday-skills add <skill>              # install a skill from the registry
+wednesday-skills remove <skill>           # uninstall a skill
+wednesday-skills update                   # update all installed skills to latest
+wednesday-skills check                    # check for available updates
+wednesday-skills build-skill              # interactive: generate a new SKILL.md via AI
+wednesday-skills submit <skill>           # validate and open a community PR for a skill
+
+# Usage analytics (local only — no data sent externally)
+wednesday-skills stats                    # usage summary for this month
+wednesday-skills stats --cost             # model breakdown by cost
+wednesday-skills stats --stale            # skills not triggered in 30+ days
+wednesday-skills stats --skill <name>     # per-skill detail
 ```
 
 ---
@@ -510,7 +544,7 @@ wednesday-skills plan
 wednesday-skills plan --brief "Build a todo app with auth and teams"
 ```
 
-Requires `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` in `.env`. Outputs `PLAN.md` and `CODEBASE.md`.
+Requires `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` in `.env`. Outputs `.wednesday/plans/PLAN.md` plus individual persona files (`research.md`, `architect.md`, `pm.md`, `security.md`).
 
 ---
 
@@ -589,9 +623,10 @@ your-project/
 
 ## Roadmap
 
-- Phase 1: Install, configure, git hooks, greenfield planner
-- Phase 2: Brownfield intelligence — dep graph, risk scores, summaries, MASTER.md
-- Phase 3: Chat, drift detection, test generation ← *current*
+- Phase 1: Install, configure, git hooks, greenfield planner ✓
+- Phase 2: Brownfield intelligence — dep graph, risk scores, summaries, MASTER.md ✓
+- Phase 3: Chat, drift detection, test generation ✓
+- Phase 4: Public registry, skill builder, usage analytics, git-os-lite, agentic composition ✓ *current*
 
 ## License
 

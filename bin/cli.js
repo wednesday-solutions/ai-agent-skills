@@ -408,7 +408,7 @@ function main() {
       runStats(process.cwd(), {
         cost:  args.includes('--cost'),
         stale: args.includes('--stale'),
-        skill: args[args.indexOf('--skill') + 1] || null,
+        skill: args.includes('--skill') ? args[args.indexOf('--skill') + 1] : null,
       });
       break;
     }
@@ -1217,18 +1217,15 @@ function runRegistryCheck(targetDir) {
 }
 
 function runBuildSkill(targetDir) {
-  const { builder } = requireLib('builder');
-  builder.interactive(targetDir);
+  requireLib('builder').interactive(targetDir);
 }
 
 function runSubmitSkill(skillName, targetDir) {
-  const { builder } = requireLib('builder');
-  builder.submit(skillName, targetDir);
+  requireLib('builder').submit(skillName, targetDir);
 }
 
 function runStats(targetDir, opts = {}) {
-  const { analytics } = requireLib('analytics');
-  analytics.stats(targetDir, opts);
+  requireLib('analytics').stats(targetDir, opts);
 }
 
 function requireLib(name) {

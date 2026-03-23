@@ -1,1 +1,0 @@
-build a note taker app with a todolist and date options

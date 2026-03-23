@@ -1,0 +1,29 @@
+name: Update Skill Registry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'skills/**'
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate registry index
+        run: node scripts/generate-registry.js
+
+      - name: Commit updated registry
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(registry): update skill index"
+          file_pattern: registry/index.json

@@ -11,7 +11,13 @@ CLAUDE.md
 GEMINI.md
 .cursorrules
 .wednesday/
-.github/
+# Ignore all .github except this repo's own workflows and templates
+.github/workflows/commit-lint.yml
+.github/workflows/triage.yml
+.github/workflows/stale-deps.yml
+.github/workflows/pr-coverage.yml
+.github/workflows/pr-sonar.yml
+.github/copilot-instructions.md
 
 # OS
 .DS_Store

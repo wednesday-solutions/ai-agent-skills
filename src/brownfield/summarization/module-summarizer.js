@@ -7,8 +7,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 const crypto = require('crypto');
+const { callLLM } = require('../core/llm-client');
 
 /**
  * Build the minimal summarization prompt (~70 tokens max)
@@ -25,45 +25,10 @@ Write 2 sentences. Start with what it DOES. Name at least one specific function,
 }
 
 /**
- * Call Haiku for a summary
+ * Call Haiku for a summary — uses OpenRouter or Anthropic API automatically.
  */
-async function callHaiku(prompt, apiKey) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 80,
-      temperature: 0,
-    });
-
-    const options = {
-      hostname: 'openrouter.ai',
-      path: '/api/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://github.com/wednesday-solutions/ai-agent-skills',
-        'X-Title': 'Wednesday Skills Summarizer',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    };
-
-    const req = https.request(options, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          resolve(json.choices?.[0]?.message?.content?.trim() || null);
-        } catch { resolve(null); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.write(body);
-    req.end();
-  });
+async function callHaiku(prompt) {
+  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 80 });
 }
 
 /**
@@ -88,7 +53,7 @@ function saveSummaryCache(cacheDir, cache) {
  * @param {string} apiKey     - OpenRouter API key (null = skip LLM)
  * @returns {Object} summaries keyed by file
  */
-async function summarizeAll(nodes, _rootDir, cacheDir, apiKey) {
+async function summarizeAll(nodes, _rootDir, cacheDir, _apiKey) {
   const cache = loadSummaryCache(cacheDir);
   const summaries = {};
   let apiCalls = 0;
@@ -111,9 +76,10 @@ async function summarizeAll(nodes, _rootDir, cacheDir, apiKey) {
     const prompt = buildPrompt(node, lastCommit);
 
     let summary = null;
-    if (apiKey) {
+    const { hasApiKey } = require('../core/llm-client');
+    if (hasApiKey()) {
       try {
-        summary = await callHaiku(prompt, apiKey);
+        summary = await callHaiku(prompt);
         apiCalls++;
       } catch {
         summary = null;

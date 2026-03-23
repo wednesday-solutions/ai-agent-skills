@@ -408,7 +408,7 @@ function main() {
  */
 async function runMap(targetDir) {
   targetDir = path.resolve(targetDir);
-  const apiKey = process.env.OPENROUTER_API_KEY || null;
+  const apiKey = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || null;
   const mapStart = Date.now();
 
   console.log('');
@@ -430,13 +430,13 @@ async function runMap(targetDir) {
   // ── Step 2: Summarize ─────────────────────────────────────────────────────
   log('cyan', '② Generating summaries and MASTER.md...');
   if (!apiKey) {
-    log('yellow', '   OPENROUTER_API_KEY not set — using structural summaries (no LLM)');
+    log('yellow', '   No API key set — using structural summaries (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for LLM summaries)');
   }
   const { summaries, masterPath, qaReport } = await brownfield.summarize(targetDir);
   log('green', `   ✓ ${Object.keys(summaries).length} module summaries written`);
   log('green', `   ✓ MASTER.md generated`);
   if (qaReport.flagged.length > 0) {
-    log('yellow', `   ⚠ ${qaReport.flagged.length} generic summaries (set OPENROUTER_API_KEY for better summaries)`);
+    log('yellow', `   ⚠ ${qaReport.flagged.length} generic summaries (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for better summaries)`);
   }
   console.log('');
 
@@ -454,7 +454,7 @@ async function runMap(targetDir) {
     log('green', '   ✓ MASTER.md updated');
     console.log('');
   } else if (highRiskWithGaps > 0) {
-    log('yellow', `③ Skipping gap fill — set OPENROUTER_API_KEY to resolve ${highRiskWithGaps} dynamic patterns`);
+    log('yellow', `③ Skipping gap fill — set OPENROUTER_API_KEY or ANTHROPIC_API_KEY to resolve ${highRiskWithGaps} dynamic patterns`);
     console.log('');
   } else {
     log('green', '③ No high-risk gaps — graph coverage is complete');
@@ -794,9 +794,9 @@ function installClaudeHook(targetDir, withAI = false) {
   // AI chain — only added when brownfield-ai was selected at install
   const aiLines = withAI ? [
     // One-time: summarize in background if summaries missing and API key set
-    '[ ! -f .wednesday/codebase/summaries.json ] && [ -n "$OPENROUTER_API_KEY" ] && wednesday-skills summarize 2>/dev/null &',
+    '[ ! -f .wednesday/codebase/summaries.json ] && { [ -n "$OPENROUTER_API_KEY" ] || [ -n "$ANTHROPIC_API_KEY" ]; } && wednesday-skills summarize 2>/dev/null &',
     // Ongoing: fill gaps in background when API key set
-    '[ -f .wednesday/codebase/summaries.json ] && [ -n "$OPENROUTER_API_KEY" ] && wednesday-skills fill-gaps --min-risk 50 --silent 2>/dev/null &',
+    '[ -f .wednesday/codebase/summaries.json ] && { [ -n "$OPENROUTER_API_KEY" ] || [ -n "$ANTHROPIC_API_KEY" ]; } && wednesday-skills fill-gaps --min-risk 50 --silent 2>/dev/null &',
   ] : [];
 
   const hookCommand = [...baseLines, ...aiLines, 'true'].join('\n');
@@ -913,7 +913,7 @@ const SKILL_META = {
   // Brownfield bundles — shown as three items, expand to skill files + hooks at install time
   'brownfield':        { label: 'Brownfield',         desc: 'Dep graph, blast radius, risk scores, git hooks (zero LLM)', recommended: true,
                          bundle: ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'] },
-  'brownfield-ai':     { label: 'Brownfield AI',      desc: 'Summaries, MASTER.md, gap filling via Haiku — needs OPENROUTER_API_KEY', recommended: false,
+  'brownfield-ai':     { label: 'Brownfield AI',      desc: 'Summaries, MASTER.md, gap filling via Haiku — needs OPENROUTER_API_KEY or ANTHROPIC_API_KEY', recommended: false,
                          requires: 'brownfield', bundle: ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'] },
   'brownfield-chat':   { label: 'Brownfield Chat',    desc: 'Plain-English Q&A from graph — who/what/which/when, path traversal, git diff', recommended: false,
                          requires: 'brownfield', bundle: ['brownfield-chat'] },
@@ -1549,7 +1549,7 @@ function runGenTests(targetDir, opts) {
       console.log(`  ${i + 1}. ${t.file.padEnd(50)} risk:${t.node.riskScore}  coverage:${t.coverage}%  priority:${t.priority}`);
     });
     console.log('');
-    log('yellow', `  Run without --dry-run to generate ${targets.length} test file(s). Requires OPENROUTER_API_KEY.`);
+    log('yellow', `  Run without --dry-run to generate ${targets.length} test file(s). Requires OPENROUTER_API_KEY or ANTHROPIC_API_KEY.`);
     console.log('');
     return;
   }
@@ -1559,8 +1559,8 @@ function runGenTests(targetDir, opts) {
   log('blue', '└─────────────────────────────────────────────┘');
   console.log('');
 
-  if (!process.env.OPENROUTER_API_KEY) {
-    log('red', '  OPENROUTER_API_KEY not set. Test generation requires API access.');
+  if (!process.env.OPENROUTER_API_KEY && !process.env.ANTHROPIC_API_KEY) {
+    log('red', '  No API key set. Test generation requires OPENROUTER_API_KEY or ANTHROPIC_API_KEY.');
     log('yellow', '  Run with --dry-run to see which files would be targeted.');
     process.exit(1);
   }
@@ -1611,7 +1611,7 @@ function listSkills() {
   console.log('');
   console.log('  brownfield-ai  [requires brownfield]');
   console.log('    Summaries, MASTER.md, gap filling via Haiku subagents.');
-  console.log('    Needs OPENROUTER_API_KEY. Runs in background, never blocks.');
+  console.log('    Needs OPENROUTER_API_KEY or ANTHROPIC_API_KEY. Runs in background, never blocks.');
   console.log('');
   console.log('  brownfield-chat  [requires brownfield]');
   console.log('    Plain-English Q&A backed by the graph — zero LLM for most queries.');

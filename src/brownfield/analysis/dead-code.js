@@ -20,6 +20,10 @@ function isSafelyUnimported(file, node) {
   // Standalone script directories
   if (/^\/?(?:bin|scripts?|tools?|tasks?|cli|hack|seed|fixture|migration)\//.test(f)) return true;
 
+  // Supabase / Deno edge function shared utilities — imported via Deno URL imports
+  // which the static parser can't trace, so they appear orphaned
+  if (/^\/?(?:supabase\/functions\/_shared|_shared)\//.test(f)) return true;
+
   // Config / setup files by name pattern
   if (/\.(config|setup|test|spec)\.[jt]sx?$/.test(f)) return true;
   if (/jest\.setup|setupTests|vitest\.setup|babel\.config|webpack\.config|vite\.config|next\.config|tailwind\.config|postcss\.config|rollup\.config|esbuild\.config/.test(base)) return true;
@@ -44,7 +48,10 @@ function findDeadCode(nodes) {
 
   for (const [file, node] of Object.entries(nodes)) {
     if (node.isEntryPoint)          continue;
-    if (node.isBarrel)              continue;
+    // Only skip barrels that are true directory index files (index.ts/tsx/js).
+    // A non-index file that happens to re-export something (e.g. CreatePostModal.tsx)
+    // is still dead if nothing imports it.
+    if (node.isBarrel && /(?:^|[/\\])index\.[jt]sx?$/.test(file)) continue;
     if (node.lang === 'config')     continue;
     if (isSafelyUnimported(file, node)) continue;
 

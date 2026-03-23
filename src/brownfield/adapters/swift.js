@@ -122,4 +122,70 @@ function parse(filePath, rootDir) {
   };
 }
 
-module.exports = { parse };
+/**
+ * Resolve intra-module edges for Swift projects.
+ *
+ * Problem: Swift apps compile as a single module. Files don't `import` each
+ * other — they reference types directly by name. This means after the first
+ * parse pass every Swift file shows 0 importers, making blast radius and
+ * risk scores meaningless.
+ *
+ * Solution: Two-pass approach.
+ *   Pass 1 (parse): collect exported type names per file.
+ *   Pass 2 (here):  build a type registry, re-scan each file for type
+ *                   references, add intra-module edges.
+ *
+ * @param {Object} nodes  - all graph nodes (mutated in place)
+ * @param {string} rootDir
+ */
+function resolveIntraModuleEdges(nodes, rootDir) {
+  // ── Build type registry: typeName → relative file path ───────────────────
+  // Only include type names that look like Swift types (PascalCase, >= 4 chars)
+  // to reduce noise from short/generic identifiers.
+  const typeRegistry = new Map(); // typeName → file
+
+  for (const [file, node] of Object.entries(nodes)) {
+    if (node.lang !== 'swift') continue;
+    for (const exp of node.exports) {
+      if (exp.length >= 4 && /^[A-Z]/.test(exp) && !typeRegistry.has(exp)) {
+        typeRegistry.set(exp, file);
+      }
+    }
+  }
+
+  if (typeRegistry.size === 0) return;
+
+  // ── Build one combined regex for all type names ───────────────────────────
+  // Sorted by length descending so longer names match first (e.g. UserProfile > User)
+  const typeNames = [...typeRegistry.keys()].sort((a, b) => b.length - a.length);
+  const combinedPattern = typeNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const combinedRe = new RegExp(`\\b(${combinedPattern})\\b`, 'g');
+
+  // ── Scan each Swift file for type references ──────────────────────────────
+  for (const [file, node] of Object.entries(nodes)) {
+    if (node.lang !== 'swift') continue;
+
+    let src;
+    try {
+      src = fs.readFileSync(path.join(rootDir, file), 'utf8');
+    } catch { continue; }
+
+    // Strip single-line comments to avoid matching type names in comments
+    src = src.replace(/\/\/[^\n]*/g, '');
+
+    const referenced = new Set();
+    for (const m of src.matchAll(combinedRe)) {
+      referenced.add(m[1]);
+    }
+
+    for (const typeName of referenced) {
+      const sourceFile = typeRegistry.get(typeName);
+      if (sourceFile === file) continue;           // no self-references
+      if (node.imports.includes(sourceFile)) continue; // already tracked
+
+      node.imports.push(sourceFile);
+    }
+  }
+}
+
+module.exports = { parse, resolveIntraModuleEdges };

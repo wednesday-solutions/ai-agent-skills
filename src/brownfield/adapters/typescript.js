@@ -13,10 +13,15 @@ const { safeRead, resolveImport, resolveAlias } = require('../core/parser');
  * Parse a JS/TS/JSX/TSX file and extract dependency information.
  */
 function parse(filePath, rootDir, aliases) {
-  const src = safeRead(filePath);
-  if (src === null) {
+  const raw = safeRead(filePath);
+  if (raw === null) {
     return { file: filePath, lang: 'typescript', imports: [], exports: [], gaps: [], meta: {}, error: true };
   }
+  // Strip comments before parsing to avoid false edges from commented-out imports.
+  // Preserve newlines so line numbers in gaps remain correct.
+  const src = raw
+    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+    .replace(/\/\/[^\n]*/g, '');
 
   const imports = new Set();
   const exports = new Set();
@@ -55,6 +60,13 @@ function parse(filePath, rootDir, aliases) {
     gaps.push({ type: 'dynamic-require', line: lineAt(src, m.index), pattern: m[0].slice(0, 80) });
   }
 
+  // Static dynamic imports: await import('./foo') — resolve as real edges, not gaps.
+  // Only truly dynamic expressions (no string literal) remain as gaps.
+  const staticDynImportRe = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  while ((m = staticDynImportRe.exec(src)) !== null) {
+    addImport(imports, m[1], filePath, rootDir, aliases);
+  }
+
   const dynImportRe = /import\s*\(\s*(?!['"])[^)]+\)/g;
   while ((m = dynImportRe.exec(src)) !== null) {
     gaps.push({ type: 'dynamic-import', line: lineAt(src, m.index), pattern: m[0].slice(0, 80) });
@@ -67,13 +79,20 @@ function parse(filePath, rootDir, aliases) {
     exports.add(m[1]);
   }
 
-  // export { X, Y as Z }
-  const esExportBraceRe = /export\s+\{([^}]+)\}/g;
+  // export { X, Y as Z }  and  export type { X, Y as Z }
+  const esExportBraceRe = /export\s+(?:type\s+)?\{([^}]+)\}/g;
   while ((m = esExportBraceRe.exec(src)) !== null) {
     for (const name of m[1].split(',')) {
       const part = name.trim().split(/\s+as\s+/).pop().trim();
       if (part) exports.add(part);
     }
+  }
+
+  // TypeScript-specific: export interface Foo / export type Foo / export enum Foo
+  // export abstract class Foo / export declare ...
+  const tsExportTypeRe = /export\s+(?:abstract\s+)?(?:interface|type|enum|declare\s+(?:class|function|const|interface|type|enum))\s+(\w+)/g;
+  while ((m = tsExportTypeRe.exec(src)) !== null) {
+    exports.add(m[1]);
   }
 
   // module.exports = { X, Y }
@@ -151,10 +170,11 @@ function addImport(set, rawPath, fromFile, rootDir, aliases) {
   if (aliases) {
     const aliased = resolveAlias(rawPath, aliases);
     if (aliased) {
-      // aliased may be absolute (from baseUrl) — relativise before passing to resolveImport
-      rawPath = path.isAbsolute(aliased)
-        ? path.relative(path.dirname(fromFile), aliased)
-        : aliased;
+      // aliased is either absolute (from baseUrl) or rootDir-relative (from paths alias).
+      // In both cases, convert to absolute first, then relativise from fromFile's directory
+      // so that resolveImport treats it as a relative path correctly.
+      const abs = path.isAbsolute(aliased) ? aliased : path.resolve(rootDir, aliased);
+      rawPath = path.relative(path.dirname(fromFile), abs);
       if (!rawPath.startsWith('.')) rawPath = './' + rawPath;
     }
   }

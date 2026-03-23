@@ -14,9 +14,11 @@
  */
 function blastRadius(file, nodes) {
   const node = nodes[file];
-  if (!node) return { count: 0, files: [], crossLang: [] };
+  if (!node) return { count: 0, direct: 0, transitive: 0, files: [], crossLang: [] };
 
   const sourceLang = node.lang;
+  const direct = node.importedBy.length;
+
   const visited = new Set();
   const queue = [file];
   const crossLang = [];
@@ -32,7 +34,6 @@ function blastRadius(file, nodes) {
     for (const dependent of currentNode.importedBy) {
       if (!visited.has(dependent)) {
         queue.push(dependent);
-        // Flag cross-language dependents
         if (nodes[dependent] && nodes[dependent].lang !== sourceLang) {
           crossLang.push(dependent);
         }
@@ -40,11 +41,13 @@ function blastRadius(file, nodes) {
     }
   }
 
-  // Remove the source file itself
   visited.delete(file);
+  const transitive = visited.size;
 
   return {
-    count: visited.size,
+    count: transitive,   // kept for backward compat
+    direct,
+    transitive,
     files: [...visited],
     crossLang: [...new Set(crossLang)],
   };

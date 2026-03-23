@@ -28,6 +28,7 @@ const { generateGuide, generateSummary } = require('./summarization/guide');
 const { answerQuestion } = require('./query/chat-engine');
 const { detectDrift, loadConstraints, formatDriftReport } = require('./analysis/drift');
 const { genTests, selectTargets } = require('./reasoning/test-generator');
+const { hasApiKey, getApiKey } = require('./core/llm-client');
 
 /**
  * Build a test coverage map from the graph.
@@ -569,8 +570,7 @@ module.exports = {
     const graph = loadGraph(rootDir);
     if (!graph) throw new Error('Run wednesday-skills analyze first.');
     const summaries = loadSummaries(rootDir);
-    const apiKey = process.env.OPENROUTER_API_KEY || null;
-    return answerQuestion(question, rootDir, graph, summaries, apiKey);
+    return answerQuestion(question, rootDir, graph, summaries);
   },
 
   drift: (rootDir, opts = {}) => {
@@ -586,8 +586,7 @@ module.exports = {
     const graph = loadGraph(rootDir);
     if (!graph) throw new Error('Run wednesday-skills analyze first.');
     const summaries = loadSummaries(rootDir);
-    const apiKey = opts.dryRun ? null : process.env.OPENROUTER_API_KEY || null;
-    return genTests(rootDir, graph, summaries, apiKey, opts);
+    return genTests(rootDir, graph, summaries, null, opts);
   },
 
   genTestsTargets: (rootDir, opts = {}) => {

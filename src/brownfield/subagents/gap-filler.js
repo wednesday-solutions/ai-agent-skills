@@ -7,8 +7,8 @@
 
 'use strict';
 
-const https = require('https');
 const path = require('path');
+const { callLLM } = require('../core/llm-client');
 
 // 3A: Raised from 0.70 → 0.80 to reduce false-positive agent-resolved edges
 const CONFIDENCE_GATE = 0.80;
@@ -64,55 +64,16 @@ Task: Group these exports into logical concerns (2-4 groups). Return JSON: {"gro
 }
 
 /**
- * Call Haiku via OpenRouter API
+ * Call Haiku — uses OpenRouter or Anthropic API automatically.
  */
-async function callHaiku(prompt, apiKey) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 300,
-      temperature: 0,
-    });
-
-    const options = {
-      hostname: 'openrouter.ai',
-      path: '/api/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://github.com/wednesday-solutions/ai-agent-skills',
-        'X-Title': 'Wednesday Skills Gap Filler',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    };
-
-    const req = https.request(options, res => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          const content = json.choices?.[0]?.message?.content || '';
-          // Extract JSON from response
-          const jsonMatch = content.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            resolve(JSON.parse(jsonMatch[0]));
-          } else {
-            resolve(null);
-          }
-        } catch {
-          resolve(null);
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.write(body);
-    req.end();
-  });
+async function callHaiku(prompt) {
+  const text = await callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 300 });
+  if (!text) return null;
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try { return JSON.parse(jsonMatch[0]); } catch { return null; }
+  }
+  return null;
 }
 
 /**
@@ -157,7 +118,7 @@ async function fillGapsForNode(node, nearbyFiles, apiKey) {
 
       let result = null;
       try {
-        result = await callHaiku(prompt, apiKey);
+        result = await callHaiku(prompt);
       } catch {
         // API error — skip this batch
         continue;

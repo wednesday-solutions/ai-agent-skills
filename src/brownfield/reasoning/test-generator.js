@@ -7,10 +7,10 @@
 
 'use strict';
 
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const { callLLM, hasApiKey } = require('../core/llm-client');
 
 const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/;
 
@@ -188,48 +188,8 @@ function buildContext(fileEntry, nodes, summaries, rootDir) {
 
 // ── Sonnet API call ───────────────────────────────────────────────────────────
 
-async function callSonnet(prompt, apiKey) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
-      model: 'anthropic/claude-sonnet-4-6',
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      max_tokens: 1200,
-      temperature: 0,
-    });
-
-    const options = {
-      hostname: 'openrouter.ai',
-      path: '/api/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://github.com/wednesday-solutions/ai-agent-skills',
-        'X-Title': 'Wednesday Skills Test Generator',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    };
-
-    const req = https.request(options, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          resolve(json.choices?.[0]?.message?.content?.trim() || null);
-        } catch { resolve(null); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(60000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.write(body);
-    req.end();
-  });
+async function callSonnet(prompt) {
+  return callLLM({ model: 'sonnet', messages: [{ role: 'user', content: prompt }], maxTokens: 1200 });
 }
 
 // ── Output path resolver ──────────────────────────────────────────────────────
@@ -262,7 +222,7 @@ function resolveTestPath(sourceFile, rootDir) {
  * @param {Object} opts - { file?, minRisk?, dryRun? }
  * @returns {Promise<Array>} generated test records
  */
-async function genTests(rootDir, graph, summaries, apiKey, opts = {}) {
+async function genTests(rootDir, graph, summaries, _apiKey, opts = {}) {
   const nodes = graph.nodes;
   const targets = selectTargets(nodes, opts);
 
@@ -276,8 +236,8 @@ async function genTests(rootDir, graph, summaries, apiKey, opts = {}) {
     }));
   }
 
-  if (!apiKey) {
-    throw new Error('OPENROUTER_API_KEY is required for test generation');
+  if (!hasApiKey()) {
+    throw new Error('OPENROUTER_API_KEY or ANTHROPIC_API_KEY is required for test generation');
   }
 
   const results = [];
@@ -288,7 +248,7 @@ async function genTests(rootDir, graph, summaries, apiKey, opts = {}) {
 
     let testCode = null;
     try {
-      testCode = await callSonnet(ctx.prompt, apiKey);
+      testCode = await callSonnet(ctx.prompt);
     } catch (e) {
       console.error(`  ✗ Error: ${e.message}`);
       results.push({ file: target.file, error: e.message });

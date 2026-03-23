@@ -110,7 +110,7 @@ Point any agent at a codebase it has never seen. It reads the graph — not raw 
 ```bash
 # First time setup (run once per project)
 wednesday-skills analyze
-wednesday-skills summarize   # needs OPENROUTER_API_KEY for LLM summaries
+wednesday-skills summarize   # needs OPENROUTER_API_KEY or ANTHROPIC_API_KEY for LLM summaries
 
 # After that — graph updates automatically on every commit (< 1s, zero LLM)
 ```
@@ -233,7 +233,7 @@ Generate test files for high-risk, uncovered modules. Context is built from the 
 
 ```bash
 wednesday-skills gen-tests --dry-run      # preview targets ranked by priority
-wednesday-skills gen-tests                # generate (requires OPENROUTER_API_KEY)
+wednesday-skills gen-tests                # generate (requires OPENROUTER_API_KEY or ANTHROPIC_API_KEY)
 wednesday-skills gen-tests --min-risk 70  # critical files only
 wednesday-skills gen-tests --file src/auth/tokenService.ts
 ```
@@ -275,7 +275,7 @@ wednesday-skills plan
 wednesday-skills plan --brief "Build a todo app with auth and teams"
 ```
 
-Requires `OPENROUTER_API_KEY` in `.env`. Outputs `PLAN.md` and `CODEBASE.md`.
+Requires `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` in `.env`. Outputs `PLAN.md` and `CODEBASE.md`.
 
 ---
 
@@ -284,11 +284,15 @@ Requires `OPENROUTER_API_KEY` in `.env`. Outputs `PLAN.md` and `CODEBASE.md`.
 Copy `.env.example` to `.env` and fill in:
 
 ```
-OPENROUTER_API_KEY=   # required for plan, triage, summarize, fill-gaps
+OPENROUTER_API_KEY=   # OpenRouter key — for plan, triage, summarize, fill-gaps, chat, gen-tests
+ANTHROPIC_API_KEY=    # Anthropic key — alternative to OpenRouter (works natively inside Claude Code)
 GITHUB_TOKEN=         # required for dashboard PR panel
 ```
 
-For GitHub Actions (triage, stale deps), add `OPENROUTER_API_KEY` as a repo secret.
+LLM features auto-detect which key is available — `OPENROUTER_API_KEY` is tried first, then `ANTHROPIC_API_KEY`.
+This means **no extra setup is needed inside Claude Code** — your existing Claude session key is used automatically.
+
+For GitHub Actions (triage, stale deps), add `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` as a repo secret.
 
 ---
 

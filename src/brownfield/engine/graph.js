@@ -14,7 +14,7 @@ const tsAdapter     = require('../adapters/typescript');
 const goAdapter     = require('../adapters/go');
 const gqlAdapter    = require('../adapters/graphql');
 const kotlinAdapter = require('../adapters/kotlin');
-const swiftAdapter  = require('../adapters/swift');
+const swiftAdapter  = require('../adapters/swift');  // also exports resolveIntraModuleEdges
 const nestjsParser = require('../parsers/nestjs');
 const gitHistory = require('../parsers/git-history');
 const cocoapodsParser = require('../parsers/cocoapods');
@@ -121,6 +121,16 @@ function buildGraph(rootDir, opts = {}) {
       meta: { ...result.meta, ...nestInfo.meta, ...(gitData ? { gitHistory: gitData } : {}) },
       error: result.error,
     };
+  }
+
+  // ── Swift: resolve intra-module type-reference edges ─────────────────────
+  // Swift apps compile as a single module — files reference each other by
+  // type name, not by import statements. This second pass scans every Swift
+  // file for usages of types exported by other Swift files in the project,
+  // turning type references into real dependency edges.
+  const hasSwift = Object.values(nodes).some(n => n.lang === 'swift');
+  if (hasSwift) {
+    swiftAdapter.resolveIntraModuleEdges(nodes, rootDir);
   }
 
   // ── Build importedBy (reverse edges) ─────────────────────────────────────

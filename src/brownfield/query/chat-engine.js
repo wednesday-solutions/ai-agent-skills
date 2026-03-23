@@ -6,9 +6,9 @@
 
 'use strict';
 
-const https = require('https');
 const path = require('path');
 const { execSync } = require('child_process');
+const { callLLM, hasApiKey } = require('../core/llm-client');
 
 // ── Question classifier ───────────────────────────────────────────────────────
 
@@ -515,14 +515,13 @@ function extractRelevantNodes(question, nodes, summaries) {
   return nodeContexts.join('\n');
 }
 
-async function callHaiku(question, context, apiKey) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5',
-      messages: [
-        {
-          role: 'user',
-          content: `You are a codebase expert. Answer this question using ONLY the graph data below. If the answer isn't in the data, say "Not mapped — run wednesday-skills analyze to capture this information."
+async function callHaiku(question, context) {
+  return callLLM({
+    model: 'haiku',
+    maxTokens: 300,
+    messages: [{
+      role: 'user',
+      content: `You are a codebase expert. Answer this question using ONLY the graph data below. If the answer isn't in the data, say "Not mapped — run wednesday-skills analyze to capture this information."
 
 Graph data:
 ${context}
@@ -530,46 +529,14 @@ ${context}
 Question: ${question}
 
 Answer concisely. Cite specific files from the graph data.`,
-        },
-      ],
-      max_tokens: 300,
-      temperature: 0,
-    });
-
-    const options = {
-      hostname: 'openrouter.ai',
-      path: '/api/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://github.com/wednesday-solutions/ai-agent-skills',
-        'X-Title': 'Wednesday Skills Chat',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    };
-
-    const req = https.request(options, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          resolve(json.choices?.[0]?.message?.content?.trim() || null);
-        } catch { resolve(null); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.write(body);
-    req.end();
+    }],
   });
 }
 
-async function handleSynthesis(question, nodes, summaries, apiKey) {
-  if (!apiKey) {
+async function handleSynthesis(question, nodes, summaries) {
+  if (!hasApiKey()) {
     return {
-      answer: `This question requires synthesis across the graph. Set OPENROUTER_API_KEY to enable AI-powered answers.`,
+      answer: `This question requires synthesis. Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY to enable AI-powered answers.`,
       source: 'not-mapped',
     };
   }
@@ -577,7 +544,7 @@ async function handleSynthesis(question, nodes, summaries, apiKey) {
   const context = extractRelevantNodes(question, nodes, summaries);
 
   try {
-    const answer = await callHaiku(question, context, apiKey);
+    const answer = await callHaiku(question, context);
     return {
       answer: answer || 'Not mapped — could not extract an answer from the graph.',
       source: 'Haiku on subgraph (max 20 nodes)',
@@ -598,7 +565,7 @@ async function handleSynthesis(question, nodes, summaries, apiKey) {
  * @param {string|null} apiKey - OpenRouter key (only needed for synthesis)
  * @returns {Promise<{answer: string, source: string, type: string}>}
  */
-async function answerQuestion(question, rootDir, graph, summaries, apiKey) {
+async function answerQuestion(question, rootDir, graph, summaries) {
   const type = classify(question);
   const nodes = graph.nodes;
   let result;
@@ -623,7 +590,7 @@ async function answerQuestion(question, rootDir, graph, summaries, apiKey) {
       result = handleGitDiff(question, nodes, rootDir);
       break;
     default:
-      result = await handleSynthesis(question, nodes, summaries, apiKey);
+      result = await handleSynthesis(question, nodes, summaries);
   }
 
   return { ...result, type };

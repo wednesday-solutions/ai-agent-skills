@@ -6,6 +6,12 @@ metadata:
   author: wednesday-solutions
   version: "1.0"
 compatibility: Next.js 14+, React 18+, TypeScript 5+
+permissions:
+  allow:
+    - Bash(npm run lint)
+    - Bash(npm run format:check)
+    - Bash(npm run test)
+    - Bash(npm run build)
 ---
 
 # Wednesday Technical Development Guidelines

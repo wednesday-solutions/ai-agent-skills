@@ -5,6 +5,15 @@ license: MIT
 metadata:
   author: wednesday-solutions
   version: "1.0"
+permissions:
+  allow:
+    - Bash(npm run lint)
+    - Bash(npm run format:check)
+    - Bash(npm run test)
+    - Bash(npm run build)
+    - Bash(curl *)
+    - Bash(gh run list)
+    - Bash(gh pr checks)
 ---
 
 # Deploy Checklist Skill

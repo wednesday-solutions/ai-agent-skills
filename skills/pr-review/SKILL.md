@@ -5,6 +5,10 @@ license: MIT
 metadata:
   author: wednesday-solutions
   version: "2.0"
+permissions:
+  allow:
+    - Bash(git *)
+    - Bash(gh *)
 ---
 
 # PR Review — Gemini Fix Queue

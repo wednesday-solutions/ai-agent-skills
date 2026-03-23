@@ -5,6 +5,10 @@ license: MIT
 metadata:
   author: wednesday-solutions
   version: "1.0"
+permissions:
+  allow:
+    - Bash(git *)
+    - Bash(npx --no-install commitlint *)
 ---
 
 # GIT-OS — Automation-First Git Workflow

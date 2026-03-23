@@ -1,6 +1,10 @@
 ---
 name: brownfield-fix
 description: Use before editing any file in a brownfield project. Runs risk check and blast radius before making any change.
+permissions:
+  allow:
+    - Bash(wednesday-skills score *)
+    - Bash(wednesday-skills blast *)
 ---
 
 ## When to use

@@ -1,6 +1,10 @@
 ---
 name: brownfield-chat
 description: Use when the dev asks any open-ended question about the codebase — who wrote something, what depends on what, what changed recently, what a module does, or any structural question in plain English.
+permissions:
+  allow:
+    - Bash(wednesday-skills chat *)
+    - Bash(git log *)
 ---
 
 ## When to use

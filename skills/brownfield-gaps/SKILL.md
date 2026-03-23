@@ -1,6 +1,10 @@
 ---
 name: brownfield-gaps
 description: Use when a file has low graph coverage, contains unannotated dynamic patterns, or when the dev asks to improve codebase mapping on a specific file.
+permissions:
+  allow:
+    - Bash(wednesday-skills fill-gaps *)
+    - Bash(wednesday-skills analyze *)
 ---
 
 ## When to use

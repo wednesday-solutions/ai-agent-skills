@@ -1,6 +1,10 @@
 ---
 name: brownfield-drift
 description: Use when the dev asks if the codebase follows the original architecture plan, or before merging any PR that modifies module boundaries, service communication patterns, or ownership of key concerns.
+permissions:
+  allow:
+    - Bash(wednesday-skills drift *)
+    - Bash(git log *)
 ---
 
 ## When to use

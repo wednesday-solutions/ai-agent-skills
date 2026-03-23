@@ -297,16 +297,11 @@ function main() {
       });
       break;
     }
-    case 'blast': {
-      const blastFile = args[1];
-      if (!blastFile) { log('red', 'Usage: wednesday-skills blast <file>'); process.exit(1); }
-      runBlast(blastFile, process.cwd());
-      break;
-    }
+    case 'blast':
     case 'score': {
-      const scoreFile = args[1];
-      if (!scoreFile) { log('red', 'Usage: wednesday-skills score <file>'); process.exit(1); }
-      runScore(scoreFile, process.cwd());
+      log('yellow', `"${command}" is now handled inside Claude Code.`);
+      log('yellow', `Ask Claude: "${getIDEEquivalent(command, args)}"`);
+      process.exit(0);
       break;
     }
     case 'dead':
@@ -327,21 +322,14 @@ function main() {
       runTrace(traceFile, traceFn, process.cwd());
       break;
     }
-    case 'plan-refactor': {
-      const goalArg = args.slice(1).join(' ').replace(/^["']|["']$/g, '');
-      if (!goalArg) { log('red', 'Usage: wednesday-skills plan-refactor "goal description"'); process.exit(1); }
-      runPlanRefactor(goalArg, process.cwd());
+    case 'plan-refactor':
+    case 'plan-migration':
+    case 'onboard': {
+      log('yellow', `"${command}" is now handled inside Claude Code.`);
+      log('yellow', `Ask Claude: "${getIDEEquivalent(command, args)}"`);
+      process.exit(0);
       break;
     }
-    case 'plan-migration': {
-      const migGoal = args.slice(1).join(' ').replace(/^["']|["']$/g, '');
-      if (!migGoal) { log('red', 'Usage: wednesday-skills plan-migration "goal description"'); process.exit(1); }
-      runPlanMigration(migGoal, process.cwd());
-      break;
-    }
-    case 'onboard':
-      runOnboard(process.cwd());
-      break;
     case 'guide':
       brownfield.guide(process.cwd()).then(r => {
         log('green', `✓ GUIDE.md written: ${r.outPath}`);
@@ -354,9 +342,9 @@ function main() {
       break;
     }
     case 'chat': {
-      const question = args.slice(1).join(' ').replace(/^["']|["']$/g, '');
-      if (!question) { log('red', 'Usage: wednesday-skills chat "your question"'); process.exit(1); }
-      runChat(question, process.cwd());
+      log('yellow', `"chat" is now handled inside Claude Code.`);
+      log('yellow', `Ask Claude: "${getIDEEquivalent('chat', args)}"`);
+      process.exit(0);
       break;
     }
     case 'drift': {
@@ -370,18 +358,61 @@ function main() {
       break;
     }
     case 'gen-tests': {
-      const fileIdx = args.indexOf('--file');
-      const riskIdx = args.indexOf('--min-risk');
-      runGenTests(process.cwd(), {
-        file: fileIdx !== -1 ? args[fileIdx + 1] : null,
-        minRisk: riskIdx !== -1 ? parseInt(args[riskIdx + 1]) : 50,
-        dryRun: args.includes('--dry-run'),
-      });
+      log('yellow', `"gen-tests" is now handled inside Claude Code.`);
+      log('yellow', `Ask Claude: "Generate tests for uncovered files"`);
+      process.exit(0);
       break;
     }
     case 'list':
       listSkills();
       break;
+
+    // ── Registry commands (Phase 4) ──────────────────────────────────────────
+    case 'search': {
+      const query = args.slice(1).filter(a => !a.startsWith('--')).join(' ');
+      const tagIdx = args.indexOf('--tag');
+      const tag = tagIdx !== -1 ? args[tagIdx + 1] : null;
+      runRegistrySearch(query, tag);
+      break;
+    }
+    case 'add': {
+      const skillSpec = args[1];
+      if (!skillSpec) { log('red', 'Usage: wednesday-skills add <skill>[@version]'); process.exit(1); }
+      runRegistryAdd(skillSpec, process.cwd());
+      break;
+    }
+    case 'remove': {
+      const skillName = args[1];
+      if (!skillName) { log('red', 'Usage: wednesday-skills remove <skill>'); process.exit(1); }
+      runRegistryRemove(skillName, process.cwd());
+      break;
+    }
+    case 'update': {
+      const skillName = args[1] || null;
+      runRegistryUpdate(skillName, process.cwd());
+      break;
+    }
+    case 'check':
+      runRegistryCheck(process.cwd());
+      break;
+    case 'build-skill':
+      runBuildSkill(process.cwd());
+      break;
+    case 'submit': {
+      const skillName = args[1];
+      if (!skillName) { log('red', 'Usage: wednesday-skills submit <skill>'); process.exit(1); }
+      runSubmitSkill(skillName, process.cwd());
+      break;
+    }
+    case 'stats': {
+      runStats(process.cwd(), {
+        cost:  args.includes('--cost'),
+        stale: args.includes('--stale'),
+        skill: args[args.indexOf('--skill') + 1] || null,
+      });
+      break;
+    }
+
     case 'help':
     case '--help':
     case '-h':
@@ -392,6 +423,18 @@ function main() {
       showHelp();
       process.exit(1);
   }
+}
+
+function getIDEEquivalent(command, args) {
+  const map = {
+    'blast':         `What breaks if I change ${args[1] || '<file>'}?`,
+    'score':         `What is the risk score of ${args[1] || '<file>'}?`,
+    'chat':          args.slice(1).join(' ') || 'Ask any question about the codebase',
+    'gen-tests':     'Generate tests for uncovered files',
+    'plan-refactor': args.slice(1).join(' ') || 'Plan a refactor',
+    'onboard':       'Give me an onboarding guide for this codebase',
+  };
+  return map[command] || command;
 }
 
 // ─── Phase 2 brownfield commands ─────────────────────────────────────────────
@@ -1026,6 +1069,177 @@ function promptChecklist(rawSkills) {
   });
 }
 
+// ─── Conflict detection ───────────────────────────────────────────────────────
+
+const SKILL_CONFLICTS = [
+  { skill: 'git-os-commits', conflicts: ['git-os-lite'], reason: 'git-os-commits is a superset — remove git-os-lite' },
+  { skill: 'git-os',         conflicts: ['git-os-lite'], reason: 'git-os is a superset — remove git-os-lite' },
+  { skill: 'brownfield-query', requires: ['.wednesday/codebase/dep-graph.json'], reason: 'run wednesday-skills analyze first' },
+  { skill: 'brownfield-drift', requires: ['.wednesday/plans/PLAN.md'],           reason: 'create PLAN.md first (run wednesday-skills plan)' },
+];
+
+function checkConflicts(targetDir, installedSkills) {
+  const warnings = [];
+  const skillSet = new Set(installedSkills);
+
+  for (const rule of SKILL_CONFLICTS) {
+    if (!skillSet.has(rule.skill)) continue;
+
+    if (rule.conflicts) {
+      for (const c of rule.conflicts) {
+        if (skillSet.has(c)) {
+          warnings.push(`Conflict: "${rule.skill}" and "${c}" are both installed. ${rule.reason}`);
+        }
+      }
+    }
+    if (rule.requires) {
+      for (const req of rule.requires) {
+        if (!fs.existsSync(path.join(targetDir, req))) {
+          warnings.push(`Missing dependency for "${rule.skill}": ${req}. ${rule.reason}`);
+        }
+      }
+    }
+  }
+  return warnings;
+}
+
+// ─── Registry commands ────────────────────────────────────────────────────────
+
+function loadRegistry() {
+  // Try local cache first, fall back to bundled registry
+  const cachePath = path.join(require('os').homedir(), '.wednesday', 'registry-cache.json');
+  const bundledPath = path.join(__dirname, '..', 'registry', 'index.json');
+  if (fs.existsSync(cachePath)) {
+    try { return JSON.parse(fs.readFileSync(cachePath, 'utf8')); } catch (_) {}
+  }
+  if (fs.existsSync(bundledPath)) {
+    return JSON.parse(fs.readFileSync(bundledPath, 'utf8'));
+  }
+  return { version: '1.0', skills: [] };
+}
+
+function runRegistrySearch(query, tag) {
+  const registry = loadRegistry();
+  let results = registry.skills;
+  if (tag) results = results.filter(s => s.tags && s.tags.includes(tag));
+  if (query) {
+    const q = query.toLowerCase();
+    results = results.filter(s =>
+      s.name.toLowerCase().includes(q) ||
+      s.description.toLowerCase().includes(q) ||
+      (s.tags && s.tags.some(t => t.includes(q)))
+    );
+  }
+  if (!results.length) { log('yellow', 'No skills found.'); return; }
+  console.log('');
+  results.forEach(s => {
+    const tags = s.tags ? `  [${s.tags.join(', ')}]` : '';
+    console.log(`  ${colors.cyan}${s.name.padEnd(30)}${colors.reset}${s.description}${colors.yellow}${tags}${colors.reset}`);
+  });
+  console.log('');
+}
+
+function runRegistryAdd(skillSpec, targetDir) {
+  const [name] = skillSpec.split('@');
+  const registry = loadRegistry();
+  const entry = registry.skills.find(s => s.name === name);
+  if (!entry) {
+    log('red', `Skill "${name}" not found in registry. Run wednesday-skills search to browse.`);
+    process.exit(1);
+  }
+  const skillsDir = path.join(targetDir, '.wednesday', 'skills');
+  const dest = path.join(skillsDir, name);
+  if (fs.existsSync(dest)) {
+    log('yellow', `"${name}" is already installed. Run wednesday-skills update ${name} to upgrade.`);
+    return;
+  }
+  // Pull from bundled skills
+  const src = path.join(__dirname, '..', 'skills', name);
+  if (!fs.existsSync(src)) {
+    log('red', `Skill "${name}" files not found in package. Try reinstalling the package.`);
+    process.exit(1);
+  }
+  fs.mkdirSync(skillsDir, { recursive: true });
+  copyRecursive(src, dest);
+  log('green', `✓ ${name} installed`);
+  configure(targetDir, 'all');
+  const warnings = checkConflicts(targetDir, fs.readdirSync(skillsDir));
+  warnings.forEach(w => log('yellow', `Warning: ${w}`));
+}
+
+function runRegistryRemove(skillName, targetDir) {
+  const dest = path.join(targetDir, '.wednesday', 'skills', skillName);
+  if (!fs.existsSync(dest)) {
+    log('yellow', `"${skillName}" is not installed.`);
+    return;
+  }
+  fs.rmSync(dest, { recursive: true, force: true });
+  log('green', `✓ ${skillName} removed`);
+  configure(targetDir, 'all');
+}
+
+function runRegistryUpdate(skillName, targetDir) {
+  const skillsDir = path.join(targetDir, '.wednesday', 'skills');
+  const toUpdate = skillName
+    ? [skillName]
+    : (fs.existsSync(skillsDir) ? fs.readdirSync(skillsDir) : []);
+
+  toUpdate.forEach(name => {
+    const src = path.join(__dirname, '..', 'skills', name);
+    const dest = path.join(skillsDir, name);
+    if (!fs.existsSync(src) || !fs.existsSync(dest)) return;
+    fs.rmSync(dest, { recursive: true, force: true });
+    copyRecursive(src, dest);
+    log('green', `✓ ${name} updated`);
+  });
+  configure(targetDir, 'all');
+}
+
+function runRegistryCheck(targetDir) {
+  const skillsDir = path.join(targetDir, '.wednesday', 'skills');
+  if (!fs.existsSync(skillsDir)) {
+    log('yellow', 'No skills installed. Run wednesday-skills install first.');
+    return;
+  }
+  const installed = fs.readdirSync(skillsDir);
+  console.log('');
+  log('cyan', `Installed skills (${installed.length}):`);
+  installed.forEach(s => log('green', `  ✓ ${s}`));
+  console.log('');
+  const warnings = checkConflicts(targetDir, installed);
+  if (warnings.length) {
+    log('yellow', 'Warnings:');
+    warnings.forEach(w => log('yellow', `  ⚠ ${w}`));
+  } else {
+    log('green', 'No conflicts detected.');
+  }
+  console.log('');
+}
+
+function runBuildSkill(targetDir) {
+  const { builder } = requireLib('builder');
+  builder.interactive(targetDir);
+}
+
+function runSubmitSkill(skillName, targetDir) {
+  const { builder } = requireLib('builder');
+  builder.submit(skillName, targetDir);
+}
+
+function runStats(targetDir, opts = {}) {
+  const { analytics } = requireLib('analytics');
+  analytics.stats(targetDir, opts);
+}
+
+function requireLib(name) {
+  const libPath = path.join(__dirname, '..', 'lib', `${name}.js`);
+  if (!fs.existsSync(libPath)) {
+    log('red', `lib/${name}.js not found. Reinstall the package.`);
+    process.exit(1);
+  }
+  return require(libPath);
+}
+
 function saveWednesdayConfig(targetDir, scripts) {
   const configPath = path.join(targetDir, '.wednesday', 'config.json');
   let existing = {};
@@ -1428,7 +1642,22 @@ function showHelp() {
   console.log('  gen-tests --dry-run          Show targets without generating');
   console.log('  gen-tests --file <f>         Generate tests for a specific file');
   console.log('  gen-tests --min-risk <n>     Only target files with risk above n (default: 50)');
-  console.log('  list                         List available skills');
+  console.log('  list                         List installed skills');
+  console.log('');
+  console.log('Registry (Phase 4):');
+  console.log('  search "<query>" [--tag <t>] Search the skill registry');
+  console.log('  add <skill>[@version]        Install a skill from the registry');
+  console.log('  remove <skill>               Uninstall a skill');
+  console.log('  update [<skill>]             Update one or all installed skills');
+  console.log('  check                        List installed skills and detect conflicts');
+  console.log('  build-skill                  AI-generate a new SKILL.md interactively');
+  console.log('  submit <skill>               Submit a skill to the public registry via PR');
+  console.log('  stats [--cost] [--stale]     Show skill usage analytics');
+  console.log('');
+  console.log('IDE-handled (ask Claude instead):');
+  console.log('  blast, score, chat, gen-tests, plan-refactor, onboard');
+  console.log('  → These redirect to the equivalent Claude prompt.');
+  console.log('');
   console.log('  help                         Show this help message');
   console.log('');
   console.log('Examples:');

@@ -56,38 +56,88 @@ Run in your project root. Done in seconds.
 
 ## Workflows
 
+Everything runs inside Claude. You talk to Claude — it loads the right skill and handles all the commands. You never need to leave your chat session.
+
+---
+
 ### Greenfield — Starting a new project from scratch
 
 **Scenario: You have an idea and need a plan before writing any code**
 
 ```
-1. greenfield     → Write BRIEF.md with project idea
-                    Three AI personas (Architect, PM, Security) run in parallel
-                    Output: PLAN.md + CODEBASE.md with full architecture and constraints
+You say:    "Plan this project: <your idea>"
+            (or write BRIEF.md first, then say "plan this project")
 
-2. sprint         → Give the first ticket title from PLAN.md
-                    Output: branch name, PR title, PR description template
-                    Creates the branch: feat/<ticket-name>
+Claude:     Loads greenfield skill
+            Asks 5 clarifying questions
+            Runs Research agent → domain landscape, hidden complexity, tech risks
+            Spawns Architect + PM + Security agents in parallel
+            Synthesises all three into PLAN.md
 
-3. wednesday-dev  → Agent reads coding standards before writing any code
-   wednesday-design → Agent reads component library before building any UI
+Output:     .wednesday/plans/PLAN.md  — architecture, phases, security, tensions
+```
 
-4. git-os         → Agent follows conventional commits for every change
-                    Output: clean commit history with typed, scoped messages
+```
+You say:    "Start the first ticket: <ticket title from PLAN.md>"
 
-5. pr-create      → Validates branch name
-                    Runs: lint → format:check → test → build
-                    Generates PR title from first commit
-                    Shows PR body → waits for your approval
-                    Pushes + opens PR on GitHub
+Claude:     Loads sprint skill
+            Derives branch name (feat/<name>, fix/<name>, chore/<name>)
+            Outputs PR title in conventional commit format
+            Fills PR description template
+            Creates the branch
 
-6. pr-review      → Gemini bot posts review on the PR
-                    Agent categorizes comments by impact (security → breaking → logic → style)
-                    You approve fixes: "@agent fix #1 #3"
-                    Agent applies in priority order, commits each fix, pushes
+Output:     Branch created, PR title + description template ready to fill
+```
 
-7. deploy-checklist → Before deploying: env vars, migrations, rollback plan, CI green
-                      After deploying: smoke tests, health check, error rate normal
+```
+You say:    "Fix this bug" / "Build this feature"
+
+Claude:     Loads wednesday-dev + wednesday-design (for UI work)
+            Follows import ordering, complexity limits, naming conventions
+            Loads git-os before every commit
+            Writes clean conventional commits automatically
+
+Output:     Atomic commits with typed, scoped messages
+```
+
+```
+You say:    "Create a PR"
+
+Claude:     Loads pr-create skill
+            Validates branch name matches feat|fix|chore|test|hotfix/<name>
+            Runs lint → format:check → test → build (skips missing scripts)
+            Generates PR title from first commit on branch
+            Builds PR body from commit history
+            Shows you the title + body and asks for approval
+            Waits — does not push until you say yes
+            Pushes branch and opens PR on GitHub
+
+Output:     PR URL
+```
+
+```
+Gemini bot  Posts a review on the PR
+
+You say:    "@agent fix #1 #3"  (or "@agent fix all")
+
+Claude:     Loads pr-review skill
+            Categorises all comments: security → breaking → logic → performance → naming → style
+            Never fixes a style item while a security issue is pending
+            Applies each approved fix, one commit per item
+            Pushes to the same PR branch
+            Updates the review report (✅ fixed / ⬜ pending)
+
+Output:     Fixed commits pushed, report updated
+```
+
+```
+You say:    "Run the deploy checklist"
+
+Claude:     Loads deploy-checklist skill
+            Walks through pre-deploy: CI green, env vars, migrations, rollback plan
+            After deploy: smoke tests, health check, error rate, monitoring alerts
+
+Output:     Checklist with pass/fail for each item
 ```
 
 ---
@@ -97,90 +147,144 @@ Run in your project root. Done in seconds.
 **Scenario: You've just joined a project or inherited a codebase**
 
 ```
-1. wednesday-skills analyze    → Parses entire codebase, builds dep-graph.json (zero LLM, < 30s)
-   wednesday-skills summarize  → Generates summaries.json + MASTER.md (needs API key, ~$0.10 one-time)
+You say:    "Map this codebase"
+            (or "analyse the codebase" / "build the knowledge graph")
 
-2. brownfield-chat  → Ask any question to understand the codebase
-                      "what does tokenService do"
-                      "what changed in the last 30 days"
-                      "which files have no tests and risk above 70"
-                      Output: plain-English answer backed by graph — never guesses
+Claude:     Runs: wednesday-skills map
+            Parses entire codebase → dep-graph.json  (zero LLM, < 30s)
+            Generates summaries.json + MASTER.md     (one-time LLM cost ~$0.10)
+            Graph updates automatically on every commit after this
 
-3. brownfield-query → Use when Claude needs structural answers mid-task
-                      "what breaks if I change auth.ts" → blast radius from dep graph
-                      "what is the architecture of this codebase" → reads MASTER.md
+Output:     .wednesday/codebase/dep-graph.json
+            .wednesday/codebase/summaries.json
+            .wednesday/codebase/MASTER.md
+```
+
+```
+You say:    "What does tokenService do?"
+            "Who last touched auth.ts?"
+            "What changed in the last 30 days?"
+            "Which files have no tests and risk above 70?"
+
+Claude:     Loads brownfield-chat skill
+            Runs: wednesday-skills chat "<question>"
+            Routes to the right handler (git log / summaries / BFS / graph filter)
+            Returns answer with cited source — never guesses
+
+Output:     Direct answer + source citation (dep-graph.json / git log / summaries.json)
 ```
 
 ---
 
 ### Brownfield — Working on a ticket
 
-**Scenario: You have a ticket to fix a bug or add a feature in an existing codebase**
+**Scenario: You have a bug to fix or a feature to add in an existing codebase**
 
 ```
-1. sprint         → Give the ticket title and description
-                    Output: branch name (fix/<name>), PR title, PR description template
-                    Creates the branch
+You say:    "Start this ticket: <ticket title and description>"
 
-2. brownfield-fix → Before editing ANY file:
-                    Runs: wednesday-skills score <file>  → risk score 0-100
-                    Runs: wednesday-skills blast <file>  → how many files depend on this
-                    If risk > 80: warns you explicitly before proceeding
+Claude:     Loads sprint skill
+            Derives branch name and PR title from ticket
+            Creates the branch
+            Fills PR description template with ticket link
 
-3. brownfield-query → If you need to understand what a module does or how it connects
-                      Reads from dep-graph.json and summaries.json — not raw source
+Output:     Branch created, PR template ready
+```
 
-4. git-os         → Commit each atomic change following conventional commit format
+```
+You say:    "Fix the bug in auth.ts" / "Refactor userService"
 
-5. pr-create      → Validates branch name
-                    Runs: lint → format:check → test → build
-                    Checks .wednesday/config.json:
-                      coverage: true → runs npm run coverage, shows summary
-                      sonar: true    → runs sonar-scanner, blocks PR if quality gate fails
-                    Generates PR title + body from commit history
-                    Shows body → waits for your approval
-                    Pushes + opens PR on GitHub
+Claude:     Loads brownfield-fix skill (automatically, before touching any file)
+            Runs: wednesday-skills score <file>   → risk score 0–100
+            Runs: wednesday-skills blast <file>   → dependent count and blast radius
+            Checks MASTER.md danger zones
 
-6. brownfield-drift → Run before merging if the PR touches module boundaries or service interfaces
-                      Checks codebase against constraints defined in PLAN.md
-                      Exits non-zero if violations found — plugs into CI
+            Score 0–30:   proceeds
+            Score 31–60:  tells you the score, proceeds with care
+            Score 61–80:  lists direct dependents, asks for confirmation
+            Score 81–100: stops — requires your explicit approval before continuing
 
-7. pr-review      → Gemini posts review → agent triages by impact → you approve fixes
-                    Agent commits each fix and pushes to the same PR branch
+Output:     Risk report, then makes the change (or stops for approval)
+```
+
+```
+You say:    "What does this module connect to?"
+            "Why is this dependency conflicting?"
+            "What is the architecture of this codebase?"
+
+Claude:     Loads brownfield-query skill
+            Reads dep-graph.json, summaries.json, MASTER.md, conflicts.json
+            Answers from graph data — never reads raw source files
+
+Output:     Structural answer with risk score and blast radius cited
+```
+
+```
+You say:    "Create a PR"
+
+Claude:     Loads pr-create skill
+            Validates branch, runs pre-push checks
+            Reads .wednesday/config.json:
+              coverage: true → runs npm run coverage, shows summary
+              sonar: true    → runs sonar-scanner, blocks if quality gate fails
+            Shows PR body → waits for your approval → pushes + opens PR
+
+Output:     PR URL
+```
+
+```
+You say:    "Check if this PR follows the architecture"
+            (or before merging any PR that touches module boundaries)
+
+Claude:     Loads brownfield-drift skill
+            Runs: wednesday-skills drift --since <base-sha>
+            Checks actual code against constraints defined in PLAN.md
+            Violation types: forbidden, ownership, no-direct-import, no-cycle
+
+Output:     List of violations with file + rule + suggested fix (or "No violations")
+            Non-zero exit → blocks merge in CI if wired up
+```
+
+```
+Gemini bot  Posts a review on the PR
+
+You say:    "@agent fix all"
+
+Claude:     Loads pr-review skill
+            Triages by impact, fixes in priority order, one commit per item
+
+Output:     Fixed commits pushed, review report updated
 ```
 
 ---
 
-### Brownfield — Improving coverage on a risky file
+### Brownfield — Improving test coverage
 
-**Scenario: A high-risk file has low test coverage**
-
-```
-1. wednesday-skills gen-tests --dry-run  → Preview which files would be targeted
-                                           (riskScore > 50 AND coverage < 30%, ranked by priority)
-
-2. brownfield-gaps  → If a file shows low graph coverage (dynamic patterns not mapped):
-                      Runs fill-gaps subagent to annotate event emitters, dynamic requires
-                      Re-runs analyze --incremental to update the graph
-
-3. wednesday-skills gen-tests --file src/auth/tokenService.ts
-                             → Generates test file with real mocks from graph imports
-                               Tests cover actual caller patterns and historical bug fixes
-```
-
----
-
-### Brownfield — Pre-merge architecture review
-
-**Scenario: A PR modifies module boundaries or cross-service imports**
+**Scenario: A high-risk file has no tests**
 
 ```
-1. brownfield-drift --since <base-sha>  → Check only new violations introduced by this PR
-                                          Violation types: forbidden, ownership, no-direct-import, no-cycle
-                                          Returns non-zero exit → blocks merge in CI if violated
+You say:    "Generate tests for uncovered files"
 
-2. brownfield-chat  → "what changed in this PR's blast radius"
-                      "which services does this PR affect"
+Claude:     Runs: wednesday-skills gen-tests --dry-run  → preview targets ranked by priority
+            Targets: riskScore > 50 AND coverage < 30%
+            You confirm which files to generate for
+
+            Runs: wednesday-skills gen-tests
+            Builds each test file using real mocks from graph imports
+            Covers actual caller patterns + historical bug-fix commits
+
+Output:     Test files written, framework auto-detected (jest/vitest/mocha)
+```
+
+```
+You say:    "This file isn't mapped well" / "Improve coverage on <file>"
+
+Claude:     Loads brownfield-gaps skill
+            Runs: wednesday-skills fill-gaps --file <file>
+            Subagent annotates dynamic patterns (event emitters, dynamic requires)
+            Runs: wednesday-skills analyze --incremental  → updates graph
+
+Output:     Annotations added, graph updated
 ```
 
 ---

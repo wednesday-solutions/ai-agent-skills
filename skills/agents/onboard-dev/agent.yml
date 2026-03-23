@@ -1,0 +1,6 @@
+# Dev Onboarding Agent
+# Flow: fill high-risk graph gaps → guided codebase Q&A
+name: onboard-dev-agent
+stages:
+  - type: sequential
+    steps: [brownfield-gaps, brownfield-chat]

@@ -1,0 +1,8 @@
+# Module Audit Agent
+# Flow: get summary + risk score in parallel → generate tests if coverage is low
+name: module-audit-agent
+stages:
+  - type: parallel
+    steps: [brownfield-query, brownfield-fix]
+  - type: sequential
+    steps: [brownfield-tests]

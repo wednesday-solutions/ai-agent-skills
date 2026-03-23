@@ -910,11 +910,15 @@ const SKILL_META = {
   'deploy-checklist': { label: 'Deploy Checklist',  desc: 'Pre/post deploy verification checklist',                   recommended: false },
   'wednesday-dev':    { label: 'Wednesday Dev',     desc: 'Import ordering, complexity limits, naming conventions',   recommended: true },
   'wednesday-design':  { label: 'Wednesday Design',   desc: '492+ approved UI components, design tokens, animations',   recommended: false },
-  // Brownfield bundles — shown as two items, expand to skill files + hooks at install time
+  // Brownfield bundles — shown as three items, expand to skill files + hooks at install time
   'brownfield':        { label: 'Brownfield',         desc: 'Dep graph, blast radius, risk scores, git hooks (zero LLM)', recommended: true,
                          bundle: ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'] },
   'brownfield-ai':     { label: 'Brownfield AI',      desc: 'Summaries, MASTER.md, gap filling via Haiku — needs OPENROUTER_API_KEY', recommended: false,
                          requires: 'brownfield', bundle: ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'] },
+  'brownfield-chat':   { label: 'Brownfield Chat',    desc: 'Plain-English Q&A from graph — who/what/which/when, path traversal, git diff', recommended: false,
+                         requires: 'brownfield', bundle: ['brownfield-chat'] },
+  'brownfield-drift':  { label: 'Brownfield Drift',   desc: 'Architecture drift detection against PLAN.md boundaries — zero LLM, CI-ready', recommended: false,
+                         requires: 'brownfield', bundle: ['brownfield-drift'] },
 };
 
 // PR scripts that can be auto-triggered on `ws-skills pr`
@@ -924,7 +928,7 @@ const PR_SCRIPTS = [
 ];
 
 // Individual brownfield skills hidden from checklist — exposed as bundles
-const BROWNFIELD_INDIVIDUAL = new Set(['brownfield-query', 'brownfield-fix', 'brownfield-gaps']);
+const BROWNFIELD_INDIVIDUAL = new Set(['brownfield-query', 'brownfield-fix', 'brownfield-gaps', 'brownfield-chat', 'brownfield-drift']);
 
 /**
  * Build the display list for the checklist:
@@ -934,7 +938,7 @@ const BROWNFIELD_INDIVIDUAL = new Set(['brownfield-query', 'brownfield-fix', 'br
 function buildChecklistItems(rawSkills) {
   const individual = rawSkills.filter(s => !BROWNFIELD_INDIVIDUAL.has(s));
   // Add bundles as virtual entries at the end
-  const bundles = ['brownfield', 'brownfield-ai'];
+  const bundles = ['brownfield', 'brownfield-ai', 'brownfield-chat', 'brownfield-drift'];
   return [...individual, ...bundles];
 }
 
@@ -1608,6 +1612,17 @@ function listSkills() {
   console.log('  brownfield-ai  [requires brownfield]');
   console.log('    Summaries, MASTER.md, gap filling via Haiku subagents.');
   console.log('    Needs OPENROUTER_API_KEY. Runs in background, never blocks.');
+  console.log('');
+  console.log('  brownfield-chat  [requires brownfield]');
+  console.log('    Plain-English Q&A backed by the graph — zero LLM for most queries.');
+  console.log('    Handles: who wrote, what does X do, what breaks if, which files match,');
+  console.log('             path from X to Y, what changed. Haiku fallback for synthesis (~$0.005).');
+  console.log('    Usage: wednesday-skills chat "your question"');
+  console.log('');
+  console.log('  brownfield-drift  [requires brownfield]');
+  console.log('    Architecture drift detection. Compares dep-graph.json against');
+  console.log('    machine-readable boundaries in PLAN.md. Zero LLM. CI-ready (exit 1 on violation).');
+  console.log('    Usage: wednesday-skills drift [--rule <name>] [--since <commit>] [--fix]');
   console.log('');
 }
 

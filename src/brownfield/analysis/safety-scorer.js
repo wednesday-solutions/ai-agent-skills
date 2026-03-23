@@ -1,7 +1,12 @@
 /**
- * 2B — Safety scorer
+ * 2B / 3A — Safety scorer
  * 0–100 risk score per file
- * score = min(100, (min(dependents,50)*1.2) + (isPublicContract?25:0) + ((100-testCoverage)*0.15))
+ * score = min(100,
+ *   (min(dependents,50)*1.2) +
+ *   (isPublicContract?25:0) +
+ *   ((100-testCoverage)*0.15) +
+ *   min(bugFixCommits*3, 15)   // 3A: git bug-fix history signal (max 15pts)
+ * )
  */
 
 'use strict';
@@ -24,10 +29,15 @@ function score(file, nodes, testCoverageMap = {}) {
   const testCoverage = testCoverageMap[file] ?? 50; // default 50% if unknown
   const isPublicContract = node.exports.length > 0 && dependents > 0;
 
+  // 3A: git bug-fix history — files with more past bugs are higher risk
+  const bugFixCommits = node.meta?.gitHistory?.bugFixCommits ?? 0;
+  const bugFixSignal = Math.min(bugFixCommits * 3, 15);
+
   const raw = Math.min(100, Math.round(
     (Math.min(dependents, 50) * 1.2) +
     (isPublicContract ? 25 : 0) +
-    ((100 - testCoverage) * 0.15)
+    ((100 - testCoverage) * 0.15) +
+    bugFixSignal
   ));
 
   const band = BANDS.find(b => raw <= b.max) || BANDS[BANDS.length - 1];
@@ -40,6 +50,7 @@ function score(file, nodes, testCoverageMap = {}) {
       dependents,
       isPublicContract,
       testCoverage,
+      bugFixCommits,
     },
   };
 }

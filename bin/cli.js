@@ -18,12 +18,15 @@ const fs = require('fs');
 const path = require('path');
 const { execSync, spawn } = require('child_process');
 
-// Load .env from cwd if present (no dotenv dependency needed)
-const envPath = path.join(process.cwd(), '.env');
-if (fs.existsSync(envPath)) {
-  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+// Load .env / .env.local from cwd if present (no dotenv dependency needed).
+// .env.local takes precedence over .env (loaded second, won't overwrite existing vars).
+for (const envFile of ['.env', '.env.local']) {
+  const envPath = path.join(process.cwd(), envFile);
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
   }
 }
 const { syncAdapters, ensureToolsConfig } = require('../src/adapters/index.js');
@@ -345,10 +348,35 @@ function main() {
       }).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
       break;
     case 'summary': {
-      try {
-        const r = brownfield.summary(process.cwd());
+      brownfield.summary(process.cwd()).then(r => {
         log('green', `✓ SUMMARY.md written: ${r.outPath}`);
-      } catch (e) { log('red', `Error: ${e.message}`); process.exit(1); }
+      }).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
+      break;
+    }
+    case 'chat': {
+      const question = args.slice(1).join(' ').replace(/^["']|["']$/g, '');
+      if (!question) { log('red', 'Usage: wednesday-skills chat "your question"'); process.exit(1); }
+      runChat(question, process.cwd());
+      break;
+    }
+    case 'drift': {
+      const ruleIdx = args.indexOf('--rule');
+      const sinceIdx = args.indexOf('--since');
+      runDrift(process.cwd(), {
+        rule: ruleIdx !== -1 ? args[ruleIdx + 1] : null,
+        since: sinceIdx !== -1 ? args[sinceIdx + 1] : null,
+        fix: args.includes('--fix'),
+      });
+      break;
+    }
+    case 'gen-tests': {
+      const fileIdx = args.indexOf('--file');
+      const riskIdx = args.indexOf('--min-risk');
+      runGenTests(process.cwd(), {
+        file: fileIdx !== -1 ? args[fileIdx + 1] : null,
+        minRisk: riskIdx !== -1 ? parseInt(args[riskIdx + 1]) : 50,
+        dryRun: args.includes('--dry-run'),
+      });
       break;
     }
     case 'list':
@@ -451,7 +479,7 @@ async function runMap(targetDir) {
 
   // ── Step 7: Generate SUMMARY.md ───────────────────────────────────────────
   log('cyan', '⑦ Generating SUMMARY.md (1-2 page overview)...');
-  const summaryResult = brownfield.summary(targetDir);
+  const summaryResult = await brownfield.summary(targetDir);
   log('green', `   ✓ ${summaryResult.outPath}`);
   console.log('');
 
@@ -586,6 +614,7 @@ function runScore(file, targetDir) {
     console.log(`  Dependents: ${result.details.dependents}`);
     console.log(`  Public contract: ${result.details.isPublicContract}`);
     console.log(`  Test coverage: ${result.details.testCoverage}%`);
+    console.log(`  Bug-fix commits: ${result.details.bugFixCommits ?? 0}`);
 
     if (result.score >= 81) {
       log('red', '\n  ⚠ CRITICAL: Require explicit approval before modifying');
@@ -1372,6 +1401,17 @@ function showHelp() {
   console.log('  plan-refactor "goal"         AI refactor plan (Sonnet, ~$0.12)');
   console.log('  plan-migration "goal"        AI migration strategy (Sonnet, ~$0.15)');
   console.log('  onboard                      Interactive onboarding guide (Haiku)');
+  console.log('');
+  console.log('Brownfield Intelligence (Phase 3):');
+  console.log('  chat "question"              Ask any question about the codebase in plain English');
+  console.log('  drift                        Check architecture drift against PLAN.md constraints');
+  console.log('  drift --rule <name>          Check a single boundary rule');
+  console.log('  drift --since <commit>       Only report new violations (for PR review)');
+  console.log('  drift --fix                  Show suggested fix for each violation');
+  console.log('  gen-tests                    Generate tests for high-risk uncovered files (Sonnet)');
+  console.log('  gen-tests --dry-run          Show targets without generating');
+  console.log('  gen-tests --file <f>         Generate tests for a specific file');
+  console.log('  gen-tests --min-risk <n>     Only target files with risk above n (default: 50)');
   console.log('  list                         List available skills');
   console.log('  help                         Show this help message');
   console.log('');
@@ -1394,6 +1434,146 @@ function showHelp() {
   console.log('  Cursor         → .cursorrules');
   console.log('  GitHub Copilot → .github/copilot-instructions.md');
   console.log('');
+}
+
+// ─── Phase 3 brownfield commands ─────────────────────────────────────────────
+
+function runChat(question, targetDir) {
+  targetDir = path.resolve(targetDir);
+  console.log('');
+  log('cyan', `Querying: "${question}"`);
+  console.log('');
+
+  brownfield.chat(question, targetDir).then(result => {
+    console.log(result.answer);
+    console.log('');
+    log('blue', `Source: ${result.source}`);
+    if (result.type) log('blue', `Method: ${result.type}`);
+    console.log('');
+  }).catch(e => {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  });
+}
+
+function runDrift(targetDir, opts) {
+  targetDir = path.resolve(targetDir);
+  console.log('');
+  log('blue', '┌─────────────────────────────────────────────┐');
+  log('blue', '│  Architecture drift check                   │');
+  log('blue', '└─────────────────────────────────────────────┘');
+  console.log('');
+
+  let result;
+  try {
+    result = brownfield.drift(targetDir, opts);
+  } catch (e) {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  }
+
+  if (result.noConstraints) {
+    log('yellow', '  No machine-readable constraints found in PLAN.md.');
+    log('yellow', '  Add a "boundaries" JSON block to PLAN.md to enable drift detection.');
+    log('cyan', '  See: wednesday-skills help');
+    console.log('');
+    return;
+  }
+
+  // Filter by rule if --rule provided
+  let violations = result.violations;
+  if (opts.rule) {
+    violations = violations.filter(v => v.rule === opts.rule);
+  }
+
+  if (violations.length === 0) {
+    log('green', opts.since
+      ? `  No new drift since ${opts.since}.`
+      : '  No architecture drift detected.');
+    console.log('');
+    return;
+  }
+
+  log('red', `  VIOLATIONS (${violations.length}):`);
+  console.log('');
+
+  for (const v of violations) {
+    const severityColor = v.severity === 'high' ? 'red' : 'yellow';
+    log(severityColor, `  ${v.severity.toUpperCase()} — ${v.rule}`);
+    console.log(`    ${v.description}`);
+    console.log(`    Edge: ${v.edge}`);
+    if (v.introducedBy) {
+      console.log(`    Introduced: commit ${v.introducedBy.hash} on ${v.introducedBy.date} by ${v.introducedBy.author}`);
+      console.log(`    Subject: ${v.introducedBy.subject}`);
+    }
+    if (opts.fix) {
+      log('cyan', `    Fix: ${v.fix}`);
+    }
+    console.log('');
+  }
+
+  process.exit(1); // Non-zero exit for CI/CD integration
+}
+
+function runGenTests(targetDir, opts) {
+  targetDir = path.resolve(targetDir);
+  console.log('');
+
+  if (opts.dryRun) {
+    log('blue', '┌─────────────────────────────────────────────┐');
+    log('blue', '│  Test generation targets (dry run)          │');
+    log('blue', '└─────────────────────────────────────────────┘');
+    console.log('');
+
+    let targets;
+    try {
+      targets = brownfield.genTestsTargets(targetDir, opts);
+    } catch (e) {
+      log('red', `Error: ${e.message}`);
+      process.exit(1);
+    }
+
+    if (targets.length === 0) {
+      log('green', '  No files match the criteria (risk > ' + opts.minRisk + ', coverage < 30%).');
+      console.log('');
+      return;
+    }
+
+    log('cyan', `  Files targeted for test generation (ranked by priority):`);
+    console.log('');
+    targets.forEach((t, i) => {
+      console.log(`  ${i + 1}. ${t.file.padEnd(50)} risk:${t.node.riskScore}  coverage:${t.coverage}%  priority:${t.priority}`);
+    });
+    console.log('');
+    log('yellow', `  Run without --dry-run to generate ${targets.length} test file(s). Requires OPENROUTER_API_KEY.`);
+    console.log('');
+    return;
+  }
+
+  log('blue', '┌─────────────────────────────────────────────┐');
+  log('blue', '│  Generating tests (Sonnet)                  │');
+  log('blue', '└─────────────────────────────────────────────┘');
+  console.log('');
+
+  if (!process.env.OPENROUTER_API_KEY) {
+    log('red', '  OPENROUTER_API_KEY not set. Test generation requires API access.');
+    log('yellow', '  Run with --dry-run to see which files would be targeted.');
+    process.exit(1);
+  }
+
+  brownfield.genTests(targetDir, opts).then(results => {
+    console.log('');
+    const succeeded = results.filter(r => !r.error);
+    const failed = results.filter(r => r.error);
+    log('green', `  ✓ Generated: ${succeeded.length} test file(s)`);
+    if (failed.length > 0) log('yellow', `  ⚠ Failed: ${failed.length}`);
+    console.log('');
+    succeeded.forEach(r => console.log(`    ${r.testPath}  (risk:${r.risk}, coverage:${r.coverage}%)`));
+    console.log('');
+  }).catch(e => {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  });
 }
 
 function listSkills() {

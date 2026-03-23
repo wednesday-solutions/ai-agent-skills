@@ -10,7 +10,8 @@
 const https = require('https');
 const path = require('path');
 
-const CONFIDENCE_GATE = 0.70;
+// 3A: Raised from 0.70 → 0.80 to reduce false-positive agent-resolved edges
+const CONFIDENCE_GATE = 0.80;
 
 /**
  * Gap types and their risk gates

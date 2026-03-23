@@ -1,6 +1,6 @@
 # Wednesday Agent Skills
 
-AI skills for Wednesday Solutions projects — git discipline, PR automation, terminal dashboard, greenfield planning, and brownfield codebase intelligence.
+AI skills for Wednesday Solutions projects — git discipline, PR automation, terminal dashboard, greenfield planning, and brownfield codebase intelligence with real-time chat, drift detection, and test generation.
 
 ---
 
@@ -42,6 +42,8 @@ Run in your project root. Done in seconds.
 | `brownfield-query` skill | Answer structural questions from dep graph — never guesses |
 | `brownfield-fix` skill | Risk check + blast radius before editing any file |
 | `brownfield-gaps` skill | Fill dynamic coverage gaps via targeted Haiku subagents |
+| `brownfield-chat` skill | Plain-English questions answered from the graph — zero LLM for most queries |
+| `brownfield-drift` skill | Architecture drift detection against PLAN.md constraints |
 
 **Config files written automatically:**
 - `CLAUDE.md` — Claude Code
@@ -82,6 +84,19 @@ wednesday-skills trace <file>             # call chain from a file
 wednesday-skills plan-refactor "goal"     # AI refactor plan (Sonnet)
 wednesday-skills plan-migration "goal"    # AI migration strategy (Sonnet)
 wednesday-skills onboard                  # interactive onboarding guide
+
+# Phase 3 — Intelligence layer
+wednesday-skills chat "what does tokenService do"          # plain-English codebase Q&A
+wednesday-skills chat "what breaks if I change auth.ts"    # blast radius in plain English
+wednesday-skills chat "which files have no tests and risk above 70"
+wednesday-skills chat "path from checkout to database"
+wednesday-skills chat "what changed in the last 30 days"
+wednesday-skills drift                    # architecture drift vs PLAN.md constraints
+wednesday-skills drift --since abc1234    # new drift only (PR review)
+wednesday-skills drift --rule frontend-never-imports-db --fix
+wednesday-skills gen-tests --dry-run      # preview targets
+wednesday-skills gen-tests                # generate tests for high-risk uncovered files
+wednesday-skills gen-tests --min-risk 70  # critical files only
 
 wednesday-skills list                     # list installed skills
 ```
@@ -139,6 +154,97 @@ wednesday-skills blast src/services/auth.ts    # see what depends on it
 | Swift / SwiftUI / UIKit | 75% | 75% |
 
 **Cost:** Full scan of 500 files costs $0.00 (zero LLM). Summaries ~$0.10 one-time. Ongoing < $0.05/month per project.
+
+---
+
+## Codebase chat
+
+Ask any question about the codebase in plain English. Most answers are free — backed by the graph, not LLM guesses.
+
+```bash
+wednesday-skills chat "who wrote the payment module"
+wednesday-skills chat "what breaks if I rename tokenService"
+wednesday-skills chat "which files have zero tests and risk above 70"
+wednesday-skills chat "path from checkout button to database write"
+wednesday-skills chat "what changed in the last 30 days"
+```
+
+**How it works:**
+
+| Question type | Method | Cost |
+|---|---|---|
+| Who wrote / when | git log | $0.00 |
+| What does X do | summaries.json lookup | $0.00 |
+| What breaks if | BFS blast radius | $0.00 |
+| Which modules match criteria | graph filter | $0.00 |
+| What changed recently | git log + diff | $0.00 |
+| Path from X to Y | BFS traversal | $0.00 |
+| Complex synthesis | Haiku on max 20-node subgraph | ~$0.005 |
+
+Every answer cites its source. "Not mapped" is returned when data is missing — never a guess.
+
+---
+
+## Architecture drift detection
+
+Compare the actual codebase against the intended design in `PLAN.md`. Catches boundary violations before they merge.
+
+```bash
+wednesday-skills drift                # full check
+wednesday-skills drift --since HEAD~5 # only new violations (for PR review)
+wednesday-skills drift --fix          # show suggested fix for each violation
+```
+
+Add machine-readable constraints to `PLAN.md`:
+
+```json
+{
+  "boundaries": [
+    {
+      "rule": "frontend-never-imports-db",
+      "description": "Frontend must never import DB layer directly",
+      "from": "src/app/**",
+      "to": "src/lib/db/**",
+      "type": "forbidden"
+    },
+    {
+      "rule": "no-circular-deps",
+      "description": "No circular dependencies anywhere",
+      "scope": "**",
+      "type": "no-cycle"
+    }
+  ]
+}
+```
+
+**Violation types:** `forbidden`, `ownership`, `no-direct-import`, `no-cycle`
+
+Returns non-zero exit code — plug directly into CI:
+
+```yaml
+- run: wednesday-skills drift --since ${{ github.event.pull_request.base.sha }}
+```
+
+---
+
+## Test generation
+
+Generate test files for high-risk, uncovered modules. Context is built from the graph — real callers, real mocks, real historical bugs.
+
+```bash
+wednesday-skills gen-tests --dry-run      # preview targets ranked by priority
+wednesday-skills gen-tests                # generate (requires OPENROUTER_API_KEY)
+wednesday-skills gen-tests --min-risk 70  # critical files only
+wednesday-skills gen-tests --file src/auth/tokenService.ts
+```
+
+Targets files where `riskScore > 50 AND coverage < 30%`, ranked by `riskScore × (100 - coverage)`.
+
+Each test file includes:
+- Correct mocks (from actual graph imports, not guessed)
+- Tests for real callers' usage patterns
+- Coverage of historical bug-fix commits
+- Framework-appropriate patterns (jest/vitest/mocha auto-detected)
 
 ---
 
@@ -218,7 +324,9 @@ your-project/
 │   │   ├── wednesday-design/
 │   │   ├── brownfield-query/
 │   │   ├── brownfield-fix/
-│   │   └── brownfield-gaps/
+│   │   ├── brownfield-gaps/
+│   │   ├── brownfield-chat/      # Phase 3 — plain-English codebase Q&A
+│   │   └── brownfield-drift/     # Phase 3 — architecture drift detection
 │   ├── codebase/              # generated by wednesday-skills analyze
 │   │   ├── dep-graph.json
 │   │   ├── summaries.json
@@ -242,7 +350,9 @@ your-project/
 
 ## Roadmap
 
-See [Docs/Plans/phase_2.md](Docs/Plans/phase_2.md).
+- Phase 1: Install, configure, git hooks, greenfield planner
+- Phase 2: Brownfield intelligence — dep graph, risk scores, summaries, MASTER.md
+- Phase 3: Chat, drift detection, test generation ← *current*
 
 ## License
 

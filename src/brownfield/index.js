@@ -25,6 +25,34 @@ const { planRefactor } = require('./reasoning/refactor-planner');
 const { planMigration } = require('./reasoning/migration-strategy');
 const { qaMasterMd } = require('./reasoning/master-qa');
 const { generateGuide, generateSummary } = require('./summarization/guide');
+const { answerQuestion } = require('./query/chat-engine');
+const { detectDrift, loadConstraints, formatDriftReport } = require('./analysis/drift');
+const { genTests, selectTargets } = require('./reasoning/test-generator');
+
+/**
+ * Build a test coverage map from the graph.
+ * Strategy: find all test files, mark every source file they import as covered (100).
+ * All other source files get 0. Binary signal — has test / no test.
+ */
+function buildTestCoverageMap(nodes) {
+  const coverageMap = {};
+  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/;
+
+  for (const file of Object.keys(nodes)) {
+    if (!TEST_RE.test(file)) coverageMap[file] = 0;
+  }
+
+  for (const [file, node] of Object.entries(nodes)) {
+    if (!TEST_RE.test(file)) continue;
+    for (const imp of node.imports) {
+      if (Object.prototype.hasOwnProperty.call(coverageMap, imp)) {
+        coverageMap[imp] = 100;
+      }
+    }
+  }
+
+  return coverageMap;
+}
 
 /**
  * Resolve standard paths for a project
@@ -150,7 +178,8 @@ async function analyze(rootDir, opts = {}) {
   // Write analysis files if full scan or refresh
   if (!opts.incremental || opts.refreshAnalysis) {
     const legacy = buildLegacyReport(graph.nodes);
-    const scoreMap = scoreAll(graph.nodes);
+    const testCoverageMap = buildTestCoverageMap(graph.nodes);
+    const scoreMap = scoreAll(graph.nodes, testCoverageMap);
     const apiMap = buildApiSurface(graph.nodes);
     const { deadFiles, unusedExports } = findDeadCode(graph.nodes);
 
@@ -159,8 +188,8 @@ async function analyze(rootDir, opts = {}) {
       .map(([file]) => ({ file, ...blastRadius(file, graph.nodes) }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 50)
-      .reduce((acc, { file, count, files: deps, crossLang }) => {
-        acc[file] = { count, dependents: deps, crossLang };
+      .reduce((acc, { file, direct, transitive, files: deps, crossLang }) => {
+        acc[file] = { direct, transitive, dependents: deps, crossLang };
         return acc;
       }, {});
 
@@ -268,7 +297,7 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
   const nodes = graph.nodes;
   const all = Object.values(nodes);
 
-  const scoreMap = scoreAll(nodes);
+  const scoreMap = scoreAll(nodes, buildTestCoverageMap(nodes));
   const { deadFiles } = findDeadCode(nodes);
 
   // Coverage by language
@@ -285,7 +314,13 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
     .slice(0, 10);
 
   const highRiskRows = highRisk
-    .map(n => `| ${n.file} | ${n.riskScore} | ${n.importedBy.length} | ${scoreMap[n.file]?.band || '?'} |`)
+    .map(n => {
+      const br = blastRadius(n.file, nodes);
+      const depStr = br.transitive > br.direct
+        ? `${br.direct} direct (+${br.transitive - br.direct} transitive)`
+        : `${br.direct}`;
+      return `| ${n.file} | ${n.riskScore} | ${depStr} | ${scoreMap[n.file]?.band || '?'} |`;
+    })
     .join('\n');
 
   // Gap summary
@@ -367,8 +402,8 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
     '',
     '> Files with risk score > 60. Read before modifying.',
     '',
-    '| File | Score | Dependents | Band |',
-    '|------|-------|------------|------|',
+    '| File | Score | Dependents (direct + transitive) | Band |',
+    '|------|-------|----------------------------------|------|',
     highRiskRows || '| *none* | — | — | — |',
     '',
     '## Coverage gaps',
@@ -520,13 +555,45 @@ module.exports = {
     return generateGuide(graph, summaries, p.codebaseDir);
   },
 
-  summary: (rootDir) => {
+  summary: async (rootDir) => {
     const graph = loadGraph(rootDir);
     if (!graph) throw new Error('Run wednesday-skills map first to build the dependency graph.');
     const summaries = loadSummaries(rootDir);
     const legacy = buildLegacyReport(graph.nodes);
     const p = paths(rootDir);
-    return generateSummary(graph, summaries, legacy, p.codebaseDir);
+    const apiKey = process.env.OPENROUTER_API_KEY || null;
+    return generateSummary(graph, summaries, legacy, p.codebaseDir, apiKey);
+  },
+
+  chat: async (question, rootDir) => {
+    const graph = loadGraph(rootDir);
+    if (!graph) throw new Error('Run wednesday-skills analyze first.');
+    const summaries = loadSummaries(rootDir);
+    const apiKey = process.env.OPENROUTER_API_KEY || null;
+    return answerQuestion(question, rootDir, graph, summaries, apiKey);
+  },
+
+  drift: (rootDir, opts = {}) => {
+    const graph = loadGraph(rootDir);
+    if (!graph) throw new Error('Run wednesday-skills analyze first.');
+    const constraints = loadConstraints(rootDir);
+    if (!constraints) return { violations: [], noConstraints: true };
+    const violations = detectDrift(constraints, graph, rootDir, opts);
+    return { violations, report: formatDriftReport(violations, opts) };
+  },
+
+  genTests: async (rootDir, opts = {}) => {
+    const graph = loadGraph(rootDir);
+    if (!graph) throw new Error('Run wednesday-skills analyze first.');
+    const summaries = loadSummaries(rootDir);
+    const apiKey = opts.dryRun ? null : process.env.OPENROUTER_API_KEY || null;
+    return genTests(rootDir, graph, summaries, apiKey, opts);
+  },
+
+  genTestsTargets: (rootDir, opts = {}) => {
+    const graph = loadGraph(rootDir);
+    if (!graph) throw new Error('Run wednesday-skills analyze first.');
+    return selectTargets(graph.nodes, opts);
   },
 
   installHooks: (rootDir) => {

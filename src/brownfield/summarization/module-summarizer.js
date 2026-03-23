@@ -21,7 +21,7 @@ Lang: ${node.lang}
 Exports: ${exportStr}
 Used by: ${importersStr}
 Last change: ${lastCommitMsg || 'unknown'}
-Write 2 sentences. Start with what it DOES.`;
+Write 2 sentences. Start with what it DOES. Name at least one specific function, type, or export. Do not use phrases like "this module contains", "this file handles", or "this module provides".`;
 }
 
 /**

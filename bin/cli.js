@@ -1082,6 +1082,18 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
       log('green', `  ✓ ${skill} installed`);
     });
 
+    // Symlink .wednesday/skills/* into .claude/skills/ so Claude Code's
+    // skill picker discovers them without duplicating files.
+    const claudeSkillsDir = path.join(targetDir, '.claude', 'skills');
+    fs.mkdirSync(claudeSkillsDir, { recursive: true });
+    selectedSkills.forEach(skill => {
+      const linkPath = path.join(claudeSkillsDir, skill);
+      const linkTarget = path.join('..', '..', '.wednesday', 'skills', skill);
+      try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch (_) {}
+      fs.symlinkSync(linkTarget, linkPath);
+      log('green', `  ✓ ${skill} linked to .claude/skills/`);
+    });
+
     // Copy GitHub Action workflows and scripts based on selection
     copyGitHubAssets(packageRoot, targetDir, selectedScripts);
 

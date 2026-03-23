@@ -8,10 +8,17 @@ AI skills for Wednesday Solutions projects — git discipline, PR automation, te
 
 - Node.js ≥ 18
 - npm ≥ 8
-- `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` — for LLM features (plan, summarize, fill-gaps, chat, gen-tests)
-- `GITHUB_TOKEN` — for the terminal dashboard PR panel
 
-Add keys to `.env` in your project root before running LLM-dependent commands. The install step itself requires no API keys.
+**No API key needed to use skills inside Claude Code, Cursor, or Gemini CLI.** When you're inside an AI IDE, the IDE is the model — skills are instructions it reads, not scripts that call an API.
+
+API keys are only needed for standalone CLI scripts that run outside any IDE session:
+
+| Key | Used by |
+|-----|---------|
+| `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` | `wednesday-skills plan`, `summarize`, `fill-gaps`, `gen-tests`, `build-skill` |
+| `GITHUB_TOKEN` | `wednesday-skills dashboard` (PR panel) |
+
+Add keys to `.env` in your project root. The install step itself requires no keys.
 
 ---
 
@@ -550,18 +557,19 @@ Requires `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` in `.env`. Outputs `.wednes
 
 ## Environment variables
 
-Copy `.env.example` to `.env` and fill in:
+Only needed for standalone CLI scripts (`plan`, `summarize`, `fill-gaps`, `gen-tests`) and GitHub Actions. Skills used inside Claude Code, Cursor, or Gemini CLI need no keys.
+
+Copy `.env.example` to `.env` and fill in only what you need:
 
 ```
-OPENROUTER_API_KEY=   # OpenRouter key — for plan, triage, summarize, fill-gaps, chat, gen-tests
-ANTHROPIC_API_KEY=    # Anthropic key — alternative to OpenRouter (works natively inside Claude Code)
-GITHUB_TOKEN=         # required for dashboard PR panel
+OPENROUTER_API_KEY=   # for plan, summarize, fill-gaps, gen-tests, build-skill
+ANTHROPIC_API_KEY=    # alternative to OpenRouter
+GITHUB_TOKEN=         # for wednesday-skills dashboard (PR panel only)
 ```
 
-LLM features auto-detect which key is available — `OPENROUTER_API_KEY` is tried first, then `ANTHROPIC_API_KEY`.
-This means **no extra setup is needed inside Claude Code** — your existing Claude session key is used automatically.
+CLI scripts try `OPENROUTER_API_KEY` first, then `ANTHROPIC_API_KEY`. Use whichever you have.
 
-For GitHub Actions (triage, stale deps), add `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` as a repo secret.
+For GitHub Actions (triage, drift CI), add the key as a repo secret.
 
 ---
 

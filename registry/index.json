@@ -1,0 +1,247 @@
+{
+  "version": "1.0",
+  "updatedAt": "2026-03-23T12:01:04.180Z",
+  "count": 17,
+  "skills": [
+    {
+      "name": "brownfield-chat",
+      "version": "1.0.0",
+      "description": "Use when the dev asks any open-ended question about the codebase — who wrote something, what depends on what, what changed recently, what a module does, or any structural question in plain English.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 378,
+      "downloads": 0,
+      "path": "skills/brownfield-chat"
+    },
+    {
+      "name": "brownfield-drift",
+      "version": "1.0.0",
+      "description": "Use when the dev asks if the codebase follows the original architecture plan, or before merging any PR that modifies module boundaries, service communication patterns, or ownership of key concerns.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 328,
+      "downloads": 0,
+      "path": "skills/brownfield-drift"
+    },
+    {
+      "name": "brownfield-fix",
+      "version": "1.0.0",
+      "description": "Use before editing any file in a brownfield project. Runs risk check and blast radius before making any change.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 263,
+      "downloads": 0,
+      "path": "skills/brownfield-fix"
+    },
+    {
+      "name": "brownfield-gaps",
+      "version": "1.0.0",
+      "description": "Use when a file has low graph coverage, contains unannotated dynamic patterns, or when the dev asks to improve codebase mapping on a specific file.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 290,
+      "downloads": 0,
+      "path": "skills/brownfield-gaps"
+    },
+    {
+      "name": "brownfield-query",
+      "version": "1.0.0",
+      "description": "Use when asked what a module does, what breaks if a file changes, what a dependency conflict means, or what the architecture of this codebase is.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 240,
+      "downloads": 0,
+      "path": "skills/brownfield-query"
+    },
+    {
+      "name": "deploy-checklist",
+      "version": "1.0.0",
+      "description": "Pre-deploy and post-deploy checklist skill. Ensures env vars, migrations, CI, rollback plan, smoke tests, and monitoring are verified before and after every deployment.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 474,
+      "downloads": 0,
+      "path": "skills/deploy-checklist"
+    },
+    {
+      "name": "git-os",
+      "version": "1.0.0",
+      "description": "Enforces conventional commits, atomic changes, and GIT-OS workflow for Wednesday Solutions projects. Every agent that generates a commit must read this skill first.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 723,
+      "downloads": 0,
+      "path": "skills/git-os"
+    },
+    {
+      "name": "git-os-lite",
+      "version": "1.0.0",
+      "description": "Use before making any commit or creating any branch. Enforces conventional commits and atomic commit rules.",
+      "tags": [
+        "git",
+        "commits",
+        "workflow"
+      ],
+      "requires": [
+        ""
+      ],
+      "conflicts": [
+        "git-os",
+        "git-os-commits"
+      ],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 287,
+      "downloads": 0,
+      "path": "skills/git-os-lite"
+    },
+    {
+      "name": "greenfield",
+      "version": "1.0.0",
+      "description": "Parallel persona planning for new projects. Research agent runs first to build domain context, then Architect, PM, and Security agents run in parallel. Synthesis agent combines all perspectives into a detailed GSD-style PLAN.md with Tensions section.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 547,
+      "downloads": 0,
+      "path": "skills/greenfield"
+    },
+    {
+      "name": "module-audit-agent",
+      "version": "1.0.0",
+      "description": "Use when asked to audit a module, check its health, or assess whether it should be refactored. Runs structural query, risk check, and test generation automatically.",
+      "tags": [],
+      "requires": [
+        "brownfield-query",
+        "brownfield-fix"
+      ],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 261,
+      "downloads": 0,
+      "path": "skills/agents/module-audit"
+    },
+    {
+      "name": "onboard-dev-agent",
+      "version": "1.0.0",
+      "description": "Use when a dev is new to the project, asks for an overview, or wants to get oriented quickly. Fills graph gaps then runs a guided codebase interview.",
+      "tags": [],
+      "requires": [
+        "brownfield-gaps",
+        "brownfield-chat"
+      ],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 281,
+      "downloads": 0,
+      "path": "skills/agents/onboard-dev"
+    },
+    {
+      "name": "pr-create",
+      "version": "1.0.0",
+      "description": "Agent-driven PR creation skill. Validates branch, runs pre-push checklist, generates GIT-OS compliant PR title and body from commit history, detects stacked branches, then pushes and opens the PR via gh CLI.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 899,
+      "downloads": 0,
+      "path": "skills/pr-create"
+    },
+    {
+      "name": "pr-review",
+      "version": "1.0.0",
+      "description": "Gemini PR review skill. Fetches Gemini bot comments on the PR, categorizes by impact, posts a fix queue, and applies fixes on dev approval in priority order.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 460,
+      "downloads": 0,
+      "path": "skills/pr-review"
+    },
+    {
+      "name": "pr-review-agent",
+      "version": "1.0.0",
+      "description": "Use when asked to review a PR, check a PR for issues, or when a PR is ready for review. Runs triage, blast radius, and drift check automatically.",
+      "tags": [],
+      "requires": [
+        "brownfield-fix",
+        "brownfield-drift",
+        "pr-review"
+      ],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 284,
+      "downloads": 0,
+      "path": "skills/agents/pr-review-agent"
+    },
+    {
+      "name": "sprint",
+      "version": "1.0.0",
+      "description": "Sprint initiation skill. Given a ticket title and description, outputs a GIT-OS-compliant branch name, PR title, and PR description template.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 296,
+      "downloads": 0,
+      "path": "skills/sprint"
+    },
+    {
+      "name": "wednesday-design",
+      "version": "1.0.0",
+      "description": "Design and UX guidelines for Wednesday Solutions projects. Covers visual design tokens, animation patterns, component standards, accessibility, and user experience best practices for React/Next.js applications. ENFORCES use of approved component libraries only.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 2012,
+      "downloads": 0,
+      "path": "skills/wednesday-design"
+    },
+    {
+      "name": "wednesday-dev",
+      "version": "1.0.0",
+      "description": "Technical development guidelines for Wednesday Solutions projects. Enforces import ordering, complexity limits, naming conventions, TypeScript best practices, and code quality standards for React/Next.js applications.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 1539,
+      "downloads": 0,
+      "path": "skills/wednesday-dev"
+    }
+  ]
+}

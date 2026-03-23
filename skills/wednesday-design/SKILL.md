@@ -10,7 +10,18 @@ compatibility: React 18+, Next.js 14+, Tailwind CSS, Framer Motion
 
 # Wednesday Design & UX Guidelines
 
-This skill establishes design and user experience standards for Wednesday Solutions projects. Follow these guidelines to create consistent, accessible, and delightful user interfaces.
+## Trigger
+
+Load this skill when working on **UI, components, or visual design**:
+- Building or modifying a React component
+- Choosing which UI component to use
+- Styling with Tailwind or design tokens
+- Adding animations or transitions
+- Accessibility review of a UI element
+- "Which component should I use for X?"
+- "How should this look?"
+
+**Do NOT use this skill for:** business logic, TypeScript types, API routes, or code structure (use `wednesday-dev`). This skill only applies to visual output and UI components.
 
 ---
 

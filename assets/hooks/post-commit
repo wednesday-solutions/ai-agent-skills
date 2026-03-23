@@ -1,0 +1,12 @@
+#!/bin/bash
+# Wednesday Skills — post-commit hook
+# Zero LLM. Tree-sitter incremental only.
+# < 1 second. Never slows the commit.
+
+if command -v wednesday-skills &> /dev/null; then
+  wednesday-skills analyze --incremental --silent 2>/dev/null
+elif [ -f "./node_modules/.bin/wednesday-skills" ]; then
+  ./node_modules/.bin/wednesday-skills analyze --incremental --silent 2>/dev/null
+fi
+
+exit 0

@@ -1,0 +1,30 @@
+name: Stale Dependencies
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday 9am UTC
+  workflow_dispatch:
+
+jobs:
+  stale-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install wednesday-skills
+        run: npm install -g @wednesday-solutions-eng/ai-agent-skills
+
+      - name: Run stale deps check
+        run: node $(npm root -g)/@wednesday-solutions-eng/ai-agent-skills/src/brownfield/scripts/dep-watchdog.js .
+        continue-on-error: true
+
+      - name: Upload stale deps report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stale-deps-report
+          path: .wednesday/codebase/analysis/stale-deps.json

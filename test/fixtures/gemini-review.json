@@ -1,0 +1,21 @@
+{
+  "action": "submitted",
+  "review": {
+    "id": 1234567,
+    "user": {
+      "login": "gemini-code-assist[bot]"
+    },
+    "body": "I found several issues in this PR:\n\n1. The variable `x` on line 12 is not descriptive.\n2. Missing null check before accessing `user.profile`.\n3. The `fetchData` function makes an API call inside a render loop — potential N+1.",
+    "state": "CHANGES_REQUESTED"
+  },
+  "pull_request": {
+    "number": 42,
+    "title": "feat: Add user dashboard",
+    "head": {
+      "ref": "feat/user-dashboard"
+    }
+  },
+  "repository": {
+    "full_name": "wednesday-solutions/test-project"
+  }
+}

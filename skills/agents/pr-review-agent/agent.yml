@@ -1,0 +1,10 @@
+# PR Review Agent
+# Flow: fetch review comments → check blast radius + drift in parallel → fix on approval
+name: pr-review-agent
+stages:
+  - type: sequential
+    steps: [triage-read]
+  - type: parallel
+    steps: [brownfield-fix, brownfield-drift]
+  - type: sequential
+    steps: [triage-fix]

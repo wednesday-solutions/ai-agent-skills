@@ -6,9 +6,27 @@ metadata:
   author: wednesday-solutions
   version: "1.0"
 compatibility: Next.js 14+, React 18+, TypeScript 5+
+permissions:
+  allow:
+    - Bash(npm run lint)
+    - Bash(npm run format:check)
+    - Bash(npm run test)
+    - Bash(npm run build)
 ---
 
 # Wednesday Technical Development Guidelines
+
+## Trigger
+
+Load this skill when writing, reviewing, or refactoring **code logic**:
+- Writing a new function, hook, API route, or service
+- Reviewing TypeScript / JavaScript for quality issues
+- Refactoring for complexity, naming, or structure
+- "Does this follow our coding standards?"
+
+**Do NOT use this skill for:** choosing UI components or visual styling (use `wednesday-design`). This skill covers code structure, TypeScript, imports, and logic — not visual output.
+
+---
 
 This skill enforces code quality standards for Wednesday Solutions projects. Follow these guidelines to maintain consistency, readability, and maintainability across the codebase.
 

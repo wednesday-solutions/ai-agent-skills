@@ -1,20 +1,21 @@
 {
   "name": "@wednesday-solutions-eng/ai-agent-skills",
-  "version": "1.1.0",
-  "description": "Pre-configured agent skills for Wednesday Solutions projects. Provides AI coding assistants with project-specific guidelines for code quality and design standards.",
+  "version": "2.0.0",
+  "description": "AI agent skills for Wednesday Solutions — git discipline, PR triage, terminal dashboard, and greenfield planning.",
   "keywords": [
     "agent-skills",
     "claude",
+    "gemini",
+    "antigravity",
     "cursor",
     "ai",
     "coding-assistant",
     "code-quality",
     "design-system",
     "wednesday-solutions",
-    "eslint",
-    "react",
-    "typescript",
-    "ui-components"
+    "conventional-commits",
+    "pr-triage",
+    "greenfield-planning"
   ],
   "author": "Wednesday Solutions <delivery@wednesday.is>",
   "license": "MIT",
@@ -33,11 +34,25 @@
   "files": [
     "bin/",
     "skills/",
+    "scripts/",
+    "src/",
+    "assets/",
+    ".commitlintrc.json",
     "README.md",
     "LICENSE"
   ],
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.0.2",
+    "ink": "^4.4.1",
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.0.0",
+    "@commitlint/config-conventional": "^19.0.0",
+    "dotenv": "^17.3.1"
   },
   "publishConfig": {
     "access": "public"

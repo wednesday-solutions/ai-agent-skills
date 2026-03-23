@@ -5,6 +5,18 @@ license: MIT
 metadata:
   author: wednesday-solutions
   version: "1.0"
+permissions:
+  allow:
+    - Bash(git *)
+    - Bash(gh *)
+    - Bash(npm run lint)
+    - Bash(npm run format:check)
+    - Bash(npm run test)
+    - Bash(npm run build)
+    - Bash(npm run coverage)
+    - Bash(npm run sonar)
+    - Bash(npx sonar-scanner *)
+    - Bash(node -e *)
 ---
 
 # PR Create — Agent-Driven Pull Request Skill
@@ -27,12 +39,13 @@ Read `.wednesday/skills/git-os/SKILL.md` before doing anything.
 ```
 1. Validate branch name
 2. Run pre-push checklist
-3. Extract ticket ID
-4. Generate PR title from commit history
-5. Detect stacked branch
-6. Build PR body
-7. git push + gh pr create
-8. Return PR URL
+3. Run coverage/Sonar (only if project has them configured)
+4. Extract ticket ID
+5. Generate PR title from commit history
+6. Detect stacked branch
+7. Build PR body → show to dev → wait for approval
+8. git push + gh pr create
+9. Return PR URL
 ```
 
 ---
@@ -66,7 +79,23 @@ If a project does not have one of these scripts, skip it and note it was skipped
 
 ---
 
-## Step 3 — Extract Ticket ID
+## Step 3 — Coverage and Sonar (Conditional)
+
+**Only run this step if the project opted in during `ws-skills install`.** Check `.wednesday/config.json`:
+
+```bash
+node -e "const c=require('./.wednesday/config.json'); const s=c.pr_scripts||{}; console.log(JSON.stringify({coverage:!!s.coverage,sonar:!!s.sonar}))"
+```
+
+**If `coverage: true`** → run `npm run coverage` and show the summary. Do not fail the PR for coverage drops unless the project has a threshold configured.
+
+**If `sonar: true`** → run `npm run sonar` or `npx sonar-scanner`. Show the quality gate result. A **failed quality gate blocks the PR** — stop and show the reason.
+
+**If `.wednesday/config.json` does not exist or both are false** → skip this step entirely. Do not mention it.
+
+---
+
+## Step 4 — Extract Ticket ID
 
 Look for a Jira/Linear ticket pattern in the branch name: `[A-Z]+-\d+`
 
@@ -78,7 +107,7 @@ feat/add-auth        → (no ticket)
 
 ---
 
-## Step 4 — PR Title
+## Step 5 — PR Title
 
 Get the first commit on this branch that is not in the base branch:
 
@@ -90,7 +119,7 @@ The PR title IS this commit subject. It already follows GIT-OS format.
 
 ---
 
-## Step 5 — Detect Stacked Branch
+## Step 6 — Detect Stacked Branch
 
 Get the divergence point from main:
 
@@ -109,9 +138,9 @@ If no match → base branch is `main`.
 
 ---
 
-## Step 6 — PR Body
+## Step 7 — Build PR Body and Get Approval
 
-Use the GIT-OS template. Fill what you can from context, leave placeholders for the dev.
+Build the PR body using the GIT-OS template. Fill what you can from context, leave placeholders for the dev.
 
 ```markdown
 ### Ticket Link
@@ -137,9 +166,16 @@ Use the GIT-OS template. Fill what you can from context, leave placeholders for 
 <!-- Add screen recordings if UI changes -->
 ```
 
+**Show the generated title and body to the dev. Ask:**
+> "Ready to push and open this PR? You can edit the body above before I proceed."
+
+**Wait for explicit confirmation before continuing.** Do not push or create the PR until the dev approves.
+
 ---
 
-## Step 7 — Push and Create PR
+## Step 8 — Push and Create PR
+
+Only run after dev approval in Step 7.
 
 ```bash
 git push origin <current-branch>
@@ -164,6 +200,8 @@ Return the PR URL from the `gh pr create` output.
 |-----------|--------|
 | Branch name invalid | Explain correct format, stop |
 | Pre-push check fails | Show full error output, stop |
+| Sonar quality gate fails | Show gate reason, stop — do not push |
+| Dev does not confirm body | Wait — never auto-proceed |
 | `gh` not installed | Tell dev to install GitHub CLI: `brew install gh` |
 | Push fails (upstream conflict) | Show error, suggest `git pull --rebase` |
 | PR already exists | Show existing PR URL, stop |

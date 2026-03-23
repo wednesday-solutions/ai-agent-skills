@@ -38,3 +38,9 @@ test/PLAN.md
 test/CODEBASE.md
 test/BRIEF.md
 test/.wednesday/plans/
+test/.plans/
+
+# Planning/dev artifacts
+.plans/
+all/
+Docs/

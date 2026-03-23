@@ -51,7 +51,7 @@ if (!filter || filter === 'install') {
   section('install');
 
   // Run install into a temp dir
-  const result = spawnSync(process.execPath, ['bin/cli.js', 'install', TMP, '--skip-config'], {
+  const result = spawnSync(process.execPath, ['bin/cli.js', 'install', TMP, '--all', '--skip-config'], {
     cwd: ROOT, encoding: 'utf8',
   });
 
@@ -75,7 +75,7 @@ if (!filter || filter === 'configure') {
 
   // Configure all agents for the temp dir (run install first if needed)
   if (!fs.existsSync(path.join(TMP, '.wednesday', 'skills'))) {
-    spawnSync(process.execPath, ['bin/cli.js', 'install', TMP, '--skip-config'], { cwd: ROOT });
+    spawnSync(process.execPath, ['bin/cli.js', 'install', TMP, '--all', '--skip-config'], { cwd: ROOT });
   }
 
   const result = spawnSync(process.execPath, ['bin/cli.js', 'configure', TMP, 'all'], {
@@ -83,6 +83,8 @@ if (!filter || filter === 'configure') {
   });
 
   assert('configure exits 0', result.status === 0, result.stderr);
+
+  if (result.status !== 0) { summary(); }
 
   const claude = fs.readFileSync(path.join(TMP, 'CLAUDE.md'), 'utf8');
   assert('CLAUDE.md contains available_skills block', claude.includes('<available_skills>'));
@@ -102,7 +104,7 @@ if (!filter || filter === 'adapters') {
   section('adapters');
 
   if (!fs.existsSync(path.join(TMP, '.wednesday', 'skills'))) {
-    spawnSync(process.execPath, ['bin/cli.js', 'install', TMP, '--skip-config'], { cwd: ROOT });
+    spawnSync(process.execPath, ['bin/cli.js', 'install', TMP, '--all', '--skip-config'], { cwd: ROOT });
   }
 
   const result = spawnSync(process.execPath, ['bin/cli.js', 'sync', TMP, '--tool', 'claude-code'], {

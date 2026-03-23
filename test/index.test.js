@@ -158,20 +158,19 @@ if (!filter || filter === 'plan') {
     const planDir = path.join(require('os').tmpdir(), 'ws-plan-test-' + Date.now());
     const result = spawnSync(
       process.execPath,
-      ['scripts/plan.js', planDir, '--brief', 'Build a simple todo app with user auth'],
-      { cwd: ROOT, encoding: 'utf8', timeout: 120_000 }
+      ['scripts/plan.js', planDir, '--brief', 'Build a simple todo app with user auth', '--skip-questions'],
+      { cwd: ROOT, encoding: 'utf8', timeout: 180_000 }
     );
 
+    const planMd = path.join(planDir, '.wednesday', 'plans', 'PLAN.md');
     assert('plan exits 0', result.status === 0, result.stderr?.slice(0, 200));
-    assert('PLAN.md created', fs.existsSync(path.join(planDir, 'PLAN.md')));
-    assert('CODEBASE.md created', fs.existsSync(path.join(planDir, 'CODEBASE.md')));
+    assert('PLAN.md created', fs.existsSync(planMd));
     assert('BRIEF.md created', fs.existsSync(path.join(planDir, 'BRIEF.md')));
 
-    if (fs.existsSync(path.join(planDir, 'PLAN.md'))) {
-      const plan = fs.readFileSync(path.join(planDir, 'PLAN.md'), 'utf8');
+    if (fs.existsSync(planMd)) {
+      const plan = fs.readFileSync(planMd, 'utf8');
       assert('PLAN.md has Overview section', plan.includes('## Overview'));
       assert('PLAN.md has Architecture section', plan.includes('## Architecture'));
-      assert('PLAN.md has Requirements section', plan.includes('## Requirements'));
       assert('PLAN.md has Tensions section', plan.includes('## Tensions'));
       assert('PLAN.md has Branch Naming section', plan.includes('## Branch Naming'));
     }

@@ -54,6 +54,137 @@ Run in your project root. Done in seconds.
 
 ---
 
+## Workflows
+
+### Greenfield — Starting a new project from scratch
+
+**Scenario: You have an idea and need a plan before writing any code**
+
+```
+1. greenfield     → Write BRIEF.md with project idea
+                    Three AI personas (Architect, PM, Security) run in parallel
+                    Output: PLAN.md + CODEBASE.md with full architecture and constraints
+
+2. sprint         → Give the first ticket title from PLAN.md
+                    Output: branch name, PR title, PR description template
+                    Creates the branch: feat/<ticket-name>
+
+3. wednesday-dev  → Agent reads coding standards before writing any code
+   wednesday-design → Agent reads component library before building any UI
+
+4. git-os         → Agent follows conventional commits for every change
+                    Output: clean commit history with typed, scoped messages
+
+5. pr-create      → Validates branch name
+                    Runs: lint → format:check → test → build
+                    Generates PR title from first commit
+                    Shows PR body → waits for your approval
+                    Pushes + opens PR on GitHub
+
+6. pr-review      → Gemini bot posts review on the PR
+                    Agent categorizes comments by impact (security → breaking → logic → style)
+                    You approve fixes: "@agent fix #1 #3"
+                    Agent applies in priority order, commits each fix, pushes
+
+7. deploy-checklist → Before deploying: env vars, migrations, rollback plan, CI green
+                      After deploying: smoke tests, health check, error rate normal
+```
+
+---
+
+### Brownfield — First time on an existing codebase
+
+**Scenario: You've just joined a project or inherited a codebase**
+
+```
+1. wednesday-skills analyze    → Parses entire codebase, builds dep-graph.json (zero LLM, < 30s)
+   wednesday-skills summarize  → Generates summaries.json + MASTER.md (needs API key, ~$0.10 one-time)
+
+2. brownfield-chat  → Ask any question to understand the codebase
+                      "what does tokenService do"
+                      "what changed in the last 30 days"
+                      "which files have no tests and risk above 70"
+                      Output: plain-English answer backed by graph — never guesses
+
+3. brownfield-query → Use when Claude needs structural answers mid-task
+                      "what breaks if I change auth.ts" → blast radius from dep graph
+                      "what is the architecture of this codebase" → reads MASTER.md
+```
+
+---
+
+### Brownfield — Working on a ticket
+
+**Scenario: You have a ticket to fix a bug or add a feature in an existing codebase**
+
+```
+1. sprint         → Give the ticket title and description
+                    Output: branch name (fix/<name>), PR title, PR description template
+                    Creates the branch
+
+2. brownfield-fix → Before editing ANY file:
+                    Runs: wednesday-skills score <file>  → risk score 0-100
+                    Runs: wednesday-skills blast <file>  → how many files depend on this
+                    If risk > 80: warns you explicitly before proceeding
+
+3. brownfield-query → If you need to understand what a module does or how it connects
+                      Reads from dep-graph.json and summaries.json — not raw source
+
+4. git-os         → Commit each atomic change following conventional commit format
+
+5. pr-create      → Validates branch name
+                    Runs: lint → format:check → test → build
+                    Checks .wednesday/config.json:
+                      coverage: true → runs npm run coverage, shows summary
+                      sonar: true    → runs sonar-scanner, blocks PR if quality gate fails
+                    Generates PR title + body from commit history
+                    Shows body → waits for your approval
+                    Pushes + opens PR on GitHub
+
+6. brownfield-drift → Run before merging if the PR touches module boundaries or service interfaces
+                      Checks codebase against constraints defined in PLAN.md
+                      Exits non-zero if violations found — plugs into CI
+
+7. pr-review      → Gemini posts review → agent triages by impact → you approve fixes
+                    Agent commits each fix and pushes to the same PR branch
+```
+
+---
+
+### Brownfield — Improving coverage on a risky file
+
+**Scenario: A high-risk file has low test coverage**
+
+```
+1. wednesday-skills gen-tests --dry-run  → Preview which files would be targeted
+                                           (riskScore > 50 AND coverage < 30%, ranked by priority)
+
+2. brownfield-gaps  → If a file shows low graph coverage (dynamic patterns not mapped):
+                      Runs fill-gaps subagent to annotate event emitters, dynamic requires
+                      Re-runs analyze --incremental to update the graph
+
+3. wednesday-skills gen-tests --file src/auth/tokenService.ts
+                             → Generates test file with real mocks from graph imports
+                               Tests cover actual caller patterns and historical bug fixes
+```
+
+---
+
+### Brownfield — Pre-merge architecture review
+
+**Scenario: A PR modifies module boundaries or cross-service imports**
+
+```
+1. brownfield-drift --since <base-sha>  → Check only new violations introduced by this PR
+                                          Violation types: forbidden, ownership, no-direct-import, no-cycle
+                                          Returns non-zero exit → blocks merge in CI if violated
+
+2. brownfield-chat  → "what changed in this PR's blast radius"
+                      "which services does this PR affect"
+```
+
+---
+
 ## CLI commands
 
 ```bash

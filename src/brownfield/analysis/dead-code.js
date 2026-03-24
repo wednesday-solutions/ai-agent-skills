@@ -31,8 +31,13 @@ function isSafelyUnimported(file, node) {
   if (/\.(config|setup|test|spec)\.[jt]sx?$/.test(f)) return true;
   if (/jest\.setup|setupTests|vitest\.setup|babel\.config|webpack\.config|vite\.config|next\.config|tailwind\.config|postcss\.config|rollup\.config|esbuild\.config/.test(base)) return true;
 
-  // Test files
+  // Test files (JS/TS, Python, Ruby, Java, PHP, C#)
   if (/\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/.test(f)) return true;
+  if (/test_\w+\.py$|_test\.py$/.test(base)) return true;                         // Python
+  if (/_spec\.rb$|_test\.rb$/.test(base) || /^\/?spec\//.test(f)) return true;   // Ruby
+  if (/Test\.java$|Tests\.java$|IT\.java$/.test(base)) return true;               // Java
+  if (/Test\.php$|Tests\.php$/.test(base) || /^\/?tests?\//.test(f)) return true; // PHP
+  if (/Tests\.cs$|Test\.cs$|Fixture\.cs$/.test(base)) return true;                // C#
 
   // Files with unresolved dynamic import gaps — may be loaded at runtime
   if (node.gaps.some(g => g.type === 'dynamic-require' || g.type === 'dynamic-import')) return true;
@@ -51,10 +56,11 @@ function findDeadCode(nodes) {
 
   for (const [file, node] of Object.entries(nodes)) {
     if (node.isEntryPoint)          continue;
-    // Only skip barrels that are true directory index files (index.ts/tsx/js).
+    // Only skip barrels that are true directory index files (index.ts/tsx/js or __init__.py).
     // A non-index file that happens to re-export something (e.g. CreatePostModal.tsx)
     // is still dead if nothing imports it.
     if (node.isBarrel && /(?:^|[/\\])index\.[jt]sx?$/.test(file)) continue;
+    if (node.isBarrel && /(?:^|[/\\])__init__\.py$/.test(file)) continue;
     if (node.lang === 'config')     continue;
     if (node.lang === 'shell')      continue;
     if (isSafelyUnimported(file, node)) continue;

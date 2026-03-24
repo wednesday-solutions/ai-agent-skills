@@ -111,7 +111,7 @@ async function analyze(rootDir, opts = {}) {
   const start = Date.now();
 
   log('Collecting files...');
-  const allFiles = collectFiles(rootDir);
+  const allFiles = collectFiles(rootDir, { ignore: opts.ignore });
 
   // ── Incremental mode ──────────────────────────────────────────────────────
   let filesToParse = allFiles;

@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const { detectFeatureModules } = require('../analysis/feature-modules');
 
 function isHighValue(node) {
   return node.isEntryPoint || node.importedBy.length > 10 || node.riskScore > 70;
@@ -17,9 +18,15 @@ function isHighValue(node) {
 /**
  * Generate full MASTER.md — every file documented in detail
  */
-async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey) {
+async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null) {
   const nodes = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
+
+  // Build comment intel lookup by dir
+  const commentByDir = new Map();
+  if (commentIntel && commentIntel.modules) {
+    for (const mod of commentIntel.modules) commentByDir.set(mod.dir, mod);
+  }
 
   const lines = [];
 
@@ -58,15 +65,14 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
     lines.push('');
   }
 
-  // Top services (most imported internal modules that are services/providers)
-  const topServices = allNodes
-    .filter(([f, n]) => n.importedBy.length >= 3 && !n.isBarrel && !n.isEntryPoint && !f.includes('.test.') && !f.includes('.spec.'))
-    .sort((a, b) => b[1].importedBy.length - a[1].importedBy.length)
-    .slice(0, 5);
-  if (topServices.length > 0) {
-    lines.push('**2. Core modules (most depended on):**');
-    for (const [f, n] of topServices) {
-      lines.push(`   - \`${f}\` — used by ${n.importedBy.length} files`);
+  // Feature modules — directories other parts of the codebase depend on, enriched by comment intel
+  const featureModules = detectFeatureModules(nodes, commentIntel).slice(0, 5);
+  if (featureModules.length > 0) {
+    lines.push('**2. Feature modules (directories other features depend on):**');
+    for (const fm of featureModules) {
+      const debtBadge = fm.techDebt && fm.techDebt !== 'none' ? ` [${fm.techDebt.toUpperCase()} DEBT]` : '';
+      const purpose = fm.purpose ? ` — ${fm.purpose}` : ` — ${fm.fileCount} files, ${fm.externalImporters} external importers`;
+      lines.push(`   - \`${fm.dir}/\`${purpose}${debtBadge}`);
     }
     lines.push('');
   }

@@ -533,8 +533,14 @@ async function runMap(targetDir, opts = {}) {
   log('cyan', '⑤ Writing MAP_REPORT.md...');
   const { buildLegacyReport } = require('../src/brownfield/analysis/legacy-health');
   const legacyReport = buildLegacyReport(graph.nodes);
+
+  // Load comment intel if it was generated during analyze
+  const commentIntelPath = require('path').join(targetDir, '.wednesday', 'codebase', 'analysis', 'comments.json');
+  let commentIntel = null;
+  try { commentIntel = JSON.parse(require('fs').readFileSync(commentIntelPath, 'utf8')); } catch { /* not yet generated */ }
+
   const reportPath = brownfield.generateMapReport(
-    targetDir, graph, summaries, legacyReport, gapsFilled, Date.now() - mapStart
+    targetDir, graph, summaries, legacyReport, gapsFilled, Date.now() - mapStart, commentIntel
   );
   log('green', `   ✓ ${reportPath}`);
   console.log('');

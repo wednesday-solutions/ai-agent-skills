@@ -20,13 +20,14 @@ const rubyAdapter   = require('../adapters/ruby');
 const javaAdapter   = require('../adapters/java');
 const phpAdapter    = require('../adapters/php');
 const csharpAdapter = require('../adapters/csharp');
+const cAdapter      = require('../adapters/c');
 const nestjsParser = require('../parsers/nestjs');
 const gitHistory = require('../parsers/git-history');
 const cocoapodsParser = require('../parsers/cocoapods');
 const spmParser = require('../parsers/spm');
 const serverlessParser = require('../parsers/serverless');
 
-const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'kotlin', 'swift', 'shell', 'python', 'ruby', 'java', 'php', 'csharp']);
+const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'kotlin', 'swift', 'shell', 'python', 'ruby', 'java', 'php', 'csharp', 'c', 'cpp']);
 
 /**
  * Collect all analysable files under rootDir
@@ -41,7 +42,7 @@ function collectFiles(rootDir, opts = {}) {
   ]);
 
   const files = [];
-  const exts = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.go', '.graphql', '.gql', '.kt', '.kts', '.swift', '.py', '.rb', '.java', '.php', '.cs']);
+  const exts = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.go', '.graphql', '.gql', '.kt', '.kts', '.swift', '.py', '.rb', '.java', '.php', '.cs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.h++']);
 
   function walk(dir) {
     let entries;
@@ -90,6 +91,9 @@ function parseFile(filePath, rootDir, aliases, goModulePath) {
       return phpAdapter.parse(filePath, rootDir);
     case 'csharp':
       return csharpAdapter.parse(filePath, rootDir);
+    case 'c':
+    case 'cpp':
+      return cAdapter.parse(filePath, rootDir);
     default:
       return null;
   }

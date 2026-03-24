@@ -21,7 +21,7 @@ const cocoapodsParser = require('../parsers/cocoapods');
 const spmParser = require('../parsers/spm');
 const serverlessParser = require('../parsers/serverless');
 
-const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'kotlin', 'swift']);
+const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'kotlin', 'swift', 'shell']);
 
 /**
  * Collect all analysable files under rootDir
@@ -81,6 +81,68 @@ function parseFile(filePath, rootDir, aliases, goModulePath) {
 }
 
 /**
+ * Collect shell/bash entry points from hook directories
+ * (assets/hooks, hooks) and cron directories (crons, cron, scheduled).
+ * These files have no JS imports and would otherwise look like dead code.
+ */
+function collectShellEntryPoints(rootDir) {
+  const dirs = ['assets/hooks', 'hooks', 'crons', 'cron', 'scheduled'];
+  const entryPoints = [];
+
+  for (const dir of dirs) {
+    const full = path.join(rootDir, dir);
+    let entries;
+    try { entries = fs.readdirSync(full, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name);
+      if (ext === '' || ext === '.sh' || ext === '.bash') {
+        entryPoints.push(path.join(full, entry.name));
+      }
+    }
+  }
+
+  return entryPoints;
+}
+
+/**
+ * Parse .claude/settings.json hooks and extract any local file references
+ * (e.g. `node ./scripts/foo.js` or `bash ./hooks/bar.sh`).
+ * Returns absolute paths to files that exist on disk.
+ */
+function parseSettingsHooks(rootDir) {
+  const settingsPath = path.join(rootDir, '.claude', 'settings.json');
+  const entryPoints = [];
+
+  let settings;
+  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { return entryPoints; }
+
+  const commands = [];
+  if (settings.hooks) {
+    for (const hookGroups of Object.values(settings.hooks)) {
+      for (const group of hookGroups) {
+        for (const hook of (group.hooks || [])) {
+          if (hook.command) commands.push(hook.command);
+        }
+      }
+    }
+  }
+
+  // Match: `node ./foo.js`, `bash ./foo.sh`, or bare `./path/to/script`
+  const localPathRe = /(?:^|[\s;|&])(?:node|bash|sh|python3?|ruby|perl)\s+(\.[^\s]+)|(?:^|[\s;|&])(\.[^\s]+\.(?:js|sh|bash|py|rb))/gm;
+  for (const cmd of commands) {
+    let m;
+    while ((m = localPathRe.exec(cmd)) !== null) {
+      const p = (m[1] || m[2]).trim();
+      const full = path.resolve(rootDir, p);
+      try { fs.accessSync(full); entryPoints.push(full); } catch { /* file doesn't exist */ }
+    }
+  }
+
+  return entryPoints;
+}
+
+/**
  * Build the full dependency graph
  * @param {string} rootDir
  * @param {Object} opts - { files?: string[], withGitHistory?: boolean, cache?: Object }
@@ -121,6 +183,30 @@ function buildGraph(rootDir, opts = {}) {
       meta: { ...result.meta, ...nestInfo.meta, ...(gitData ? { gitHistory: gitData } : {}) },
       error: result.error,
     };
+  }
+
+  // ── Shell entry points (hooks, crons, settings.json-referenced scripts) ──
+  const shellPaths = [...collectShellEntryPoints(rootDir), ...parseSettingsHooks(rootDir)];
+  for (const filePath of shellPaths) {
+    const rel = path.relative(rootDir, filePath);
+    if (nodes[rel]) {
+      nodes[rel].isEntryPoint = true;
+    } else {
+      nodes[rel] = {
+        file: rel,
+        lang: 'shell',
+        imports: [],
+        exports: [],
+        gaps: [],
+        importedBy: [],
+        riskScore: 0,
+        isEntryPoint: true,
+        isBarrel: false,
+        nestEdges: [],
+        meta: { isShellEntryPoint: true },
+        error: false,
+      };
+    }
   }
 
   // ── Swift: resolve intra-module type-reference edges ─────────────────────

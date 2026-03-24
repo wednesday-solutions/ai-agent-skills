@@ -20,6 +20,9 @@ function isSafelyUnimported(file, node) {
   // Standalone script directories
   if (/^\/?(?:bin|scripts?|tools?|tasks?|cli|hack|seed|fixture|migration)\//.test(f)) return true;
 
+  // Hook scripts (git hooks, claude hooks) and cron/scheduled scripts
+  if (/^\/?(?:assets\/hooks?|hooks?|crons?|scheduled?)\//.test(f)) return true;
+
   // Supabase / Deno edge function shared utilities — imported via Deno URL imports
   // which the static parser can't trace, so they appear orphaned
   if (/^\/?(?:supabase\/functions\/_shared|_shared)\//.test(f)) return true;
@@ -53,6 +56,7 @@ function findDeadCode(nodes) {
     // is still dead if nothing imports it.
     if (node.isBarrel && /(?:^|[/\\])index\.[jt]sx?$/.test(file)) continue;
     if (node.lang === 'config')     continue;
+    if (node.lang === 'shell')      continue;
     if (isSafelyUnimported(file, node)) continue;
 
     if (node.importedBy.length === 0) {

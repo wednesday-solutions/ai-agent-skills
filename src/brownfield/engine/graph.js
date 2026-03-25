@@ -256,13 +256,14 @@ function buildGraph(rootDir, opts = {}) {
   }
 
   // ── Detect entry points ───────────────────────────────────────────────────
-  // Entry points: files that are not imported by anyone, AND not barrel files
+  // Entry points: files that are not imported by anyone, OR follow entry patterns
   for (const node of Object.values(nodes)) {
-    if (node.importedBy.length === 0 && !node.isBarrel) {
-      // Heuristic: check filename patterns and directory
+    if (!node.isBarrel) {
       const basename = path.basename(node.file, path.extname(node.file));
+      const looksLikeEntry = ['index', 'main', 'app', 'server', 'handler', 'bootstrap', 'cli'].includes(basename.toLowerCase());
       const isBin = node.file.startsWith('bin/') || node.file.startsWith('scripts/');
-      if (isBin || ['index', 'main', 'app', 'server', 'handler', 'bootstrap', 'cli'].includes(basename.toLowerCase())) {
+
+      if (node.importedBy.length === 0 || isBin || looksLikeEntry) {
         node.isEntryPoint = true;
       }
     }

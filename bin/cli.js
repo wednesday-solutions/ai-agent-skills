@@ -505,9 +505,6 @@ async function runMap(targetDir, opts = {}) {
   const apiKey = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || null;
   const mapStart = Date.now();
 
-  const { GraphStore } = require('../src/brownfield/engine/store');
-  const store = GraphStore.open(path.join(targetDir, '.wednesday', 'graph.db'));
-
   // --report-only: skip re-parse, just regenerate output MD files from existing graph + comments
   if (opts.reportOnly) {
     const graph = brownfield.loadGraph(targetDir);
@@ -555,6 +552,8 @@ async function runMap(targetDir, opts = {}) {
       });
 
       const rfCodebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
+      const { GraphStore } = require('../src/brownfield/engine/store');
+      const store = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
       const rfMasterPath = await generateMasterMd(
         graph, summaries, legacyReport, rfCodebaseDir, null,
         commentIntel, 0, 0, rfInsights, store
@@ -606,14 +605,8 @@ async function runMap(targetDir, opts = {}) {
     log('green', `   ✓ ${gapsFilled} dynamic edges resolved`);
     console.log('');
 
-    // ── Step 4: Re-generate MASTER.md with filled edges ───────────────────
-    log('cyan', '④ Regenerating MASTER.md with resolved edges...');
-    await brownfield.summarize(targetDir);
-    // Reload graph so regenerated MASTER.md uses the post-gap-fill edges
-    const updatedGraph = brownfield.loadGraph(targetDir);
-    if (updatedGraph) Object.assign(graph, updatedGraph);
-    log('green', '   ✓ MASTER.md updated');
-    console.log('');
+      log('green', '   ✓ graph coverage updated');
+      console.log('');
   } else if (highRiskWithGaps > 0) {
     log('yellow', `③ Skipping gap fill — set OPENROUTER_API_KEY or ANTHROPIC_API_KEY to resolve ${highRiskWithGaps} dynamic patterns`);
     console.log('');
@@ -654,6 +647,8 @@ async function runMap(targetDir, opts = {}) {
   if (insights.healthNarrative) log('green', '   ✓ Health narrative generated');
 
   const codebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
+  const { GraphStore } = require('../src/brownfield/engine/store');
+  const store = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
   const masterOutPath = await generateMasterMd(
     graph, summaries, legacyReport, codebaseDir, apiKey,
     commentIntel, gapsFilled, Date.now() - mapStart, insights, store

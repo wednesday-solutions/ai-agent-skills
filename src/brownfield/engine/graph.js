@@ -15,13 +15,19 @@ const goAdapter     = require('../adapters/go');
 const gqlAdapter    = require('../adapters/graphql');
 const kotlinAdapter = require('../adapters/kotlin');
 const swiftAdapter  = require('../adapters/swift');  // also exports resolveIntraModuleEdges
+const pythonAdapter = require('../adapters/python');
+const rubyAdapter   = require('../adapters/ruby');
+const javaAdapter   = require('../adapters/java');
+const phpAdapter    = require('../adapters/php');
+const csharpAdapter = require('../adapters/csharp');
+const cAdapter      = require('../adapters/c');
 const nestjsParser = require('../parsers/nestjs');
 const gitHistory = require('../parsers/git-history');
 const cocoapodsParser = require('../parsers/cocoapods');
 const spmParser = require('../parsers/spm');
 const serverlessParser = require('../parsers/serverless');
 
-const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'kotlin', 'swift', 'shell']);
+const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'kotlin', 'swift', 'shell', 'python', 'ruby', 'java', 'php', 'csharp', 'c', 'cpp']);
 
 /**
  * Collect all analysable files under rootDir
@@ -36,7 +42,7 @@ function collectFiles(rootDir, opts = {}) {
   ]);
 
   const files = [];
-  const exts = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.go', '.graphql', '.gql', '.kt', '.kts', '.swift']);
+  const exts = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.go', '.graphql', '.gql', '.kt', '.kts', '.swift', '.py', '.rb', '.java', '.php', '.cs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.h++']);
 
   function walk(dir) {
     let entries;
@@ -75,6 +81,19 @@ function parseFile(filePath, rootDir, aliases, goModulePath) {
       return kotlinAdapter.parse(filePath, rootDir);
     case 'swift':
       return swiftAdapter.parse(filePath, rootDir);
+    case 'python':
+      return pythonAdapter.parse(filePath, rootDir);
+    case 'ruby':
+      return rubyAdapter.parse(filePath, rootDir);
+    case 'java':
+      return javaAdapter.parse(filePath, rootDir);
+    case 'php':
+      return phpAdapter.parse(filePath, rootDir);
+    case 'csharp':
+      return csharpAdapter.parse(filePath, rootDir);
+    case 'c':
+    case 'cpp':
+      return cAdapter.parse(filePath, rootDir);
     default:
       return null;
   }
@@ -177,7 +196,7 @@ function buildGraph(rootDir, opts = {}) {
       gaps: result.gaps,
       importedBy: [],             // computed below
       riskScore: 0,               // computed below
-      isEntryPoint: false,        // computed below
+      isEntryPoint: result.meta?.isEntryPoint || false,  // adapter may set this
       isBarrel: result.meta?.isBarrel || false,
       nestEdges: nestInfo.edges,
       meta: { ...result.meta, ...nestInfo.meta, ...(gitData ? { gitHistory: gitData } : {}) },

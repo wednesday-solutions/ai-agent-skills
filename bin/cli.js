@@ -266,7 +266,8 @@ function main() {
     }
     case 'map': {
       const mapDir = (args[1] && !args[1].startsWith('--')) ? args[1] : process.cwd();
-      runMap(mapDir).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
+      const mapIgnore = parseIgnoreFlag(args);
+      runMap(mapDir, { ignore: mapIgnore }).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
       break;
     }
     case 'analyze': {
@@ -278,6 +279,7 @@ function main() {
         silent: args.includes('--silent'),
         refreshAnalysis: args.includes('--refresh-analysis'),
         withGitHistory: args.includes('--git-history'),
+        ignore: parseIgnoreFlag(args),
       });
       break;
     }
@@ -425,6 +427,26 @@ function main() {
   }
 }
 
+/**
+ * Parse --ignore flag from args.
+ * Supports: --ignore=dir1,dir2  OR  --ignore dir1 --ignore dir2
+ * Returns array of directory names to ignore, or empty array.
+ */
+function parseIgnoreFlag(args) {
+  const result = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--ignore=')) {
+      const val = arg.slice('--ignore='.length);
+      result.push(...val.split(',').map(s => s.trim()).filter(Boolean));
+    } else if (arg === '--ignore' && args[i + 1] && !args[i + 1].startsWith('--')) {
+      result.push(...args[i + 1].split(',').map(s => s.trim()).filter(Boolean));
+      i++;
+    }
+  }
+  return result;
+}
+
 function getIDEEquivalent(command, args) {
   const map = {
     'blast':         `What breaks if I change ${args[1] || '<file>'}?`,
@@ -449,7 +471,7 @@ function getIDEEquivalent(command, args) {
  *   3. fill-gaps --min-risk 50 → resolve dynamic patterns via subagents
  *   4. re-summarize            → regenerate MASTER.md with filled edges
  */
-async function runMap(targetDir) {
+async function runMap(targetDir, opts = {}) {
   targetDir = path.resolve(targetDir);
   const apiKey = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || null;
   const mapStart = Date.now();
@@ -458,11 +480,14 @@ async function runMap(targetDir) {
   log('blue', '┌─────────────────────────────────────────────┐');
   log('blue', '│  Codebase mapping — full pipeline           │');
   log('blue', '└─────────────────────────────────────────────┘');
+  if (opts.ignore && opts.ignore.length > 0) {
+    log('cyan', `   Ignoring: ${opts.ignore.join(', ')}`);
+  }
   console.log('');
 
   // ── Step 1: Full analysis ─────────────────────────────────────────────────
   log('cyan', '① Parsing codebase...');
-  const { graph, elapsed } = await brownfield.analyze(targetDir, { full: true, withGitHistory: true });
+  const { graph, elapsed } = await brownfield.analyze(targetDir, { full: true, withGitHistory: true, ignore: opts.ignore });
   const nodeCount = Object.keys(graph.nodes).length;
   const gapCount = Object.values(graph.nodes).reduce((s, n) => s + n.gaps.length, 0);
   const highRiskWithGaps = Object.values(graph.nodes).filter(n => n.riskScore > 50 && n.gaps.length > 0).length;
@@ -508,8 +533,14 @@ async function runMap(targetDir) {
   log('cyan', '⑤ Writing MAP_REPORT.md...');
   const { buildLegacyReport } = require('../src/brownfield/analysis/legacy-health');
   const legacyReport = buildLegacyReport(graph.nodes);
+
+  // Load comment intel if it was generated during analyze
+  const commentIntelPath = require('path').join(targetDir, '.wednesday', 'codebase', 'analysis', 'comments.json');
+  let commentIntel = null;
+  try { commentIntel = JSON.parse(require('fs').readFileSync(commentIntelPath, 'utf8')); } catch { /* not yet generated */ }
+
   const reportPath = brownfield.generateMapReport(
-    targetDir, graph, summaries, legacyReport, gapsFilled, Date.now() - mapStart
+    targetDir, graph, summaries, legacyReport, gapsFilled, Date.now() - mapStart, commentIntel
   );
   log('green', `   ✓ ${reportPath}`);
   console.log('');

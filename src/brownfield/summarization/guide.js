@@ -105,10 +105,16 @@ function groupByDir(allNodes) {
 }
 
 // ── GUIDE.md ──────────────────────────────────────────────────────────────────
-async function generateGuide(graph, summaries, codebaseDir) {
+async function generateGuide(graph, summaries, codebaseDir, commentIntel = null) {
   const nodes    = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
   const byDir    = groupByDir(allNodes);
+
+  // Build a lookup of comment intel per dir
+  const commentByDir = new Map();
+  if (commentIntel && commentIntel.modules) {
+    for (const mod of commentIntel.modules) commentByDir.set(mod.dir, mod);
+  }
 
   const lines = [];
 
@@ -148,6 +154,22 @@ async function generateGuide(graph, summaries, codebaseDir) {
   for (const [dir, dirNodes] of Object.entries(byDir).sort()) {
     lines.push(`## 📁 \`${dir}/\``);
     lines.push('');
+
+    // Inject comment-intel module context if available
+    const intel = commentByDir.get(dir);
+    if (intel) {
+      if (intel.purpose) {
+        const debtBadge = intel.techDebt && intel.techDebt !== 'none' ? ` · **${intel.techDebt.toUpperCase()} TECH DEBT**` : '';
+        const typeBadge = intel.isBizFeature === true ? ' · *business feature*' : intel.isBizFeature === false ? ' · *infrastructure*' : '';
+        lines.push(`> ${intel.purpose}${debtBadge}${typeBadge}`);
+        lines.push('');
+      }
+      if (intel.ideas && intel.ideas.length > 0) {
+        lines.push('**Improvement ideas from comments:**');
+        intel.ideas.forEach(idea => lines.push(`- ${idea}`));
+        lines.push('');
+      }
+    }
 
     for (const [file, node] of dirNodes.sort((a, b) => b[1].importedBy.length - a[1].importedBy.length)) {
       const name = path.basename(file);
@@ -382,7 +404,7 @@ async function callHaikuNarrative(context) {
   } catch { return {}; }
 }
 
-async function generateSummary(graph, summaries, legacyReport, codebaseDir, _apiKey) {
+async function generateSummary(graph, summaries, legacyReport, codebaseDir, _apiKey, commentIntel = null) {
   const rootDir  = graph.rootDir;
   const nodes    = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
@@ -610,7 +632,9 @@ async function generateSummary(graph, summaries, legacyReport, codebaseDir, _api
   lines.push('## 1. Product Overview');
   lines.push('');
 
-  const narrative = llm.product_overview
+  // Prefer comment-intel reverse PRD (built from actual developer comments) over LLM code analysis
+  const narrative = commentIntel?.reversePrd
+    || llm.product_overview
     || buildNarrative(projectName, techStack, features, stats, frameworks);
   lines.push(narrative);
   lines.push('');

@@ -29,6 +29,8 @@ const { answerQuestion } = require('./query/chat-engine');
 const { detectDrift, loadConstraints, formatDriftReport } = require('./analysis/drift');
 const { genTests, selectTargets } = require('./reasoning/test-generator');
 const { hasApiKey, getApiKey } = require('./core/llm-client');
+const { analyseComments } = require('./analysis/comment-intel');
+const { detectFeatureModules } = require('./analysis/feature-modules');
 
 /**
  * Build a test coverage map from the graph.
@@ -100,6 +102,15 @@ function loadSummaries(rootDir) {
 }
 
 /**
+ * Load comment intelligence from disk (generated during analyze)
+ */
+function loadCommentIntel(p) {
+  const commentPath = path.join(p.analysisDir, 'comments.json');
+  if (!fs.existsSync(commentPath)) return null;
+  try { return JSON.parse(fs.readFileSync(commentPath, 'utf8')); } catch { return null; }
+}
+
+/**
  * 2A-7 analyze command
  * @param {string} rootDir
  * @param {Object} opts - { incremental, full, watch, silent, refreshAnalysis }
@@ -111,7 +122,7 @@ async function analyze(rootDir, opts = {}) {
   const start = Date.now();
 
   log('Collecting files...');
-  const allFiles = collectFiles(rootDir);
+  const allFiles = collectFiles(rootDir, { ignore: opts.ignore });
 
   // ── Incremental mode ──────────────────────────────────────────────────────
   let filesToParse = allFiles;
@@ -202,6 +213,9 @@ async function analyze(rootDir, opts = {}) {
 
     // Conflict detection
     await analyzeAndWriteConflicts(rootDir, p.analysisDir, apiKey);
+
+    // Comment intelligence
+    await analyseComments(graph.nodes, rootDir, p.analysisDir, apiKey);
   }
 
   const elapsed = Date.now() - start;
@@ -277,7 +291,8 @@ async function summarize(rootDir, opts = {}) {
   fs.writeFileSync(p.summaries, JSON.stringify(summaries, null, 2));
 
   const legacy = buildLegacyReport(graph.nodes);
-  const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey);
+  const commentIntel = loadCommentIntel(p);
+  const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel);
 
   // QA the MASTER.md
   const qaReport = await qaMasterMd(masterPath, summaries, apiKey);
@@ -290,10 +305,83 @@ async function summarize(rootDir, opts = {}) {
 }
 
 /**
+ * Build the comment intelligence section lines for MAP_REPORT.md
+ */
+function buildCommentIntelSection(intel) {
+  const s = intel.summary;
+  if (!s || s.total === 0) return [];
+
+  const tagRows = Object.entries(s.byType || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([type, count]) => `| \`${type}\` | ${count} |`)
+    .join('\n');
+
+  const topFileRows = (s.topFiles || []).slice(0, 8)
+    .map(({ file, count }) => `| \`${file}\` | ${count} |`)
+    .join('\n');
+
+  const severityRows = Object.entries(s.bySeverity || {})
+    .sort((a, b) => { const o = { high: 0, medium: 1, low: 2, info: 3 }; return (o[a[0]] ?? 9) - (o[b[0]] ?? 9); })
+    .map(([sev, count]) => `| ${sev} | ${count} |`)
+    .join('\n');
+
+  const lines = [
+    '## Comment intelligence',
+    '',
+    `> ${s.taggedTotal || s.total} tagged + ${s.untaggedTotal || 0} substantive untagged comments across the codebase.`,
+    '',
+    '**By tag:**',
+    '',
+    '| Tag | Count |',
+    '|-----|-------|',
+    tagRows || '| — | — |',
+    '',
+    '**By severity:**',
+    '',
+    '| Severity | Count |',
+    '|----------|-------|',
+    severityRows || '| — | — |',
+    '',
+    '**Most commented files (tech debt density):**',
+    '',
+    '| File | Tagged comments |',
+    '|------|----------------|',
+    topFileRows || '| — | — |',
+    '',
+  ];
+
+  // Module-by-module breakdown (only modules with LLM-enriched purpose)
+  const enrichedModules = (intel.modules || []).filter(m => m.purpose);
+  if (enrichedModules.length > 0) {
+    lines.push('**Module breakdown:**', '');
+    lines.push('| Module | Purpose | Tech Debt | Type |');
+    lines.push('|--------|---------|-----------|------|');
+    enrichedModules.slice(0, 12).forEach(m => {
+      const debt = m.techDebt || '—';
+      const type = m.isBizFeature === true ? 'feature' : m.isBizFeature === false ? 'infra' : '—';
+      lines.push(`| \`${m.dir}/\` | ${m.purpose} | ${debt} | ${type} |`);
+    });
+    lines.push('');
+  }
+
+  // Improvement ideas aggregated across all modules
+  const allIdeas = (intel.modules || []).flatMap(m => (m.ideas || []).map(idea => ({ dir: m.dir, idea })));
+  if (allIdeas.length > 0) {
+    lines.push('**Top improvement ideas (from comments):**', '');
+    allIdeas.slice(0, 8).forEach(({ dir, idea }) => lines.push(`- \`${dir}/\`: ${idea}`));
+    lines.push('');
+  } else if (!intel.reversePrd) {
+    lines.push('> Set `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` to generate AI-synthesised improvement ideas.', '');
+  }
+
+  return lines;
+}
+
+/**
  * Generate MAP_REPORT.md — full summary of the mapping run
  * Stored at .wednesday/codebase/MAP_REPORT.md
  */
-function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, elapsed) {
+function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, elapsed, commentIntel = null) {
   const p = paths(rootDir);
   const nodes = graph.nodes;
   const all = Object.values(nodes);
@@ -339,11 +427,8 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
     .map(d => `| ${d.file} | ${d.reason} | ${d.contact} |`)
     .join('\n');
 
-  // Most-imported modules (core layer)
-  const topModules = all
-    .filter(n => n.importedBy.length >= 3 && !n.isBarrel)
-    .sort((a, b) => b.importedBy.length - a.importedBy.length)
-    .slice(0, 8);
+  // Feature modules — directories that other parts of the codebase depend on
+  const featureModules = detectFeatureModules(nodes, commentIntel).slice(0, 8);
 
   const entryFiles = all.filter(n => n.isEntryPoint);
   const uiFiles = all.filter(n => {
@@ -358,6 +443,12 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
     `> Project: ${rootDir}`,
     `> Total time: ${elapsed}ms`,
     '',
+    ...(commentIntel?.reversePrd ? [
+      '## What this project does',
+      '',
+      commentIntel.reversePrd,
+      '',
+    ] : []),
     '## New dev guide',
     '',
     '> Not sure where to start? Follow this path.',
@@ -366,8 +457,12 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
       ? `**Step 1 — Entry points** (${entryFiles.length} found):\n${entryFiles.slice(0,5).map(n => `- \`${n.file}\``).join('\n')}`
       : '**Step 1 —** No explicit entry points detected. Look for `index.*` or `main.*` files.',
     '',
-    topModules.length > 0
-      ? `**Step 2 — Core modules** (highest import count):\n${topModules.map(n => `- \`${n.file}\` — ${n.importedBy.length} consumers`).join('\n')}`
+    featureModules.length > 0
+      ? `**Step 2 — Feature modules** (directories other features depend on):\n${featureModules.map(d => {
+          const debtBadge = d.techDebt && d.techDebt !== 'none' ? ` [${d.techDebt.toUpperCase()} DEBT]` : '';
+          const purpose = d.purpose ? ` — ${d.purpose}` : ` — ${d.fileCount} files, ${d.externalImporters} external importers`;
+          return `- \`${d.dir}/\`${purpose}${debtBadge}`;
+        }).join('\n')}`
       : '',
     '',
     uiFiles.length > 0
@@ -454,6 +549,8 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
         return `| ${icon} | \`${n.file}\` | ${n.lang} | ${n.riskScore} | ${n.importedBy.length} |`;
       }),
     '',
+    ...(commentIntel ? buildCommentIntelSection(commentIntel) : []),
+
     '## Output files',
     '',
     '| File | Description |',
@@ -467,6 +564,7 @@ function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, 
     '| `.wednesday/codebase/analysis/dead-code.json` | Dead files + circular deps |',
     '| `.wednesday/codebase/analysis/api-surface.json` | Public contracts per file |',
     '| `.wednesday/codebase/analysis/conflicts.json` | Dependency conflicts |',
+    '| `.wednesday/codebase/analysis/comments.json` | Comment intelligence — TODOs, ideas, tech debt |',
     '',
     '---',
     '*Generated by wednesday-skills map — graph analysis only, no raw source read*',
@@ -553,7 +651,8 @@ module.exports = {
     if (!graph) throw new Error('Run wednesday-skills map first to build the dependency graph.');
     const summaries = loadSummaries(rootDir);
     const p = paths(rootDir);
-    return generateGuide(graph, summaries, p.codebaseDir);
+    const commentIntel = loadCommentIntel(p);
+    return generateGuide(graph, summaries, p.codebaseDir, commentIntel);
   },
 
   summary: async (rootDir) => {
@@ -563,7 +662,8 @@ module.exports = {
     const legacy = buildLegacyReport(graph.nodes);
     const p = paths(rootDir);
     const apiKey = process.env.OPENROUTER_API_KEY || null;
-    return generateSummary(graph, summaries, legacy, p.codebaseDir, apiKey);
+    const commentIntel = loadCommentIntel(p);
+    return generateSummary(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel);
   },
 
   chat: async (question, rootDir) => {
@@ -593,6 +693,12 @@ module.exports = {
     const graph = loadGraph(rootDir);
     if (!graph) throw new Error('Run wednesday-skills analyze first.');
     return selectTargets(graph.nodes, opts);
+  },
+
+  detectFeatureModules: (rootDir) => {
+    const graph = loadGraph(rootDir);
+    if (!graph) throw new Error('Run wednesday-skills analyze first.');
+    return detectFeatureModules(graph.nodes);
   },
 
   installHooks: (rootDir) => {

@@ -37,6 +37,19 @@ const EXT_MAP = {
   '.kt':    'kotlin',
   '.kts':   'kotlin',
   '.swift': 'swift',
+  '.py':    'python',
+  '.rb':    'ruby',
+  '.java':  'java',
+  '.php':   'php',
+  '.cs':    'csharp',
+  '.c':     'c',
+  '.h':     'c',
+  '.cpp':   'cpp',
+  '.cc':    'cpp',
+  '.cxx':   'cpp',
+  '.hpp':   'cpp',
+  '.hh':    'cpp',
+  '.h++':   'cpp',
 };
 
 /**

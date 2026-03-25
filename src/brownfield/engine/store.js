@@ -420,6 +420,37 @@ class GraphStore {
   }
 
   /**
+   * Find the most significant functional flows in the codebase.
+   * Uses a recursive CTE to trace paths from entry points (depth up to 4).
+   * @returns {Array<{ path: string, depth: number }>}
+   */
+  getPrimaryFlows(maxDepth = 4, limit = 5) {
+    const query = `
+      WITH RECURSIVE
+        path_trace(source, target, depth, path) AS (
+          -- Anchor: start from entry points (only 'imports' kind)
+          SELECT source, target, 1, source || ' -> ' || target
+          FROM edges
+          JOIN nodes ON edges.source = nodes.file_path
+          WHERE nodes.is_entry = 1 AND edges.kind = 'imports'
+          
+          UNION ALL
+          
+          -- Recursive step: find next hop
+          SELECT pt.target, e.target, pt.depth + 1, pt.path || ' -> ' || e.target
+          FROM path_trace pt
+          JOIN edges e ON pt.target = e.source
+          WHERE pt.depth < ? AND e.kind = 'imports' AND pt.path NOT LIKE '%' || e.target || '%'
+        )
+      SELECT path, depth
+      FROM path_trace
+      ORDER BY depth DESC
+      LIMIT ?;
+    `;
+    return this._db.prepare(query).all(maxDepth, limit);
+  }
+
+  /**
    * Find all definitions of a symbol by name (case-insensitive).
    * @returns {Array<{ file, name, kind, lineStart, signature }>}
    */

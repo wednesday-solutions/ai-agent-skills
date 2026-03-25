@@ -108,17 +108,24 @@ function collectShellEntryPoints(rootDir) {
   const dirs = ['assets/hooks', 'hooks', 'crons', 'cron', 'scheduled'];
   const entryPoints = [];
 
-  for (const dir of dirs) {
-    const full = path.join(rootDir, dir);
+  function walk(dir) {
     let entries;
-    try { entries = fs.readdirSync(full, { withFileTypes: true }); } catch { continue; }
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      const ext = path.extname(entry.name);
-      if (ext === '' || ext === '.sh' || ext === '.bash') {
-        entryPoints.push(path.join(full, entry.name));
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else {
+        const ext = path.extname(entry.name);
+        if (ext === '' || ext === '.sh' || ext === '.bash') {
+          entryPoints.push(full);
+        }
       }
     }
+  }
+
+  for (const dir of dirs) {
+    walk(path.join(rootDir, dir));
   }
 
   return entryPoints;
@@ -147,8 +154,8 @@ function parseSettingsHooks(rootDir) {
     }
   }
 
-  // Match: `node ./foo.js`, `bash ./foo.sh`, or bare `./path/to/script`
-  const localPathRe = /(?:^|[\s;|&])(?:node|bash|sh|python3?|ruby|perl)\s+(\.[^\s]+)|(?:^|[\s;|&])(\.[^\s]+\.(?:js|sh|bash|py|rb))/gm;
+  // Match: `node foo.js`, `bash ./foo.sh`, or script extensions
+  const localPathRe = /(?:^|[\s;|&])(?:node|ts-node|bun|deno|bash|sh|python3?|ruby|perl)\s+([^\s-][^\s]*)|(?:^|[\s;|&])([^\s-][^\s]*\.(?:js|ts|sh|bash|py|rb))/gm;
   for (const cmd of commands) {
     let m;
     while ((m = localPathRe.exec(cmd)) !== null) {
@@ -206,7 +213,7 @@ function buildGraph(rootDir, opts = {}) {
   }
 
   // ── Shell entry points (hooks, crons, settings.json-referenced scripts) ──
-  const shellPaths = [...collectShellEntryPoints(rootDir), ...parseSettingsHooks(rootDir)];
+  const shellPaths = Array.from(new Set([...collectShellEntryPoints(rootDir), ...parseSettingsHooks(rootDir)]));
   for (const filePath of shellPaths) {
     const rel = path.relative(rootDir, filePath);
     if (nodes[rel]) {
@@ -252,9 +259,10 @@ function buildGraph(rootDir, opts = {}) {
   // Entry points: files that are not imported by anyone, AND not barrel files
   for (const node of Object.values(nodes)) {
     if (node.importedBy.length === 0 && !node.isBarrel) {
-      // Heuristic: check filename patterns
+      // Heuristic: check filename patterns and directory
       const basename = path.basename(node.file, path.extname(node.file));
-      if (['index', 'main', 'app', 'server', 'handler', 'bootstrap'].includes(basename.toLowerCase())) {
+      const isBin = node.file.startsWith('bin/') || node.file.startsWith('scripts/');
+      if (isBin || ['index', 'main', 'app', 'server', 'handler', 'bootstrap', 'cli'].includes(basename.toLowerCase())) {
         node.isEntryPoint = true;
       }
     }

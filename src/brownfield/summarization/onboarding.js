@@ -19,13 +19,16 @@ const ONBOARDING_QUESTIONS = [
  * When commentIntel is provided and has reversePrd, uses developer-written context
  * instead of structural file summaries — ~40% fewer input tokens, better output.
  */
-async function generateOnboarding(answers, graph, summaries, apiKey, commentIntel = null) {
+async function generateOnboarding(answers, graph, summaries, apiKey, commentIntel = null, store = null) {
   const nodes = graph.nodes;
   const role  = answers[0] || 'developer';
   const area  = answers[1] || 'general';
 
   // Scope the node list to relevant files
   const scopedNodes = selectScopedNodes(area, nodes);
+  const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
+  const flows = store ? discoverPrimaryFlows(store, 1, 4) : [];
+  const primaryFlow = flows[0] ? flows[0].path.replace(/ -> /g, ' ➔ ') : '(no flow detected)';
 
   // When reversePrd exists, use developer intent as context instead of structural
   // file summaries — same token budget, far more meaningful onboarding signal
@@ -36,13 +39,13 @@ async function generateOnboarding(answers, graph, summaries, apiKey, commentInte
       .slice(0, 4)
       .map(m => `- \`${m.dir}/\`: ${m.purpose}`)
       .join('\n');
-    contextBlock = `Project context:\n${commentIntel.reversePrd}\n\nKey modules:\n${bizModules || '(none enriched)'}`;
+    contextBlock = `Project context:\n${commentIntel.reversePrd}\n\nPrimary execution flow:\n${primaryFlow}\n\nKey modules:\n${bizModules || '(none enriched)'}`;
   } else {
     const scopedSummaries = scopedNodes
       .slice(0, 8)
       .map(file => `- ${file}: ${summaries[file] || '(no summary)'}`)
       .join('\n');
-    contextBlock = `Relevant modules (${scopedNodes.length} files):\n${scopedSummaries}`;
+    contextBlock = `Relevant modules (${scopedNodes.length} files):\n${scopedSummaries}\n\nPrimary execution flow:\n${primaryFlow}`;
   }
 
   const prompt = `New developer onboarding:
@@ -52,11 +55,13 @@ Familiarity: ${answers[2] || 'new'}
 
 ${contextBlock}
 
-Write a focused 200-word onboarding guide. Include: 1) what to read first, 2) key concepts to understand, 3) files to avoid touching first. Be specific to the focus area.`;
+Explain the "User Flow" of this focus area. How does a request/action start and where does it end?
+Include: 1) the step-by-step path, 2) core logic files to study, 3) how to verify changes.`;
 
   if (!apiKey) {
-    return generateStructuralOnboarding(role, area, scopedNodes, summaries, commentIntel);
+    return generateStructuralOnboarding(role, area, scopedNodes, summaries, commentIntel, primaryFlow);
   }
+
 
   return new Promise(resolve => {
     const body = JSON.stringify({
@@ -117,7 +122,7 @@ function selectScopedNodes(area, nodes) {
     .slice(0, 15);
 }
 
-function generateStructuralOnboarding(role, area, scopedNodes, summaries, commentIntel = null) {
+function generateStructuralOnboarding(role, area, scopedNodes, summaries, commentIntel = null, primaryFlow = '') {
   const topFiles = scopedNodes.slice(0, 5);
   const fileList = topFiles.map(f => `- \`${f}\`: ${(summaries[f] || '').split('.')[0]}`).join('\n');
 
@@ -125,14 +130,19 @@ function generateStructuralOnboarding(role, area, scopedNodes, summaries, commen
     ? `\n### What this project does\n${commentIntel.reversePrd.split('\n')[0]}\n`
     : '';
 
+  const flowSection = primaryFlow 
+    ? `\n### Primary execution flow\n\`${primaryFlow}\`\n`
+    : '';
+
   return `## Onboarding Guide — ${area} (${role})
 ${projectContext}
+${flowSection}
 ### Start here
 ${fileList || '- No files matched your focus area'}
 
 ### Key concepts
 - Read \`.wednesday/codebase/MASTER.md\` for the full architecture overview
-- Check \`.wednesday/codebase/dep-graph.json\` for dependency relationships
+- Check \`.wednesday/codebase/graph.db\` for dependency relationships
 - Run \`wednesday-skills score <file>\` before modifying any file
 
 ### Before touching code

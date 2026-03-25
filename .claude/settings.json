@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ ! -f .wednesday/codebase/dep-graph.json ]; then exit 0; fi\nwednesday-skills analyze --incremental --silent 2>/dev/null\n[ ! -f .wednesday/codebase/summaries.json ] && { [ -n \"$OPENROUTER_API_KEY\" ] || [ -n \"$ANTHROPIC_API_KEY\" ]; } && wednesday-skills summarize 2>/dev/null &\n[ -f .wednesday/codebase/summaries.json ] && { [ -n \"$OPENROUTER_API_KEY\" ] || [ -n \"$ANTHROPIC_API_KEY\" ]; } && wednesday-skills fill-gaps --min-risk 50 --silent 2>/dev/null &\ntrue"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -177,7 +177,7 @@ Use these skills for all structural questions:
 
 ## Rules for codebase questions
 - Always read from .wednesday/codebase/ — never read raw source
-- dep-graph.json for structure and relationships
+- graph.db for structure and relationships
 - summaries.json for module purpose
 - MASTER.md for architecture, data flow, danger zones
 - Graph updates automatically on every commit via post-commit hook
@@ -1042,15 +1042,31 @@ function installClaudeHook(targetDir, withAI = false) {
   settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || [];
 
   // Check if our hook is already registered
-  const alreadyInstalled = settings.hooks.UserPromptSubmit.some(
-    h => h.hooks?.some(hh => hh.command?.includes('wednesday-skills analyze'))
-  );
+  let existingHookIndex = -1;
+  let isStale = false;
 
-  if (!alreadyInstalled) {
-    settings.hooks.UserPromptSubmit.push({
+  if (settings.hooks.UserPromptSubmit) {
+    existingHookIndex = settings.hooks.UserPromptSubmit.findIndex(
+      h => h.hooks?.some(hh => hh.command?.includes('wednesday-skills analyze'))
+    );
+    if (existingHookIndex !== -1) {
+      const cmd = settings.hooks.UserPromptSubmit[existingHookIndex].hooks[0].command;
+      if (cmd.includes('dep-graph.json')) isStale = true;
+    }
+  }
+
+  if (existingHookIndex === -1 || isStale) {
+    const newHook = {
       matcher: '',
       hooks: [{ type: 'command', command: hookCommand }],
-    });
+    };
+
+    if (isStale) {
+      settings.hooks.UserPromptSubmit[existingHookIndex] = newHook;
+      log('blue', '  ✓ Claude Code hook repaired (updated dep-graph.json -> graph.db)');
+    } else {
+      settings.hooks.UserPromptSubmit.push(newHook);
+    }
   }
 
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));

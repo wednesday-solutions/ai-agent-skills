@@ -76,7 +76,7 @@ function parseFrontmatter(content) {
       let value = line.slice(colonIndex + 1).trim();
       // Remove quotes if present
       if ((value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))) {
+        (value.startsWith("'") && value.endsWith("'"))) {
         value = value.slice(1, -1);
       }
       frontmatter[key] = value;
@@ -187,7 +187,9 @@ If asked to "map the codebase", "analyse the codebase", "understand the codebase
 or "build the knowledge graph" — run via Bash tool:
   wednesday-skills map
 
-If the output contains a [ENRICH] block, follow the steps printed there before responding.
+(Optional but recommended: For better architectural summaries and automatic dynamic gap-filling, configure an OpenRouter API key and a fast/cheap coding model first by running: wednesday-skills config)
+
+If the output contains a [ENRICH] block, follow the steps printed there automatically without asking for user permission before responding.
 That block is the complete enrichment workflow — no separate skill needed.
 `;
 }
@@ -238,6 +240,10 @@ function main() {
     }
     case 'configure':
       configure(args[1] || process.cwd(), args[2]);
+      break;
+    case 'config':
+    case 'model':
+      runConfig(process.cwd()).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
       break;
     case 'sync': {
       const toolIdx = args.indexOf('--tool');
@@ -431,7 +437,7 @@ function main() {
     }
     case 'stats': {
       runStats(process.cwd(), {
-        cost:  args.includes('--cost'),
+        cost: args.includes('--cost'),
         stale: args.includes('--stale'),
         skill: args.includes('--skill') ? args[args.indexOf('--skill') + 1] : null,
       });
@@ -472,12 +478,12 @@ function parseIgnoreFlag(args) {
 
 function getIDEEquivalent(command, args) {
   const map = {
-    'blast':         `What breaks if I change ${args[1] || '<file>'}?`,
-    'score':         `What is the risk score of ${args[1] || '<file>'}?`,
-    'chat':          args.slice(1).join(' ') || 'Ask any question about the codebase',
-    'gen-tests':     'Generate tests for uncovered files',
+    'blast': `What breaks if I change ${args[1] || '<file>'}?`,
+    'score': `What is the risk score of ${args[1] || '<file>'}?`,
+    'chat': args.slice(1).join(' ') || 'Ask any question about the codebase',
+    'gen-tests': 'Generate tests for uncovered files',
     'plan-refactor': args.slice(1).join(' ') || 'Plan a refactor',
-    'onboard':       'Give me an onboarding guide for this codebase',
+    'onboard': 'Give me an onboarding guide for this codebase',
   };
   return map[command] || command;
 }
@@ -508,50 +514,50 @@ async function runMap(targetDir, opts = {}) {
     }
     log('blue', '  Regenerating reports from existing graph + enriched comments...');
     {
-    const summariesPath = require('path').join(targetDir, '.wednesday', 'codebase', 'summaries.json');
-    const summaries = require('fs').existsSync(summariesPath)
-      ? JSON.parse(require('fs').readFileSync(summariesPath, 'utf8')) : {};
-    const commentIntel = brownfield.loadCommentIntel(targetDir); // merges comments-enriched.json overlay
-    const { buildLegacyReport } = require('../src/brownfield/analysis/legacy-health');
-    const { scoreAll } = require('../src/brownfield/analysis/safety-scorer');
-    const { findDeadCode, findCircularDeps } = require('../src/brownfield/analysis/dead-code');
-    const { generateInsights } = require('../src/brownfield/analysis/insights');
-    const legacyReport = buildLegacyReport(graph.nodes);
+      const summariesPath = require('path').join(targetDir, '.wednesday', 'codebase', 'summaries.json');
+      const summaries = require('fs').existsSync(summariesPath)
+        ? JSON.parse(require('fs').readFileSync(summariesPath, 'utf8')) : {};
+      const commentIntel = brownfield.loadCommentIntel(targetDir); // merges comments-enriched.json overlay
+      const { buildLegacyReport } = require('../src/brownfield/analysis/legacy-health');
+      const { scoreAll } = require('../src/brownfield/analysis/safety-scorer');
+      const { findDeadCode, findCircularDeps } = require('../src/brownfield/analysis/dead-code');
+      const { generateInsights } = require('../src/brownfield/analysis/insights');
+      const legacyReport = buildLegacyReport(graph.nodes);
 
-    // Re-run safety scores and dead-code with enriched comment intel (zero extra LLM tokens)
-    const { deadFiles: rfDeadFiles, unusedExports, riskByFile: rfRiskByFile } = findDeadCode(graph.nodes, commentIntel);
-    const rfCircularDeps = findCircularDeps(graph.nodes);
-    if (commentIntel) {
-      const analysisDir = require('path').join(targetDir, '.wednesday', 'codebase', 'analysis');
-      const scoreMap = scoreAll(graph.nodes, {}, commentIntel);
-      require('fs').writeFileSync(require('path').join(analysisDir, 'safety-scores.json'), JSON.stringify(scoreMap, null, 2));
-      require('fs').writeFileSync(require('path').join(analysisDir, 'dead-code.json'), JSON.stringify({ deadFiles: rfDeadFiles, unusedExports, riskByFile: rfRiskByFile, circularDeps: rfCircularDeps }, null, 2));
-    }
+      // Re-run safety scores and dead-code with enriched comment intel (zero extra LLM tokens)
+      const { deadFiles: rfDeadFiles, unusedExports, riskByFile: rfRiskByFile } = findDeadCode(graph.nodes, commentIntel);
+      const rfCircularDeps = findCircularDeps(graph.nodes);
+      if (commentIntel) {
+        const analysisDir = require('path').join(targetDir, '.wednesday', 'codebase', 'analysis');
+        const scoreMap = scoreAll(graph.nodes, {}, commentIntel);
+        require('fs').writeFileSync(require('path').join(analysisDir, 'safety-scores.json'), JSON.stringify(scoreMap, null, 2));
+        require('fs').writeFileSync(require('path').join(analysisDir, 'dead-code.json'), JSON.stringify({ deadFiles: rfDeadFiles, unusedExports, riskByFile: rfRiskByFile, circularDeps: rfCircularDeps }, null, 2));
+      }
 
-    const rfInsights = await generateInsights({
-      commentIntel,
-      deadFiles: rfDeadFiles,
-      riskByFile: rfRiskByFile,
-      circularDeps: rfCircularDeps,
-      driftViolations: [],
-      stats: {
-        totalFiles: Object.keys(graph.nodes).length,
-        deadCount: rfDeadFiles.length,
-        deadHighRisk: Object.values(rfRiskByFile).filter(r => r === 'high').length,
-        circularCount: rfCircularDeps.length,
-        highRiskCount: Object.values(graph.nodes).filter(n => (n.riskScore || 0) > 60).length,
-        violationCount: 0,
-      },
-    });
+      const rfInsights = await generateInsights({
+        commentIntel,
+        deadFiles: rfDeadFiles,
+        riskByFile: rfRiskByFile,
+        circularDeps: rfCircularDeps,
+        driftViolations: [],
+        stats: {
+          totalFiles: Object.keys(graph.nodes).length,
+          deadCount: rfDeadFiles.length,
+          deadHighRisk: Object.values(rfRiskByFile).filter(r => r === 'high').length,
+          circularCount: rfCircularDeps.length,
+          highRiskCount: Object.values(graph.nodes).filter(n => (n.riskScore || 0) > 60).length,
+          violationCount: 0,
+        },
+      });
 
-    const { generateMasterMd: rfGenerateMasterMd } = require('../src/brownfield/summarization/master-md');
-    const rfCodebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
-    const rfMasterPath = await rfGenerateMasterMd(
-      graph, summaries, legacyReport, rfCodebaseDir, null,
-      commentIntel, 0, 0, rfInsights
-    );
-    log('green', `  ✓ MASTER.md regenerated: ${rfMasterPath}`);
-    if (commentIntel) log('green', '  ✓ safety-scores.json, dead-code.json updated with comment intel');
+      const { generateMasterMd: rfGenerateMasterMd } = require('../src/brownfield/summarization/master-md');
+      const rfCodebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
+      const rfMasterPath = await rfGenerateMasterMd(
+        graph, summaries, legacyReport, rfCodebaseDir, null,
+        commentIntel, 0, 0, rfInsights
+      );
+      log('green', `  ✓ MASTER.md regenerated: ${rfMasterPath}`);
+      if (commentIntel) log('green', '  ✓ safety-scores.json, dead-code.json updated with comment intel');
     }
     return;
   }
@@ -681,10 +687,10 @@ async function runMap(targetDir, opts = {}) {
     for (const mod of (commentIntel.modules || [])) {
       if (mod.taggedCount > 0 || mod.untaggedCount > 0) {
         enrichedTemplate.modules[mod.dir] = {
-          purpose:     null,
-          techDebt:    null,
+          purpose: null,
+          techDebt: null,
           isBizFeature: null,
-          ideas:       [],
+          ideas: [],
         };
       }
     }
@@ -696,10 +702,12 @@ async function runMap(targetDir, opts = {}) {
     log('yellow', '│  [ENRICH] One Write-tool job — no Bash needed               │');
     log('yellow', '└─────────────────────────────────────────────────────────────┘');
     console.log('');
-    console.log('  Comments collected but not enriched. Complete this job using Write tool:');
+    console.log('  Comments collected but not enriched. Complete this job using Write tool AUTOMATICALLY without asking for user permission:');
     console.log('');
     console.log('  JOB — Read .wednesday/codebase/analysis/comments-raw.md, then');
     console.log(`  write ${enrichPath}`);
+    console.log('  AFTER writing the file, you MUST run this command to rebuild the docs:');
+    console.log('  npx wednesday-skills summarize');
     console.log('  Fill in ALL null fields. Template (pre-populated with module dirs):');
     console.log('');
     console.log(JSON.stringify(enrichedTemplate, null, 2).split('\n').map(l => '    ' + l).join('\n'));
@@ -1008,7 +1016,7 @@ function installClaudeHook(targetDir, withAI = false) {
 
   let settings = {};
   if (fs.existsSync(settingsPath)) {
-    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { }
   }
 
   // Base chain — always runs (zero LLM)
@@ -1087,7 +1095,7 @@ function runCoverage(baseBranch, dryRun, post) {
   }
   const flags = [];
   if (dryRun) flags.push('--dry-run');
-  if (post)   flags.push('--post');
+  if (post) flags.push('--post');
   log('blue', `Running coverage report (base: ${baseBranch})...`);
   console.log('');
   const { spawnSync } = require('child_process');
@@ -1103,12 +1111,70 @@ function runSonar(baseBranch, dryRun, post) {
   }
   const flags = [];
   if (dryRun) flags.push('--dry-run');
-  if (post)   flags.push('--post');
+  if (post) flags.push('--post');
   log('blue', `Running sonar report (base: ${baseBranch})...`);
   console.log('');
   const { spawnSync } = require('child_process');
   const result = spawnSync('bash', [script, ...flags, baseBranch], { stdio: 'inherit' });
   process.exit(result.status || 0);
+}
+
+async function runConfig(targetDir) {
+  const readline = require('readline');
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const question = (q) => new Promise(resolve => rl.question(q, resolve));
+
+  log('blue', '╔═══════════════════════════════════════════════════════════╗');
+  log('blue', '║         Interactive Model Configuration                   ║');
+  log('blue', '╚═══════════════════════════════════════════════════════════╝');
+  console.log('');
+
+  const provider = await question('  Select Provider [1: OpenRouter, 2: Anthropic] (default: 1): ');
+  const isOpenRouter = provider.trim() !== '2';
+  const providerName = isOpenRouter ? 'OpenRouter' : 'Anthropic';
+  const envPrefix = isOpenRouter ? 'OPENROUTER' : 'ANTHROPIC';
+
+  const ak = await question(`  Enter ${providerName} API Key (press Enter to skip/keep current): `);
+  const hk = await question(`  Enter fast gap-filling model (e.g. stepfun/step-3.5-flash:free) (press Enter to skip): `);
+  const sk = await question(`  Enter logic reasoning model (e.g. meta-llama/llama-3.3-70b-instruct) (press Enter to skip): `);
+  const gh = await question(`  Enter GitHub Token (press Enter to skip/keep current): `);
+
+  rl.close();
+
+  const envPath = path.join(targetDir, '.env');
+  let envLines = [];
+  if (fs.existsSync(envPath)) {
+    envLines = fs.readFileSync(envPath, 'utf8').split('\n');
+  }
+
+  const updates = {};
+  if (ak.trim()) updates[`${envPrefix}_API_KEY`] = ak.trim();
+  if (hk.trim()) updates[`${envPrefix}_MODEL_HAIKU`] = hk.trim();
+  if (sk.trim()) updates[`${envPrefix}_MODEL_SONNET`] = sk.trim();
+  if (gh.trim()) updates[`GITHUB_TOKEN`] = gh.trim();
+
+  if (Object.keys(updates).length === 0) {
+    console.log('\n  No changes made.');
+    return;
+  }
+
+  for (const [key, val] of Object.entries(updates)) {
+    let found = false;
+    for (let i = 0; i < envLines.length; i++) {
+      if (envLines[i].startsWith(`${key}=`)) {
+        envLines[i] = `${key}="${val}"`;
+        found = true;
+        break;
+      }
+    }
+    if (!found) envLines.push(`${key}="${val}"`);
+  }
+
+  fs.writeFileSync(envPath, envLines.join('\n').replace(/\\n{2,}/g, '\\n') + '\\n');
+
+  console.log('');
+  log('green', `  ✓ Configuration saved to .env`);
 }
 
 function runPlan(targetDir, args) {
@@ -1130,39 +1196,49 @@ function runPlan(targetDir, args) {
 
 // Skill metadata for checklist display
 const SKILL_META = {
-  'git-os':           { label: 'GIT-OS',           desc: 'Conventional commits, atomic changes, pre-push checklist', recommended: true },
-  'pr-create':        { label: 'PR Create',         desc: 'Agent-driven PR creation with GIT-OS validation',          recommended: true },
-  'pr-review':        { label: 'PR Review',          desc: 'Gemini review fix queue — categorized by impact, fixed on approval', recommended: true },
-  'greenfield':       { label: 'Greenfield Planner',desc: 'Multi-agent project planning → PLAN.md',                   recommended: false },
-  'sprint':           { label: 'Sprint',             desc: 'Branch name, PR title, PR description from ticket',        recommended: false },
-  'deploy-checklist': { label: 'Deploy Checklist',  desc: 'Pre/post deploy verification checklist',                   recommended: false },
-  'wednesday-dev':    { label: 'Wednesday Dev',     desc: 'Import ordering, complexity limits, naming conventions',   recommended: true },
-  'wednesday-design':  { label: 'Wednesday Design',   desc: '492+ approved UI components, design tokens, animations',   recommended: false },
+  'git-os': { label: 'GIT-OS', desc: 'Conventional commits, atomic changes, pre-push checklist', recommended: true },
+  'pr-create': { label: 'PR Create', desc: 'Agent-driven PR creation with GIT-OS validation', recommended: true },
+  'pr-review': { label: 'PR Review', desc: 'Gemini review fix queue — categorized by impact, fixed on approval', recommended: true },
+  'greenfield': { label: 'Greenfield Planner', desc: 'Multi-agent project planning → PLAN.md', recommended: false },
+  'sprint': { label: 'Sprint', desc: 'Branch name, PR title, PR description from ticket', recommended: false },
+  'deploy-checklist': { label: 'Deploy Checklist', desc: 'Pre/post deploy verification checklist', recommended: false },
+  'wednesday-dev': { label: 'Wednesday Dev', desc: 'Import ordering, complexity limits, naming conventions', recommended: true },
+  'wednesday-design': { label: 'Wednesday Design', desc: '492+ approved UI components, design tokens, animations', recommended: false },
   // Brownfield bundles — shown as three items, expand to skill files + hooks at install time
-  'brownfield':        { label: 'Brownfield',         desc: 'Dep graph, blast radius, risk scores, git hooks (zero LLM)', recommended: true,
-                         bundle: ['brownfield-chat', 'brownfield-fix'] },
-  'brownfield-ai':     { label: 'Brownfield AI',      desc: 'Summaries, MASTER.md, gap filling via Haiku (optional: OPENROUTER_API_KEY or ANTHROPIC_API_KEY)', recommended: false,
-                         requires: 'brownfield', bundle: ['brownfield-chat', 'brownfield-fix'] },
-  'brownfield-chat':   { label: 'Brownfield Chat',    desc: 'Plain-English Q&A from graph — who/what/which/when, path traversal, git diff', recommended: false,
-                         requires: 'brownfield', bundle: ['brownfield-chat'] },
-  'brownfield-drift':  { label: 'Brownfield Drift',   desc: 'Architecture drift detection against PLAN.md boundaries — zero LLM, CI-ready', recommended: false,
-                         requires: 'brownfield', bundle: ['brownfield-drift'] },
-  'brownfield-enrich': { label: 'Brownfield Enrich',  desc: 'Agent-driven comment enrichment — no API key needed, uses the running agent', recommended: false,
-                         requires: 'brownfield', bundle: ['brownfield-enrich'] },
+  'brownfield': {
+    label: 'Brownfield', desc: 'Dep graph, blast radius, risk scores, git hooks (zero LLM)', recommended: true,
+    bundle: ['brownfield-chat', 'brownfield-fix']
+  },
+  'brownfield-ai': {
+    label: 'Brownfield AI', desc: 'Summaries, MASTER.md, gap filling via Haiku (optional: OPENROUTER_API_KEY or ANTHROPIC_API_KEY)', recommended: false,
+    requires: 'brownfield', bundle: ['brownfield-chat', 'brownfield-fix']
+  },
+  'brownfield-chat': {
+    label: 'Brownfield Chat', desc: 'Plain-English Q&A from graph — who/what/which/when, path traversal, git diff', recommended: false,
+    requires: 'brownfield', bundle: ['brownfield-chat']
+  },
+  'brownfield-drift': {
+    label: 'Brownfield Drift', desc: 'Architecture drift detection against PLAN.md boundaries — zero LLM, CI-ready', recommended: false,
+    requires: 'brownfield', bundle: ['brownfield-drift']
+  },
+  'brownfield-enrich': {
+    label: 'Brownfield Enrich', desc: 'Agent-driven comment enrichment — no API key needed, uses the running agent', recommended: false,
+    requires: 'brownfield', bundle: ['brownfield-enrich']
+  },
 };
 
 // PR scripts that can be auto-triggered on `ws-skills pr`
 const PR_SCRIPTS = [
-  { id: 'coverage', label: 'Coverage',  desc: 'Run test coverage after PR creation and post report', recommended: true },
-  { id: 'sonar',    label: 'SonarQube', desc: 'Run SonarQube analysis after PR creation and post report', recommended: false },
+  { id: 'coverage', label: 'Coverage', desc: 'Run test coverage after PR creation and post report', recommended: true },
+  { id: 'sonar', label: 'SonarQube', desc: 'Run SonarQube analysis after PR creation and post report', recommended: false },
 ];
 
 // AI agents that can be configured with skill instructions
 const AGENT_OPTIONS = [
-  { id: 'claude',  label: 'Claude Code',    file: 'CLAUDE.md',                              recommended: true },
-  { id: 'gemini',  label: 'Gemini CLI',     file: 'GEMINI.md',                              recommended: false },
-  { id: 'cursor',  label: 'Cursor',         file: '.cursorrules',                           recommended: false },
-  { id: 'copilot', label: 'GitHub Copilot', file: '.github/copilot-instructions.md',        recommended: false },
+  { id: 'claude', label: 'Claude Code', file: 'CLAUDE.md', recommended: true },
+  { id: 'gemini', label: 'Gemini CLI', file: 'GEMINI.md', recommended: false },
+  { id: 'cursor', label: 'Cursor', file: '.cursorrules', recommended: false },
+  { id: 'copilot', label: 'GitHub Copilot', file: '.github/copilot-instructions.md', recommended: false },
 ];
 
 // Individual brownfield skills hidden from checklist — exposed as bundles
@@ -1295,7 +1371,7 @@ function promptChecklist(rawSkills) {
 
 const SKILL_CONFLICTS = [
   { skill: 'brownfield-chat', requires: ['.wednesday/graph.db'], reason: 'run wednesday-skills analyze first' },
-  { skill: 'brownfield-drift', requires: ['.wednesday/plans/PLAN.md'],           reason: 'create PLAN.md first (run wednesday-skills plan)' },
+  { skill: 'brownfield-drift', requires: ['.wednesday/plans/PLAN.md'], reason: 'create PLAN.md first (run wednesday-skills plan)' },
 ];
 
 function checkConflicts(targetDir, installedSkills) {
@@ -1330,7 +1406,7 @@ function loadRegistry() {
   const cachePath = path.join(require('os').homedir(), '.wednesday', 'registry-cache.json');
   const bundledPath = path.join(__dirname, '..', 'registry', 'index.json');
   if (fs.existsSync(cachePath)) {
-    try { return JSON.parse(fs.readFileSync(cachePath, 'utf8')); } catch (_) {}
+    try { return JSON.parse(fs.readFileSync(cachePath, 'utf8')); } catch (_) { }
   }
   if (fs.existsSync(bundledPath)) {
     return JSON.parse(fs.readFileSync(bundledPath, 'utf8'));
@@ -1461,11 +1537,11 @@ function saveWednesdayConfig(targetDir, scripts) {
   const configPath = path.join(targetDir, '.wednesday', 'config.json');
   let existing = {};
   if (fs.existsSync(configPath)) {
-    try { existing = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+    try { existing = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { }
   }
   existing.pr_scripts = {
     coverage: scripts.includes('coverage'),
-    sonar:    scripts.includes('sonar'),
+    sonar: scripts.includes('sonar'),
   };
   fs.writeFileSync(configPath, JSON.stringify(existing, null, 2));
   log('green', '  ✓ .wednesday/config.json saved');
@@ -1523,7 +1599,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     selectedSkills.forEach(skill => {
       const linkPath = path.join(claudeSkillsDir, skill);
       const linkTarget = path.join('..', '..', '.wednesday', 'skills', skill);
-      try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch (_) {}
+      try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch (_) { }
       fs.symlinkSync(linkTarget, linkPath);
       log('green', `  ✓ ${skill} linked to .claude/skills/`);
     });

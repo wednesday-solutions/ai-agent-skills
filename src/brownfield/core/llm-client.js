@@ -15,13 +15,13 @@ const https       = require('https');
 const tokenLogger = require('./token-logger');
 
 const OPENROUTER_MODELS = {
-  haiku:  'anthropic/claude-haiku-4-5',
-  sonnet: 'anthropic/claude-sonnet-4-6',
+  haiku:  process.env.OPENROUTER_MODEL_HAIKU || 'stepfun/step-3.5-flash:free',
+  sonnet: process.env.OPENROUTER_MODEL_SONNET || 'anthropic/claude-sonnet-4-6',
 };
 
 const ANTHROPIC_MODELS = {
-  haiku:  'claude-haiku-4-5-20251001',
-  sonnet: 'claude-sonnet-4-6',
+  haiku:  process.env.ANTHROPIC_MODEL_HAIKU || 'claude-haiku-4-5-20251001',
+  sonnet: process.env.ANTHROPIC_MODEL_SONNET || 'claude-sonnet-4-6',
 };
 
 /**

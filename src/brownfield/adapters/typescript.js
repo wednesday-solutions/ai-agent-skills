@@ -7,7 +7,7 @@
 'use strict';
 
 const path = require('path');
-const { safeRead, resolveImport, resolveAlias } = require('../core/parser');
+const { safeRead, resolveImport, resolveAlias, lineAt } = require('../core/parser');
 
 /**
  * Parse a JS/TS/JSX/TSX file and extract dependency information.
@@ -162,8 +162,65 @@ function parse(filePath, rootDir, aliases) {
     exports: [...exports],
     gaps,
     meta,
+    symbols: extractSymbols(src),
     error: false,
   };
+}
+
+/**
+ * Extract top-level functions, classes, and arrow-function constants with line numbers.
+ * Uses the comment-stripped source so line numbers stay correct.
+ */
+function extractSymbols(src) {
+  const symbols = [];
+  let m;
+
+  // function declarations: function foo(  /  async function foo(  /  function* foo(
+  const fnRe = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*(\w+)\s*\(/gm;
+  while ((m = fnRe.exec(src)) !== null) {
+    symbols.push({
+      name:      m[1],
+      kind:      'function',
+      lineStart: lineAt(src, m.index),
+      signature: src.slice(m.index, m.index + 80).split('\n')[0].trim(),
+    });
+  }
+
+  // class declarations: class Foo  /  abstract class Foo
+  const classRe = /^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(\w+)/gm;
+  while ((m = classRe.exec(src)) !== null) {
+    symbols.push({
+      name:      m[1],
+      kind:      'class',
+      lineStart: lineAt(src, m.index),
+      signature: src.slice(m.index, m.index + 80).split('\n')[0].trim(),
+    });
+  }
+
+  // Top-level const arrow functions: const foo = (...) =>  /  const foo = async (...) =>
+  // Must start at column 0 (no leading spaces — not a method inside a class/object)
+  const arrowRe = /^(?:export\s+)?const\s+(\w+)\s*(?::[^=\n]+)?=\s*(?:async\s+)?\(/gm;
+  while ((m = arrowRe.exec(src)) !== null) {
+    // Confirm it's actually an arrow function (not an IIFE or plain assignment)
+    const ahead = src.slice(m.index + m[0].length, m.index + m[0].length + 120);
+    if (/=>\s*[\w{([]/.test(ahead) || /\)\s*(?::\s*\w[^=\n]*)?\s*=>/.test(ahead)) {
+      symbols.push({
+        name:      m[1],
+        kind:      'function',
+        lineStart: lineAt(src, m.index),
+        signature: src.slice(m.index, m.index + 80).split('\n')[0].trim(),
+      });
+    }
+  }
+
+  // Deduplicate by name+line (arrow check may re-capture some declarations)
+  const seen = new Set();
+  return symbols.filter(s => {
+    const key = `${s.name}:${s.lineStart}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function addImport(set, rawPath, fromFile, rootDir, aliases) {
@@ -180,10 +237,6 @@ function addImport(set, rawPath, fromFile, rootDir, aliases) {
   }
   const resolved = resolveImport(fromFile, rawPath, rootDir);
   set.add(resolved);
-}
-
-function lineAt(src, idx) {
-  return src.slice(0, idx).split('\n').length;
 }
 
 module.exports = { parse };

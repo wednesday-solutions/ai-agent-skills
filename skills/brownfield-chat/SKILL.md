@@ -1,6 +1,6 @@
 ---
 name: brownfield-chat
-description: Use when the dev asks any open-ended question about the codebase — who wrote something, what depends on what, what changed recently, what a module does, or any structural question in plain English.
+description: Natural-language Q&A across the full codebase. Use for multi-module questions, "what breaks if", git history, cross-cutting queries, and anything spanning more than one file. For a single-file lookup use brownfield-query instead.
 permissions:
   allow:
     - Bash(wednesday-skills chat *)
@@ -8,10 +8,17 @@ permissions:
 ---
 
 ## When to use
-- Any "who", "what", "which", "when", "how many" question about the project
-- Questions spanning multiple modules or layers
-- Dev wants to explore the codebase without reading files
-- "What breaks if I change X", "who last touched X", "which files have no tests"
+- "What breaks if I change X?" (multi-file blast radius)
+- "Who last touched auth.ts?" (git history)
+- "What changed in the last 30 days?" (git diff summary)
+- "Which files have no tests and high risk?" (graph filter)
+- "Path from checkout to database" (path traversal)
+- Any question spanning multiple modules or layers
+- Single-file structural lookups (what does X export, who imports Y)
+- A file shows gaps in dep-graph.json — run `wednesday-skills fill-gaps --file <file>` to resolve
+
+## When NOT to use
+- Architecture rules / boundary enforcement → use **brownfield-drift**
 
 ## What to do
 1. Run `wednesday-skills chat "<question>"` via Bash tool

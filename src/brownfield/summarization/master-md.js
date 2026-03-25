@@ -8,8 +8,128 @@
 
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
+const { callLLM } = require('../core/llm-client');
 const { detectFeatureModules } = require('../analysis/feature-modules');
+const { scoreAll } = require('../analysis/safety-scorer');
+const { findDeadCode } = require('../analysis/dead-code');
+const { blastRadius } = require('../analysis/blast-radius');
+
+// ── Shared grouping helper ─────────────────────────────────────────────────
+function groupByDir(allNodes) {
+  const byDir = {};
+  for (const [file, node] of allNodes) {
+    const dir = path.dirname(file) === '.' ? '(root)' : path.dirname(file);
+    byDir[dir] = byDir[dir] || [];
+    byDir[dir].push([file, node]);
+  }
+  return byDir;
+}
+
+// ── Package manifest readers ──────────────────────────────────────────────────
+function readPackageJson(rootDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  } catch { return null; }
+}
+
+// ── Feature domain inference from file names ──────────────────────────────────
+const DOMAIN_PATTERNS = [
+  { domain: 'Authentication',     patterns: /auth|login|logout|signin|signup|register|password|token|otp|biometric/i },
+  { domain: 'User / Profile',     patterns: /user|profile|account|avatar|settings|preference/i },
+  { domain: 'Home / Dashboard',   patterns: /home|dashboard|feed|landing|main|root/i },
+  { domain: 'Payments / Billing', patterns: /payment|billing|checkout|cart|order|invoice|subscription|stripe|razorpay|purchase/i },
+  { domain: 'Notifications',      patterns: /notif|alert|push|apns|fcm|badge/i },
+  { domain: 'Onboarding',         patterns: /onboard|walkthrough|splash|intro|tutorial/i },
+  { domain: 'Search',             patterns: /search|filter|sort|discover/i },
+  { domain: 'Messaging / Chat',   patterns: /chat|message|inbox|conversation|thread/i },
+  { domain: 'Media',              patterns: /camera|photo|video|image|gallery|media|upload/i },
+  { domain: 'Map / Location',     patterns: /map|location|geo|coordinates|nearby/i },
+  { domain: 'Analytics',          patterns: /analytics|tracking|event|segment|mixpanel|amplitude/i },
+  { domain: 'API / Networking',   patterns: /api|network|http|request|response|endpoint|graphql/i },
+  { domain: 'Storage / Database', patterns: /storage|database|db|cache|persist|realm|coredata|sqlite/i },
+  { domain: 'Admin',              patterns: /admin|cms|backoffice|manage/i },
+];
+
+function inferFeatures(allNodes) {
+  const domains = {};
+  for (const [file] of allNodes) {
+    const base = path.basename(file, path.extname(file)).toLowerCase();
+    for (const { domain, patterns } of DOMAIN_PATTERNS) {
+      if (patterns.test(base) || patterns.test(file)) {
+        domains[domain] = domains[domain] || [];
+        if (!domains[domain].includes(base)) domains[domain].push(base);
+      }
+    }
+  }
+  return domains;
+}
+
+// ── Tech stack builder ────────────────────────────────────────────────────────
+function buildTechStack(allNodes, pkgJson, stats, frameworks) {
+  const stack = { languages: [], frameworks: [], libraries: [], platform: null };
+
+  // Languages
+  const langs = Object.entries(stats.byLang || {}).sort((a, b) => b[1] - a[1]);
+  for (const [l] of langs) stack.languages.push(l.charAt(0).toUpperCase() + l.slice(1));
+
+  // Platform
+  if (frameworks.has('SwiftUI') || frameworks.has('UIKit')) {
+    stack.platform = 'iOS';
+  } else if (stats.byLang?.kotlin) {
+    stack.platform = 'Android';
+  } else if (frameworks.has('React Native')) {
+    stack.platform = 'React Native (iOS + Android)';
+  } else if (frameworks.has('Next.js')) {
+    stack.platform = 'Web (Next.js)';
+  } else if (frameworks.has('React')) {
+    stack.platform = 'Web (React)';
+  } else if (stats.byLang?.go) {
+    stack.platform = 'Backend (Go)';
+  } else if (frameworks.has('NestJS')) {
+    stack.platform = 'Backend (NestJS)';
+  }
+
+  // Frameworks from meta
+  for (const f of frameworks) stack.frameworks.push(f);
+
+  // Key libraries from package.json dependencies
+  if (pkgJson) {
+    const KEY_LIBS = [
+      'react', 'react-native', 'next', 'express', 'fastify', 'koa', 'nestjs',
+      'graphql', 'apollo', 'prisma', 'typeorm', 'sequelize', 'mongoose',
+      'redux', 'zustand', 'mobx', 'recoil', 'jotai',
+      'axios', 'swr', 'react-query', '@tanstack/query',
+      'jest', 'vitest', 'mocha', 'cypress', 'playwright',
+      'tailwindcss', 'styled-components', '@emotion',
+      'stripe', 'twilio', 'sendgrid', 'firebase', 'supabase',
+      'aws-sdk', '@aws-sdk', 'socket.io', 'ws',
+    ];
+    const allDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
+    for (const lib of KEY_LIBS) {
+      if (Object.keys(allDeps).some(d => d === lib || d.startsWith(`${lib}/`) || d.startsWith(`@${lib}`))) {
+        const display = lib.startsWith('@') ? lib : lib.replace(/^@[^/]+\//, '');
+        if (!stack.libraries.includes(display)) stack.libraries.push(display);
+      }
+    }
+  }
+
+  return stack;
+}
+
+function buildTestCoverageMap(nodes) {
+  const coverageMap = {};
+  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/;
+  for (const file of Object.keys(nodes)) {
+    if (!TEST_RE.test(file)) coverageMap[file] = 0;
+  }
+  for (const [file, node] of Object.entries(nodes)) {
+    if (!TEST_RE.test(file)) continue;
+    for (const imp of node.imports) {
+      if (Object.prototype.hasOwnProperty.call(coverageMap, imp)) coverageMap[imp] = 100;
+    }
+  }
+  return coverageMap;
+}
 
 function isHighValue(node) {
   return node.isEntryPoint || node.importedBy.length > 10 || node.riskScore > 70;
@@ -18,9 +138,20 @@ function isHighValue(node) {
 /**
  * Generate full MASTER.md — every file documented in detail
  */
-async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null) {
+async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null, gapsFilled = 0, elapsed = 0, insights = {}) {
   const nodes = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
+
+  // Pre-compute derived data used by multiple sections
+  const scoreMap = scoreAll(nodes, buildTestCoverageMap(nodes), commentIntel);
+  const { deadFiles, riskByFile } = findDeadCode(nodes, commentIntel);
+  const deadClassification = insights.deadClassification || {};
+  const cycleBreakPoints   = insights.cycleBreakPoints   || {};
+  const totalGaps = allNodes.reduce((s, [, n]) => s + n.gaps.length, 0);
+  const gapsByType = allNodes.flatMap(([, n]) => n.gaps).reduce((acc, g) => {
+    acc[g.type] = (acc[g.type] || 0) + 1;
+    return acc;
+  }, {});
 
   // Build comment intel lookup by dir
   const commentByDir = new Map();
@@ -34,7 +165,32 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push(`# Codebase Intelligence — MASTER.md`);
   lines.push(`> Generated: ${new Date().toISOString()}`);
   lines.push(`> Project root: ${graph.rootDir}`);
-  lines.push(`> Files: ${graph.stats.totalFiles} | Edges: ${graph.stats.totalEdges} | High-risk: ${graph.stats.highRiskFiles}`);
+  lines.push(`> Files: ${graph.stats.totalFiles} | Edges: ${graph.stats.totalEdges} | High-risk: ${graph.stats.highRiskFiles} | Dead: ${deadFiles.length} | Gaps filled: ${gapsFilled}${elapsed ? ` | Time: ${elapsed}ms` : ''}`);
+  lines.push('');
+
+  // ── Codebase health (AI narrative) ────────────────────────────────────────
+  if (insights.healthNarrative) {
+    lines.push('## Codebase health');
+    lines.push('');
+    lines.push(`> ${insights.healthNarrative}`);
+    lines.push('');
+  }
+
+  // ── Quick stats ────────────────────────────────────────────────────────────
+  lines.push('## Quick stats');
+  lines.push('');
+  lines.push('| Metric | Value |');
+  lines.push('|--------|-------|');
+  lines.push(`| Files mapped | ${allNodes.length} |`);
+  lines.push(`| Total edges | ${graph.stats.totalEdges} |`);
+  lines.push(`| Summaries | ${Object.keys(summaries).length} |`);
+  lines.push(`| High-risk files (>60) | ${graph.stats.highRiskFiles} |`);
+  lines.push(`| Dead files | ${deadFiles.length} |`);
+  lines.push(`| Circular dependencies | ${legacyReport?.circularDeps?.length || 0} |`);
+  lines.push(`| God files | ${legacyReport?.godFiles?.length || 0} |`);
+  lines.push(`| Coverage gaps | ${totalGaps} |`);
+  lines.push(`| Gaps filled (subagents) | ${gapsFilled} |`);
+  lines.push(`| Danger zones | ${legacyReport?.dangerZones?.length || 0} |`);
   lines.push('');
 
   // ── Table of contents ─────────────────────────────────────────────────────
@@ -44,9 +200,17 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push('2. [Architecture overview](#architecture-overview)');
   lines.push('3. [Entry points](#entry-points)');
   lines.push('4. [Danger zones](#danger-zones)');
-  lines.push('5. [Module map — every file](#module-map)');
-  lines.push('6. [Legacy health report](#legacy-health-report)');
-  lines.push('7. [Annotation coverage](#annotation-coverage)');
+  lines.push('5. [High-risk files](#high-risk-files)');
+  lines.push('6. [Dead code candidates](#dead-code-candidates)');
+  lines.push('7. [Coverage gaps](#coverage-gaps)');
+  lines.push('8. [Module map](#module-map)');
+  lines.push('9. [Tech stack](#tech-stack)');
+  lines.push('10. [Feature inventory](#feature-inventory)');
+  if (commentIntel?.modules?.some(m => m.purpose || m.techDebt)) {
+    lines.push('11. [Comment intelligence](#comment-intelligence)');
+  }
+  lines.push('12. [Legacy health report](#legacy-health-report)');
+  lines.push('13. [Output files](#output-files)');
   lines.push('');
 
   // ── New dev quick-start ────────────────────────────────────────────────────
@@ -96,9 +260,20 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   // ── Architecture overview ─────────────────────────────────────────────────
   lines.push('## Architecture overview');
   lines.push('');
+
+  // Reverse PRD from comment intelligence — what the project actually does, in dev's own words
+  if (commentIntel?.reversePrd) {
+    lines.push('### What this project does');
+    lines.push('');
+    lines.push('> *Derived from developer comments across the codebase — not inferred from code structure.*');
+    lines.push('');
+    lines.push(commentIntel.reversePrd);
+    lines.push('');
+  }
+
   const highValue = Object.values(nodes).filter(isHighValue);
   if (apiKey && highValue.length > 0) {
-    const arch = await callHaikuArchitecture(highValue, graph.stats, apiKey);
+    const arch = await callHaikuArchitecture(highValue, graph.stats);
     lines.push(arch || generateStructuralArchOverview(graph.stats, highValue));
   } else {
     lines.push(generateStructuralArchOverview(graph.stats, highValue));
@@ -149,27 +324,127 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
     lines.push('');
   }
 
-  // ── Module map — every file ───────────────────────────────────────────────
+  // ── High-risk files ────────────────────────────────────────────────────────
+  lines.push('## High-risk files');
+  lines.push('');
+  lines.push('> Files with risk score > 60. Read before modifying.');
+  lines.push('');
+  const highRiskFiles = Object.values(nodes)
+    .filter(n => n.riskScore > 60)
+    .sort((a, b) => b.riskScore - a.riskScore)
+    .slice(0, 10);
+  if (highRiskFiles.length > 0) {
+    lines.push('| File | Score | Dependents | Band |');
+    lines.push('|------|-------|------------|------|');
+    for (const n of highRiskFiles) {
+      const br = blastRadius(n.file, nodes);
+      const depStr = br.transitive > br.direct
+        ? `${br.direct} (+${br.transitive - br.direct} transitive)`
+        : `${br.direct}`;
+      lines.push(`| \`${n.file}\` | ${n.riskScore} | ${depStr} | ${scoreMap[n.file]?.band || '?'} |`);
+    }
+  } else {
+    lines.push('*No high-risk files detected.*');
+  }
+  lines.push('');
+
+  // ── Dead code candidates ───────────────────────────────────────────────────
+  lines.push('## Dead code candidates');
+  lines.push('');
+  if (deadFiles.length > 0) {
+    lines.push(`> ${deadFiles.length} files have no importers. They may be unused, entry points, or dynamically loaded.`);
+    lines.push('');
+    lines.push('| File | Language | Module risk | Classification |');
+    lines.push('|------|----------|-------------|----------------|');
+    for (const f of deadFiles.slice(0, 20)) {
+      const n = nodes[f] || {};
+      const risk = riskByFile[f] || 'unknown';
+      const riskIcon = risk === 'high' ? '🔴 high — investigate before deleting'
+        : risk === 'low' ? '🟢 low — safe to remove'
+        : '⚪ unknown';
+      const label = deadClassification[f] || '—';
+      lines.push(`| \`${f}\` | ${n.lang || '?'} | ${riskIcon} | ${label} |`);
+    }
+    if (deadFiles.length > 20) {
+      lines.push('');
+      lines.push(`> ...and ${deadFiles.length - 20} more. Run \`wednesday-skills dead\` for full list.`);
+    }
+  } else {
+    lines.push('> No dead code detected — every file is imported by at least one other.');
+  }
+  lines.push('');
+
+  // ── Coverage gaps ──────────────────────────────────────────────────────────
+  lines.push('## Coverage gaps');
+  lines.push('');
+  if (totalGaps > 0) {
+    lines.push('| Gap type | Count |');
+    lines.push('|----------|-------|');
+    for (const [type, count] of Object.entries(gapsByType)) {
+      lines.push(`| ${type} | ${count} |`);
+    }
+    lines.push('');
+    lines.push('> Run `wednesday-skills fill-gaps --min-risk 50` to resolve gaps.');
+  } else {
+    lines.push('> No gaps detected. Graph coverage is complete.');
+  }
+  lines.push('');
+
+  // ── Module map — directory level ─────────────────────────────────────────
   lines.push('## Module map');
   lines.push('');
-  lines.push('> Every file in the codebase. High-value files get full sections. All files listed with key stats.');
+  lines.push('> One row per directory. For per-file detail: `wednesday-skills blast <file>` or `wednesday-skills chat "what does X do"`.');
+  lines.push('');
+  lines.push('| Directory | Files | Avg risk | Debt | Type | Purpose |');
+  lines.push('|-----------|-------|----------|------|------|---------|');
+
+  const byDir = groupByDir(allNodes);
+  for (const [dir, dirNodes] of Object.entries(byDir).sort()) {
+    const intel        = commentByDir.get(dir);
+    const avgRisk      = Math.round(dirNodes.reduce((s, [, n]) => s + n.riskScore, 0) / dirNodes.length);
+    const riskIcon     = avgRisk >= 61 ? '🔴' : avgRisk >= 31 ? '🟡' : '🟢';
+    const debt         = intel?.techDebt && intel.techDebt !== 'none' ? `**${intel.techDebt.toUpperCase()}**` : '—';
+    const type         = intel?.isBizFeature === true ? '`biz`' : intel?.isBizFeature === false ? '`infra`' : '—';
+    const purpose      = intel?.purpose ? intel.purpose.split('.')[0] : '—';
+    lines.push(`| \`${dir}\` | ${dirNodes.length} | ${riskIcon} ${avgRisk} | ${debt} | ${type} | ${purpose} |`);
+  }
   lines.push('');
 
-  // Group by directory
-  const byDir = {};
-  for (const [file, node] of allNodes) {
-    const dir = path.dirname(file) === '.' ? '(root)' : path.dirname(file);
-    byDir[dir] = byDir[dir] || [];
-    byDir[dir].push([file, node]);
+  // ── Tech stack ─────────────────────────────────────────────────────────────
+  const pkgJson = readPackageJson(graph.rootDir);
+  const frameworks = new Set(allNodes.map(([, n]) => n.meta?.framework).filter(Boolean));
+  const stack = buildTechStack(allNodes, pkgJson, graph.stats, frameworks);
+
+  lines.push('## Tech stack');
+  lines.push('');
+  lines.push('| Dimension | Details |');
+  lines.push('|-----------|---------|');
+  if (stack.platform)           lines.push(`| Platform | ${stack.platform} |`);
+  if (stack.languages.length)   lines.push(`| Languages | ${stack.languages.join(', ')} |`);
+  if (stack.frameworks.length)  lines.push(`| Frameworks | ${stack.frameworks.join(', ')} |`);
+  if (stack.libraries.length)   lines.push(`| Key Libraries | ${stack.libraries.slice(0, 15).join(', ')} |`);
+  lines.push('');
+
+  // ── Feature inventory ──────────────────────────────────────────────────────
+  const features = inferFeatures(allNodes);
+  if (Object.keys(features).length > 0) {
+    lines.push('## Feature inventory');
+    lines.push('');
+    lines.push('> Inferred business domains from codebase structure.');
+    lines.push('');
+    for (const [domain, files] of Object.entries(features)) {
+      lines.push(`- **${domain}:** ${files.slice(0, 10).map(f => `\`${f}\``).join(', ')}`);
+    }
+    lines.push('');
   }
 
-  for (const [dir, dirNodes] of Object.entries(byDir).sort()) {
-    lines.push(`### 📁 ${dir}`);
+  // ── Comment intelligence ──────────────────────────────────────────────────
+  if (commentIntel?.modules?.some(m => m.purpose || m.techDebt)) {
+    lines.push('## Comment intelligence');
     lines.push('');
-
-    for (const [file, node] of dirNodes.sort((a, b) => b[1].riskScore - a[1].riskScore)) {
-      lines.push(...formatFileSection(file, node, summaries[file], nodes, legacyReport));
-    }
+    lines.push('> Enriched from developer comments — TODOs, FIXMEs, HACKs, and explanations.');
+    lines.push('');
+    appendCommentIntelSection(lines, commentIntel);
   }
 
   // ── Legacy health report ──────────────────────────────────────────────────
@@ -181,6 +456,25 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push('## Annotation coverage');
   lines.push('');
   appendAnnotationCoverage(lines, allNodes);
+
+  // ── Output files ──────────────────────────────────────────────────────────
+  lines.push('## Output files');
+  lines.push('');
+  lines.push('| File | Description |');
+  lines.push('|------|-------------|');
+  lines.push('| `.wednesday/codebase/dep-graph.json` | Full dependency graph |');
+  lines.push('| `.wednesday/codebase/summaries.json` | Module summaries |');
+  lines.push('| `.wednesday/codebase/MASTER.md` | This file — architecture overview + module map |');
+  lines.push('| `.wednesday/codebase/analysis/blast-radius.json` | Top 50 files by blast radius |');
+  lines.push('| `.wednesday/codebase/analysis/safety-scores.json` | Risk scores (0–100) per file |');
+  lines.push('| `.wednesday/codebase/analysis/dead-code.json` | Dead files + circular deps |');
+  lines.push('| `.wednesday/codebase/analysis/api-surface.json` | Public contracts per file |');
+  lines.push('| `.wednesday/codebase/analysis/conflicts.json` | Dependency conflicts |');
+  lines.push('| `.wednesday/codebase/analysis/comments.json` | Comment intelligence — TODOs, ideas, tech debt |');
+  lines.push('| `.wednesday/codebase/analysis/comments-raw.md` | Pre-LLM comment collection |');
+  lines.push('');
+  lines.push('---');
+  lines.push('*Generated by wednesday-skills map — graph analysis only, no raw source read*');
 
   const content = lines.join('\n');
   const outPath = path.join(codebaseDir, 'MASTER.md');
@@ -245,142 +539,79 @@ const ROLE_ONBOARDING = {
 /**
  * Full file section — every detail
  */
-function formatFileSection(file, node, summary, nodes, legacyReport) {
-  const lines = [];
-  const riskBand = riskLabel(node.riskScore);
-  const isDanger = legacyReport?.dangerZones?.some(d => d.file === file);
-  const isGod = legacyReport?.godFiles?.some(g => g.file === file);
-  const role = classifyRole(file, node);
 
-  // File heading with risk indicator
-  const riskIcon = node.riskScore >= 81 ? '🔴' : node.riskScore >= 61 ? '🟠' : node.riskScore >= 31 ? '🟡' : '🟢';
-  lines.push(`#### ${riskIcon} \`${file}\``);
-  lines.push('');
 
-  // Onboarding note — role-based quick primer for new devs
-  lines.push(`> **Onboarding note (${role}):** ${ROLE_ONBOARDING[role]}`);
-  lines.push('');
+function appendCommentIntelSection(lines, intel) {
+  const enriched = intel.modules.filter(m => m.purpose || m.techDebt);
+  if (enriched.length === 0) return;
 
-  // Summary
-  lines.push(summary || `*${node.lang} module*`);
-  lines.push('');
+  // Biz features vs infra split
+  const biz   = enriched.filter(m => m.isBizFeature === true);
+  const infra  = enriched.filter(m => m.isBizFeature === false);
+  const unknown = enriched.filter(m => m.isBizFeature === null);
 
-  // Key stats inline
-  const flags = [];
-  if (node.isEntryPoint) flags.push('entry-point');
-  if (node.isBarrel) flags.push('barrel');
-  if (isGod) flags.push('⚠️ god-file');
-  if (isDanger) flags.push('⚠️ danger-zone');
-  if (node.meta?.framework) flags.push(node.meta.framework);
-  if (node.meta?.isProvider) flags.push('di-provider');
-  if (node.meta?.isController) flags.push(`controller:${node.meta.controllerPath || ''}`);
-
-  lines.push(`| Property | Value |`);
-  lines.push(`|----------|-------|`);
-  lines.push(`| Language | ${node.lang} |`);
-  lines.push(`| Risk score | **${node.riskScore}/100** — ${riskBand} |`);
-  lines.push(`| Blast radius | ${node.importedBy.length} direct dependent${node.importedBy.length !== 1 ? 's' : ''} |`);
-  lines.push(`| Exports | ${node.exports.length} |`);
-  lines.push(`| Imports | ${node.imports.length} |`);
-  if (flags.length > 0) lines.push(`| Flags | ${flags.join(', ')} |`);
-  lines.push('');
-
-  // Exports — all of them
-  if (node.exports.length > 0) {
-    lines.push(`**Exports:** \`${node.exports.join('`, `')}\``);
+  if (biz.length > 0) {
+    lines.push('### Business features');
     lines.push('');
-  }
-
-  // Frontend use — which UI files import this module
-  const frontendConsumers = node.importedBy.filter(f => {
-    const lf = f.toLowerCase();
-    return /\/(component[s]?|page[s]?|screen[s]?|view[s]?|hook[s]?)\//.test(lf)
-      || /component|page|screen|view/i.test(path.basename(lf, path.extname(lf)))
-      || /use[A-Z]/.test(path.basename(lf, path.extname(lf)));
-  });
-  if (frontendConsumers.length > 0) {
-    lines.push(`**Frontend use:** Used by ${frontendConsumers.length} UI file${frontendConsumers.length !== 1 ? 's' : ''}: ${frontendConsumers.map(f => `\`${f}\``).join(', ')}`);
-    lines.push('');
-  } else if (role === 'ui-component' || role === 'react-hook') {
-    lines.push(`**Frontend use:** This IS a frontend module.`);
-    lines.push('');
-  }
-
-  // Imports — split internal vs external
-  const internalImports = node.imports.filter(i => nodes[i]);
-  const externalImports = node.imports.filter(i => !nodes[i] && !i.startsWith('serverless:'));
-  const configImports = node.imports.filter(i => i.startsWith('serverless:'));
-
-  if (internalImports.length > 0) {
-    lines.push(`**Internal imports:** ${internalImports.map(i => `\`${i}\``).join(', ')}`);
-    lines.push('');
-  }
-  if (externalImports.length > 0) {
-    lines.push(`**External packages:** ${externalImports.map(i => `\`${i}\``).join(', ')}`);
-    lines.push('');
-  }
-  if (configImports.length > 0) {
-    lines.push(`**Serverless triggers:** ${configImports.map(i => `\`${i}\``).join(', ')}`);
-    lines.push('');
-  }
-
-  // Imported by
-  if (node.importedBy.length > 0) {
-    lines.push(`**Imported by:** ${node.importedBy.map(i => `\`${i}\``).join(', ')}`);
-    lines.push('');
-  } else if (!node.isEntryPoint && !node.isBarrel) {
-    lines.push(`**Imported by:** *nobody — potential dead code*`);
-    lines.push('');
-  }
-
-  // NestJS DI edges
-  if (node.nestEdges?.length > 0) {
-    const diEdges = node.nestEdges.map(e => `\`${e.to}\` (${e.type})`).join(', ');
-    lines.push(`**DI dependencies:** ${diEdges}`);
-    lines.push('');
-  }
-
-  // Git history
-  if (node.meta?.gitHistory) {
-    const g = node.meta.gitHistory;
-    lines.push(`**Git history:**`);
-    lines.push(`- Created: ${g.firstCommit || 'unknown'} (${Math.round((g.ageInDays || 0) / 365 * 10) / 10}yr old)`);
-    lines.push(`- Last modified: ${g.lastCommit || 'unknown'}`);
-    lines.push(`- Total commits: ${g.totalCommits}`);
-    if (g.bugFixCommits > 0) lines.push(`- Bug fixes: **${g.bugFixCommits}** (${g.bugFixCommits >= 3 ? '⚠️ high' : 'normal'})`);
-    if (g.hackCommits > 0) lines.push(`- Known workarounds: **${g.hackCommits}** ⚠️`);
-    if (g.todoCount > 0) lines.push(`- TODO/FIXME/HACK commits: ${g.todoCount}`);
-    if (g.authors?.length > 0) {
-      lines.push(`- Authors: ${g.authors.slice(0, 3).map(a => `${a.email} (${a.commits})`).join(', ')}`);
+    lines.push('| Module | Purpose | Tech debt |');
+    lines.push('|--------|---------|-----------|');
+    for (const m of biz) {
+      const debt = m.techDebt && m.techDebt !== 'none'
+        ? `**${m.techDebt.toUpperCase()}**` : m.techDebt || '—';
+      lines.push(`| \`${m.dir}/\` | ${m.purpose || '—'} | ${debt} |`);
     }
     lines.push('');
   }
 
-  // Annotations
-  if (node.meta?.annotations?.length > 0) {
-    lines.push(`**Annotations:** ${node.meta.annotations.map(a => `\`@wednesday-skills:${a.type} ${a.value}\``).join(', ')}`);
+  if (infra.length > 0) {
+    lines.push('### Infrastructure modules');
     lines.push('');
-  }
-
-  // Gaps
-  if (node.gaps.length > 0) {
-    lines.push(`**Coverage gaps (${node.gaps.length}):**`);
-    for (const gap of node.gaps) {
-      lines.push(`- \`${gap.type}\` at line ${gap.line}: \`${gap.pattern || gap.event || gap.name || ''}\``);
+    lines.push('| Module | Purpose | Tech debt |');
+    lines.push('|--------|---------|-----------|');
+    for (const m of infra) {
+      const debt = m.techDebt && m.techDebt !== 'none'
+        ? `**${m.techDebt.toUpperCase()}**` : m.techDebt || '—';
+      lines.push(`| \`${m.dir}/\` | ${m.purpose || '—'} | ${debt} |`);
     }
     lines.push('');
   }
 
-  // Danger zone warning inline
-  if (isDanger) {
-    const dz = legacyReport.dangerZones.find(d => d.file === file);
-    lines.push(`> ⚠️ **Danger zone:** ${dz.reason} — Contact: ${dz.contact}`);
+  if (unknown.length > 0) {
+    lines.push('### Other modules');
+    lines.push('');
+    lines.push('| Module | Purpose | Tech debt |');
+    lines.push('|--------|---------|-----------|');
+    for (const m of unknown) {
+      const debt = m.techDebt && m.techDebt !== 'none'
+        ? `**${m.techDebt.toUpperCase()}**` : m.techDebt || '—';
+      lines.push(`| \`${m.dir}/\` | ${m.purpose || '—'} | ${debt} |`);
+    }
     lines.push('');
   }
 
-  lines.push('---');
-  lines.push('');
-  return lines;
+  // Improvement ideas — all modules that have them
+  const withIdeas = enriched.filter(m => m.ideas?.length > 0);
+  if (withIdeas.length > 0) {
+    lines.push('### Improvement ideas from comments');
+    lines.push('');
+    for (const m of withIdeas) {
+      lines.push(`**\`${m.dir}/\`**`);
+      for (const idea of m.ideas) lines.push(`- ${idea}`);
+      lines.push('');
+    }
+  }
+
+  // Global tag stats
+  if (intel.summary?.byType && Object.keys(intel.summary.byType).length > 0) {
+    lines.push('### Tag breakdown');
+    lines.push('');
+    lines.push('| Tag | Count |');
+    lines.push('|-----|-------|');
+    for (const [tag, count] of Object.entries(intel.summary.byType).sort((a, b) => b[1] - a[1])) {
+      lines.push(`| \`${tag}\` | ${count} |`);
+    }
+    lines.push('');
+  }
 }
 
 function appendLegacySection(lines, report) {
@@ -393,8 +624,11 @@ function appendLegacySection(lines, report) {
     lines.push('');
     lines.push('| File | Exports | Concerns |');
     lines.push('|------|---------|----------|');
-    for (const gf of report.godFiles) {
+    for (const gf of report.godFiles.slice(0, 20)) {
       lines.push(`| \`${gf.file}\` | ${gf.exports} | ${gf.concerns} |`);
+    }
+    if (report.godFiles.length > 20) {
+      lines.push(`| ... and ${report.godFiles.length - 20} more | | |`);
     }
     lines.push('');
   } else {
@@ -404,8 +638,11 @@ function appendLegacySection(lines, report) {
   if (report.circularDeps?.length > 0) {
     lines.push('### Circular dependencies');
     lines.push('');
-    for (const c of report.circularDeps) {
+    for (const c of report.circularDeps.slice(0, 20)) {
       lines.push(`- **${c.risk}:** \`${c.files.join('\` → \`')}\``);
+    }
+    if (report.circularDeps.length > 20) {
+      lines.push(`- ... and ${report.circularDeps.length - 20} more`);
     }
     lines.push('');
   } else {
@@ -417,8 +654,11 @@ function appendLegacySection(lines, report) {
     lines.push('');
     lines.push('| File | Bug fixes | Age | Coverage | Priority |');
     lines.push('|------|-----------|-----|----------|----------|');
-    for (const td of report.techDebt) {
+    for (const td of report.techDebt.slice(0, 20)) {
       lines.push(`| \`${td.file}\` | ${td.bugFixes} | ${td.age} | ${td.coverage} | **${td.priority}** |`);
+    }
+    if (report.techDebt.length > 20) {
+      lines.push(`| ... and ${report.techDebt.length - 20} more | | | | |`);
     }
     lines.push('');
   }
@@ -430,8 +670,11 @@ function appendLegacySection(lines, report) {
     lines.push('');
     lines.push('| File | Line | Pattern | Suggested annotation |');
     lines.push('|------|------|---------|----------------------|');
-    for (const p of report.unannotatedDynamic) {
+    for (const p of report.unannotatedDynamic.slice(0, 20)) {
       lines.push(`| \`${p.file}\` | ${p.line} | \`${p.pattern}\` | \`${p.action}\` |`);
+    }
+    if (report.unannotatedDynamic.length > 20) {
+      lines.push(`| ... and ${report.unannotatedDynamic.length - 20} more | | | |`);
     }
     lines.push('');
   }
@@ -484,7 +727,7 @@ function generateStructuralArchOverview(stats, highValue) {
   return `${stats.totalFiles} files across ${langs}. ${stats.totalEdges} dependency edges tracked. ${highValue.length} high-value modules (entry points or widely imported). ${stats.highRiskFiles} files with risk score above 60.`;
 }
 
-async function callHaikuArchitecture(highValue, stats, apiKey) {
+async function callHaikuArchitecture(highValue, stats) {
   const topFiles = highValue.slice(0, 8).map(n =>
     `${n.file}: exports [${n.exports.slice(0, 3).join(',')}] — imported by ${n.importedBy.length} files`
   ).join('\n');
@@ -493,32 +736,7 @@ async function callHaikuArchitecture(highValue, stats, apiKey) {
 Top modules:\n${topFiles}
 Write 3 specific sentences describing the architecture. Name actual patterns and frameworks used.`;
 
-  return new Promise(resolve => {
-    const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 200,
-      temperature: 0,
-    });
-    const options = {
-      hostname: 'openrouter.ai',
-      path: '/api/v1/chat/completions',
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`, 'Content-Length': Buffer.byteLength(body) },
-    };
-    const req = https.request(options, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(data).choices?.[0]?.message?.content?.trim() || null); }
-        catch { resolve(null); }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.setTimeout(30000, () => { req.destroy(); resolve(null); });
-    req.write(body);
-    req.end();
-  });
+  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 200, operation: 'arch-overview' });
 }
 
 module.exports = { generateMasterMd, isHighValue };

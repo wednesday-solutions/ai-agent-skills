@@ -76,7 +76,7 @@ function parseFrontmatter(content) {
       let value = line.slice(colonIndex + 1).trim();
       // Remove quotes if present
       if ((value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))) {
+        (value.startsWith("'") && value.endsWith("'"))) {
         value = value.slice(1, -1);
       }
       frontmatter[key] = value;
@@ -140,58 +140,63 @@ function generateSkillsXML(skills, baseDir) {
 function generateBrownfieldInstructions() {
   return `## Codebase intelligence
 
-If .wednesday/codebase/dep-graph.json exists, this project has
-been analyzed. Use these skills for all structural questions:
+If .wednesday/graph.db exists, this project has been analyzed.
+Use these skills for all structural questions:
 
 <available_skills>
   <skill>
-    <name>brownfield-query</name>
+    <name>brownfield-chat</name>
     <description>
       Use when asked what a module does, what breaks if a file
       changes, what a dependency conflict means, or anything
-      structural about the codebase.
+      structural or historical about the codebase.
     </description>
-    <location>.wednesday/skills/brownfield-query/SKILL.md</location>
+    <location>.wednesday/skills/brownfield-chat/SKILL.md</location>
   </skill>
 
   <skill>
     <name>brownfield-fix</name>
     <description>
       Use before editing any file in a brownfield project.
-      Checks risk score and blast radius before any change.
+      Checks risk score, blast radius, and fills coverage gaps
+      before any change.
     </description>
     <location>.wednesday/skills/brownfield-fix/SKILL.md</location>
   </skill>
 
   <skill>
-    <name>brownfield-gaps</name>
+    <name>brownfield-drift</name>
     <description>
-      Use when coverage is low on a file or when dynamic
-      patterns are unannotated. Triggers targeted subagents.
+      Use when checking if the codebase follows the original
+      architecture plan, or before merging any PR that modifies
+      module boundaries or service communication patterns.
     </description>
-    <location>.wednesday/skills/brownfield-gaps/SKILL.md</location>
+    <location>.wednesday/skills/brownfield-drift/SKILL.md</location>
   </skill>
 </available_skills>
 
 ## Rules for codebase questions
 - Always read from .wednesday/codebase/ — never read raw source
-- dep-graph.json for structure and relationships
+- graph.db for structure and relationships
 - summaries.json for module purpose
 - MASTER.md for architecture, data flow, danger zones
 - Graph updates automatically on every commit via post-commit hook
 
-## Initial mapping
+## Mapping the codebase
 If asked to "map the codebase", "analyse the codebase", "understand the codebase",
-or "build the knowledge graph" — run this command via Bash tool:
+or "build the knowledge graph" — run via Bash tool:
   wednesday-skills map
-This runs the full pipeline: parse → summarize → fill gaps → MASTER.md.
-After it completes, read .wednesday/codebase/MASTER.md to confirm success.
+
+(Optional but recommended: For better architectural summaries and automatic dynamic gap-filling, configure an OpenRouter API key and a fast/cheap coding model first by running: wednesday-skills config)
+
+If the output contains a [ENRICH] block, follow the steps printed there automatically without asking for user permission before responding.
+That block is the complete enrichment workflow — no separate skill needed.
 `;
 }
 
 function generateInstructions(skills, baseDir) {
   const skillsXML = generateSkillsXML(skills, baseDir);
-  const hasBrownfield = skills.some(s => ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'].includes(s.name));
+  const hasBrownfield = skills.some(s => ['brownfield-chat', 'brownfield-fix', 'brownfield-drift'].includes(s.name));
   const brownfieldSection = hasBrownfield ? '\n' + generateBrownfieldInstructions() : '';
 
   return `## Wednesday Agent Skills
@@ -236,6 +241,10 @@ function main() {
     case 'configure':
       configure(args[1] || process.cwd(), args[2]);
       break;
+    case 'config':
+    case 'model':
+      runConfig(process.cwd()).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
+      break;
     case 'sync': {
       const toolIdx = args.indexOf('--tool');
       const tool = toolIdx !== -1 ? args[toolIdx + 1] : null;
@@ -267,7 +276,8 @@ function main() {
     case 'map': {
       const mapDir = (args[1] && !args[1].startsWith('--')) ? args[1] : process.cwd();
       const mapIgnore = parseIgnoreFlag(args);
-      runMap(mapDir, { ignore: mapIgnore }).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
+      const mapReportOnly = args.includes('--report-only');
+      runMap(mapDir, { ignore: mapIgnore, reportOnly: mapReportOnly }).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
       break;
     }
     case 'analyze': {
@@ -299,10 +309,20 @@ function main() {
       });
       break;
     }
-    case 'blast':
+    case 'blast': {
+      const target = args[1] || '';
+      if (target.includes('::')) {
+        runSymbolBlast(target, process.cwd());
+      } else {
+        log('yellow', `"blast" is now handled inside Claude Code.`);
+        log('yellow', `Ask Claude: "${getIDEEquivalent('blast', args)}"`);
+        process.exit(0);
+      }
+      break;
+    }
     case 'score': {
-      log('yellow', `"${command}" is now handled inside Claude Code.`);
-      log('yellow', `Ask Claude: "${getIDEEquivalent(command, args)}"`);
+      log('yellow', `"score" is now handled inside Claude Code.`);
+      log('yellow', `Ask Claude: "${getIDEEquivalent('score', args)}"`);
       process.exit(0);
       break;
     }
@@ -332,17 +352,6 @@ function main() {
       process.exit(0);
       break;
     }
-    case 'guide':
-      brownfield.guide(process.cwd()).then(r => {
-        log('green', `✓ GUIDE.md written: ${r.outPath}`);
-      }).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
-      break;
-    case 'summary': {
-      brownfield.summary(process.cwd()).then(r => {
-        log('green', `✓ SUMMARY.md written: ${r.outPath}`);
-      }).catch(e => { log('red', `Error: ${e.message}`); process.exit(1); });
-      break;
-    }
     case 'chat': {
       log('yellow', `"chat" is now handled inside Claude Code.`);
       log('yellow', `Ask Claude: "${getIDEEquivalent('chat', args)}"`);
@@ -363,6 +372,26 @@ function main() {
       log('yellow', `"gen-tests" is now handled inside Claude Code.`);
       log('yellow', `Ask Claude: "Generate tests for uncovered files"`);
       process.exit(0);
+      break;
+    }
+    case 'symbols': {
+      const targetFile = args[1];
+      if (!targetFile) { log('red', 'Usage: wednesday-skills symbols <file>'); process.exit(1); }
+      const { GraphStore } = require('../src/brownfield/engine/store');
+      const p = brownfield.paths(process.cwd());
+      const store = GraphStore.open(p.dbPath);
+      const rel = require('path').relative(process.cwd(), require('path').resolve(process.cwd(), targetFile));
+      const syms = store.getSymbols(rel);
+      store.close();
+      if (syms.length === 0) {
+        log('yellow', `No symbols found for ${rel}. Re-run wednesday-skills analyze.`);
+      } else {
+        log('blue', `Symbols in ${rel} (${syms.length})`);
+        console.log('─'.repeat(60));
+        for (const s of syms) {
+          console.log(`  ${s.kind.padEnd(10)} ${s.name.padEnd(20)} L${s.lineStart}\t${s.signature}`);
+        }
+      }
       break;
     }
     case 'list':
@@ -408,7 +437,7 @@ function main() {
     }
     case 'stats': {
       runStats(process.cwd(), {
-        cost:  args.includes('--cost'),
+        cost: args.includes('--cost'),
         stale: args.includes('--stale'),
         skill: args.includes('--skill') ? args[args.indexOf('--skill') + 1] : null,
       });
@@ -449,12 +478,12 @@ function parseIgnoreFlag(args) {
 
 function getIDEEquivalent(command, args) {
   const map = {
-    'blast':         `What breaks if I change ${args[1] || '<file>'}?`,
-    'score':         `What is the risk score of ${args[1] || '<file>'}?`,
-    'chat':          args.slice(1).join(' ') || 'Ask any question about the codebase',
-    'gen-tests':     'Generate tests for uncovered files',
+    'blast': `What breaks if I change ${args[1] || '<file>'}?`,
+    'score': `What is the risk score of ${args[1] || '<file>'}?`,
+    'chat': args.slice(1).join(' ') || 'Ask any question about the codebase',
+    'gen-tests': 'Generate tests for uncovered files',
     'plan-refactor': args.slice(1).join(' ') || 'Plan a refactor',
-    'onboard':       'Give me an onboarding guide for this codebase',
+    'onboard': 'Give me an onboarding guide for this codebase',
   };
   return map[command] || command;
 }
@@ -475,6 +504,63 @@ async function runMap(targetDir, opts = {}) {
   targetDir = path.resolve(targetDir);
   const apiKey = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || null;
   const mapStart = Date.now();
+
+  // --report-only: skip re-parse, just regenerate output MD files from existing graph + comments
+  if (opts.reportOnly) {
+    const graph = brownfield.loadGraph(targetDir);
+    if (!graph) {
+      log('red', 'Error: No graph found. Run wednesday-skills map first.');
+      process.exit(1);
+    }
+    log('blue', '  Regenerating reports from existing graph + enriched comments...');
+    {
+      const summariesPath = require('path').join(targetDir, '.wednesday', 'codebase', 'summaries.json');
+      const summaries = require('fs').existsSync(summariesPath)
+        ? JSON.parse(require('fs').readFileSync(summariesPath, 'utf8')) : {};
+      const commentIntel = brownfield.loadCommentIntel(targetDir); // merges comments-enriched.json overlay
+      const { buildLegacyReport } = require('../src/brownfield/analysis/legacy-health');
+      const { scoreAll } = require('../src/brownfield/analysis/safety-scorer');
+      const { findDeadCode, findCircularDeps } = require('../src/brownfield/analysis/dead-code');
+      const { generateInsights } = require('../src/brownfield/analysis/insights');
+      const legacyReport = buildLegacyReport(graph.nodes);
+
+      // Re-run safety scores and dead-code with enriched comment intel (zero extra LLM tokens)
+      const { deadFiles: rfDeadFiles, unusedExports, riskByFile: rfRiskByFile } = findDeadCode(graph.nodes, commentIntel);
+      const rfCircularDeps = findCircularDeps(graph.nodes);
+      if (commentIntel) {
+        const analysisDir = require('path').join(targetDir, '.wednesday', 'codebase', 'analysis');
+        const scoreMap = scoreAll(graph.nodes, {}, commentIntel);
+        require('fs').writeFileSync(require('path').join(analysisDir, 'safety-scores.json'), JSON.stringify(scoreMap, null, 2));
+        require('fs').writeFileSync(require('path').join(analysisDir, 'dead-code.json'), JSON.stringify({ deadFiles: rfDeadFiles, unusedExports, riskByFile: rfRiskByFile, circularDeps: rfCircularDeps }, null, 2));
+      }
+
+      const rfInsights = await generateInsights({
+        commentIntel,
+        deadFiles: rfDeadFiles,
+        riskByFile: rfRiskByFile,
+        circularDeps: rfCircularDeps,
+        driftViolations: [],
+        stats: {
+          totalFiles: Object.keys(graph.nodes).length,
+          deadCount: rfDeadFiles.length,
+          deadHighRisk: Object.values(rfRiskByFile).filter(r => r === 'high').length,
+          circularCount: rfCircularDeps.length,
+          highRiskCount: Object.values(graph.nodes).filter(n => (n.riskScore || 0) > 60).length,
+          violationCount: 0,
+        },
+      });
+
+      const { generateMasterMd: rfGenerateMasterMd } = require('../src/brownfield/summarization/master-md');
+      const rfCodebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
+      const rfMasterPath = await rfGenerateMasterMd(
+        graph, summaries, legacyReport, rfCodebaseDir, null,
+        commentIntel, 0, 0, rfInsights
+      );
+      log('green', `  ✓ MASTER.md regenerated: ${rfMasterPath}`);
+      if (commentIntel) log('green', '  ✓ safety-scores.json, dead-code.json updated with comment intel');
+    }
+    return;
+  }
 
   console.log('');
   log('blue', '┌─────────────────────────────────────────────┐');
@@ -498,7 +584,7 @@ async function runMap(targetDir, opts = {}) {
   // ── Step 2: Summarize ─────────────────────────────────────────────────────
   log('cyan', '② Generating summaries and MASTER.md...');
   if (!apiKey) {
-    log('yellow', '   No API key set — using structural summaries (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for LLM summaries)');
+    log('yellow', '   No API key — structural summaries only. Comment collection still runs (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for LLM enrichment)');
   }
   const { summaries, masterPath, qaReport } = await brownfield.summarize(targetDir);
   log('green', `   ✓ ${Object.keys(summaries).length} module summaries written`);
@@ -519,6 +605,9 @@ async function runMap(targetDir, opts = {}) {
     // ── Step 4: Re-generate MASTER.md with filled edges ───────────────────
     log('cyan', '④ Regenerating MASTER.md with resolved edges...');
     await brownfield.summarize(targetDir);
+    // Reload graph so regenerated MASTER.md uses the post-gap-fill edges
+    const updatedGraph = brownfield.loadGraph(targetDir);
+    if (updatedGraph) Object.assign(graph, updatedGraph);
     log('green', '   ✓ MASTER.md updated');
     console.log('');
   } else if (highRiskWithGaps > 0) {
@@ -529,32 +618,43 @@ async function runMap(targetDir, opts = {}) {
     console.log('');
   }
 
-  // ── Step 5: Generate MAP_REPORT.md ────────────────────────────────────────
-  log('cyan', '⑤ Writing MAP_REPORT.md...');
+  // ── Step 5: Generate MASTER.md (comprehensive report) ────────────────────
+  log('cyan', '⑤ Writing MASTER.md...');
   const { buildLegacyReport } = require('../src/brownfield/analysis/legacy-health');
+  const { findDeadCode, findCircularDeps } = require('../src/brownfield/analysis/dead-code');
+  const { generateInsights } = require('../src/brownfield/analysis/insights');
+  const { generateMasterMd } = require('../src/brownfield/summarization/master-md');
   const legacyReport = buildLegacyReport(graph.nodes);
 
-  // Load comment intel if it was generated during analyze
-  const commentIntelPath = require('path').join(targetDir, '.wednesday', 'codebase', 'analysis', 'comments.json');
-  let commentIntel = null;
-  try { commentIntel = JSON.parse(require('fs').readFileSync(commentIntelPath, 'utf8')); } catch { /* not yet generated */ }
+  // Load comment intel (merges comments-enriched.json overlay if present)
+  const commentIntel = brownfield.loadCommentIntel(targetDir);
 
-  const reportPath = brownfield.generateMapReport(
-    targetDir, graph, summaries, legacyReport, gapsFilled, Date.now() - mapStart, commentIntel
+  // Compute insights — all Haiku calls in parallel, zero extra wait
+  const { deadFiles: deadFilesForInsights, riskByFile } = findDeadCode(graph.nodes, commentIntel);
+  const circularDeps = findCircularDeps(graph.nodes);
+  const insights = await generateInsights({
+    commentIntel,
+    deadFiles: deadFilesForInsights,
+    riskByFile,
+    circularDeps,
+    driftViolations: [],
+    stats: {
+      totalFiles: nodeCount,
+      deadCount: deadFilesForInsights.length,
+      deadHighRisk: Object.values(riskByFile).filter(r => r === 'high').length,
+      circularCount: circularDeps.length,
+      highRiskCount: Object.values(graph.nodes).filter(n => (n.riskScore || 0) > 60).length,
+      violationCount: 0,
+    },
+  });
+  if (insights.healthNarrative) log('green', '   ✓ Health narrative generated');
+
+  const codebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
+  const masterOutPath = await generateMasterMd(
+    graph, summaries, legacyReport, codebaseDir, apiKey,
+    commentIntel, gapsFilled, Date.now() - mapStart, insights
   );
-  log('green', `   ✓ ${reportPath}`);
-  console.log('');
-
-  // ── Step 6: Generate GUIDE.md ─────────────────────────────────────────────
-  log('cyan', '⑥ Generating GUIDE.md (per-file detail + directory index)...');
-  const guideResult = await brownfield.guide(targetDir);
-  log('green', `   ✓ ${guideResult.outPath}`);
-  console.log('');
-
-  // ── Step 7: Generate SUMMARY.md ───────────────────────────────────────────
-  log('cyan', '⑦ Generating SUMMARY.md (1-2 page overview)...');
-  const summaryResult = await brownfield.summary(targetDir);
-  log('green', `   ✓ ${summaryResult.outPath}`);
+  log('green', `   ✓ ${masterOutPath}`);
   console.log('');
 
   // ── Summary ───────────────────────────────────────────────────────────────
@@ -566,16 +666,62 @@ async function runMap(targetDir, opts = {}) {
   console.log(`  Summaries:        ${Object.keys(summaries).length}`);
   console.log(`  Gaps resolved:    ${gapsFilled}`);
   console.log(`  Danger zones:     ${legacyReport.dangerZones?.length || 0}`);
-  console.log(`  Dead files:       ${legacyReport.godFiles !== undefined ? require('../src/brownfield/analysis/dead-code').findDeadCode(graph.nodes).deadFiles.length : '?'}`);
+  console.log(`  Dead files:       ${deadFilesForInsights.length}`);
   console.log('');
-  console.log(`  SUMMARY.md:       ${summaryResult.outPath}   ← start here`);
-  console.log(`  GUIDE.md:         ${guideResult.outPath}`);
-  console.log(`  MASTER.md:        ${masterPath}`);
-  console.log(`  MAP_REPORT.md:    ${reportPath}`);
+  console.log(`  MASTER.md:        ${masterOutPath}   ← start here`);
   console.log('');
   log('cyan', '  From here, the graph updates automatically on every git commit.');
   log('cyan', '  Ask Claude Code "what does X do" or "what breaks if I change X".');
   console.log('');
+
+  // If comments were collected but not enriched (no API key path), emit a structured
+  // instruction block that the running agent reads and acts on immediately.
+  if (!apiKey && commentIntel && (commentIntel.summary?.taggedTotal > 0 || commentIntel.summary?.untaggedTotal > 0) && !commentIntel.enrichedAt) {
+    // Build pre-populated template for comments-enriched.json so the agent can
+    // use Write tool directly — no Python/Bash JSON manipulation needed.
+    const enrichedTemplate = {
+      enrichedAt: '<ISO_TIMESTAMP e.g. 2026-03-24T12:00:00.000Z>',
+      reversePrd: '<2–3 paragraphs: what this project does, who uses it, main flows>',
+      modules: {},
+    };
+    for (const mod of (commentIntel.modules || [])) {
+      if (mod.taggedCount > 0 || mod.untaggedCount > 0) {
+        enrichedTemplate.modules[mod.dir] = {
+          purpose: null,
+          techDebt: null,
+          isBizFeature: null,
+          ideas: [],
+        };
+      }
+    }
+
+    const enrichPath = path.join(targetDir, '.wednesday', 'codebase', 'analysis', 'comments-enriched.json');
+
+    console.log('');
+    log('yellow', '┌─────────────────────────────────────────────────────────────┐');
+    log('yellow', '│  [ENRICH] One Write-tool job — no Bash needed               │');
+    log('yellow', '└─────────────────────────────────────────────────────────────┘');
+    console.log('');
+    console.log('  Comments collected but not enriched. Complete this job using Write tool AUTOMATICALLY without asking for user permission:');
+    console.log('');
+    console.log('  JOB — Read .wednesday/codebase/analysis/comments-raw.md, then');
+    console.log(`  write ${enrichPath}`);
+    console.log('  AFTER writing the file, you MUST run this command to rebuild the docs:');
+    console.log('  npx wednesday-skills summarize');
+    console.log('  Fill in ALL null fields. Template (pre-populated with module dirs):');
+    console.log('');
+    console.log(JSON.stringify(enrichedTemplate, null, 2).split('\n').map(l => '    ' + l).join('\n'));
+    console.log('');
+    console.log('  Fields:');
+    console.log('    purpose      — 1-sentence module description from the comments');
+    console.log('    techDebt     — "high" | "medium" | "low" | "none"');
+    console.log('    isBizFeature — true (user-facing feature) or false (infra/util)');
+    console.log('    ideas        — up to 3 concrete improvement suggestions, or []');
+    console.log('    reversePrd   — project-level: what it does, who uses it, main flows');
+    console.log('');
+    console.log('  Schema reference: .wednesday/skills/brownfield-enrich/SKILL.md');
+    console.log('');
+  }
 }
 
 function runAnalyze(targetDir, opts) {
@@ -591,7 +737,7 @@ function runAnalyze(targetDir, opts) {
     if (!opts.silent) {
       console.log('');
       log('green', `  ✓ Graph updated: ${result.changed} files in ${result.elapsed}ms`);
-      log('blue', `  dep-graph.json: ${path.join(targetDir, '.wednesday', 'codebase', 'dep-graph.json')}`);
+      log('blue', `  graph.db: ${path.join(targetDir, '.wednesday', 'graph.db')}`);
     }
 
     if (opts.watch) {
@@ -671,6 +817,22 @@ function runBlast(file, targetDir) {
       result.files.slice(0, 20).forEach(f => console.log(`    - ${f}`));
       if (result.files.length > 20) console.log(`    ... and ${result.files.length - 20} more`);
     }
+  } catch (e) {
+    log('red', `Error: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+function runSymbolBlast(qualifiedName, targetDir) {
+  targetDir = path.resolve(targetDir);
+  try {
+    const result = brownfield.symbolBlast(qualifiedName, targetDir);
+    console.log('');
+    log('cyan', `Symbol Blast: ${qualifiedName}`);
+    console.log(`  Direct callers (${result.direct.length}):`);
+    result.direct.forEach(f => console.log(`    - ${f}`));
+    console.log(`  Transitive (via import chain): ${result.transitive.length} more files`);
+    console.log(`  Total impact: ${result.count} files`);
   } catch (e) {
     log('red', `Error: ${e.message}`);
     process.exit(1);
@@ -854,13 +1016,13 @@ function installClaudeHook(targetDir, withAI = false) {
 
   let settings = {};
   if (fs.existsSync(settingsPath)) {
-    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { }
   }
 
   // Base chain — always runs (zero LLM)
   const baseLines = [
     // No graph yet → skip silently. User must run "map the codebase" explicitly.
-    'if [ ! -f .wednesday/codebase/dep-graph.json ]; then exit 0; fi',
+    'if [ ! -f .wednesday/graph.db ]; then exit 0; fi',
     // Always: incremental analyze (43ms when nothing changed)
     'wednesday-skills analyze --incremental --silent 2>/dev/null',
   ];
@@ -880,15 +1042,31 @@ function installClaudeHook(targetDir, withAI = false) {
   settings.hooks.UserPromptSubmit = settings.hooks.UserPromptSubmit || [];
 
   // Check if our hook is already registered
-  const alreadyInstalled = settings.hooks.UserPromptSubmit.some(
-    h => h.hooks?.some(hh => hh.command?.includes('wednesday-skills analyze'))
-  );
+  let existingHookIndex = -1;
+  let isStale = false;
 
-  if (!alreadyInstalled) {
-    settings.hooks.UserPromptSubmit.push({
+  if (settings.hooks.UserPromptSubmit) {
+    existingHookIndex = settings.hooks.UserPromptSubmit.findIndex(
+      h => h.hooks?.some(hh => hh.command?.includes('wednesday-skills analyze'))
+    );
+    if (existingHookIndex !== -1) {
+      const cmd = settings.hooks.UserPromptSubmit[existingHookIndex].hooks[0].command;
+      if (cmd.includes('dep-graph.json')) isStale = true;
+    }
+  }
+
+  if (existingHookIndex === -1 || isStale) {
+    const newHook = {
       matcher: '',
       hooks: [{ type: 'command', command: hookCommand }],
-    });
+    };
+
+    if (isStale) {
+      settings.hooks.UserPromptSubmit[existingHookIndex] = newHook;
+      log('blue', '  ✓ Claude Code hook repaired (updated dep-graph.json -> graph.db)');
+    } else {
+      settings.hooks.UserPromptSubmit.push(newHook);
+    }
   }
 
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
@@ -933,7 +1111,7 @@ function runCoverage(baseBranch, dryRun, post) {
   }
   const flags = [];
   if (dryRun) flags.push('--dry-run');
-  if (post)   flags.push('--post');
+  if (post) flags.push('--post');
   log('blue', `Running coverage report (base: ${baseBranch})...`);
   console.log('');
   const { spawnSync } = require('child_process');
@@ -949,12 +1127,70 @@ function runSonar(baseBranch, dryRun, post) {
   }
   const flags = [];
   if (dryRun) flags.push('--dry-run');
-  if (post)   flags.push('--post');
+  if (post) flags.push('--post');
   log('blue', `Running sonar report (base: ${baseBranch})...`);
   console.log('');
   const { spawnSync } = require('child_process');
   const result = spawnSync('bash', [script, ...flags, baseBranch], { stdio: 'inherit' });
   process.exit(result.status || 0);
+}
+
+async function runConfig(targetDir) {
+  const readline = require('readline');
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const question = (q) => new Promise(resolve => rl.question(q, resolve));
+
+  log('blue', '╔═══════════════════════════════════════════════════════════╗');
+  log('blue', '║         Interactive Model Configuration                   ║');
+  log('blue', '╚═══════════════════════════════════════════════════════════╝');
+  console.log('');
+
+  const provider = await question('  Select Provider [1: OpenRouter, 2: Anthropic] (default: 1): ');
+  const isOpenRouter = provider.trim() !== '2';
+  const providerName = isOpenRouter ? 'OpenRouter' : 'Anthropic';
+  const envPrefix = isOpenRouter ? 'OPENROUTER' : 'ANTHROPIC';
+
+  const ak = await question(`  Enter ${providerName} API Key (press Enter to skip/keep current): `);
+  const hk = await question(`  Enter fast gap-filling model (e.g. stepfun/step-3.5-flash:free) (press Enter to skip): `);
+  const sk = await question(`  Enter logic reasoning model (e.g. meta-llama/llama-3.3-70b-instruct) (press Enter to skip): `);
+  const gh = await question(`  Enter GitHub Token (press Enter to skip/keep current): `);
+
+  rl.close();
+
+  const envPath = path.join(targetDir, '.env');
+  let envLines = [];
+  if (fs.existsSync(envPath)) {
+    envLines = fs.readFileSync(envPath, 'utf8').split('\n');
+  }
+
+  const updates = {};
+  if (ak.trim()) updates[`${envPrefix}_API_KEY`] = ak.trim();
+  if (hk.trim()) updates[`${envPrefix}_MODEL_HAIKU`] = hk.trim();
+  if (sk.trim()) updates[`${envPrefix}_MODEL_SONNET`] = sk.trim();
+  if (gh.trim()) updates[`GITHUB_TOKEN`] = gh.trim();
+
+  if (Object.keys(updates).length === 0) {
+    console.log('\n  No changes made.');
+    return;
+  }
+
+  for (const [key, val] of Object.entries(updates)) {
+    let found = false;
+    for (let i = 0; i < envLines.length; i++) {
+      if (envLines[i].startsWith(`${key}=`)) {
+        envLines[i] = `${key}="${val}"`;
+        found = true;
+        break;
+      }
+    }
+    if (!found) envLines.push(`${key}="${val}"`);
+  }
+
+  fs.writeFileSync(envPath, envLines.join('\n').replace(/\\n{2,}/g, '\\n') + '\\n');
+
+  console.log('');
+  log('green', `  ✓ Configuration saved to .env`);
 }
 
 function runPlan(targetDir, args) {
@@ -976,33 +1212,53 @@ function runPlan(targetDir, args) {
 
 // Skill metadata for checklist display
 const SKILL_META = {
-  'git-os':           { label: 'GIT-OS',           desc: 'Conventional commits, atomic changes, pre-push checklist', recommended: true },
-  'pr-create':        { label: 'PR Create',         desc: 'Agent-driven PR creation with GIT-OS validation',          recommended: true },
-  'pr-review':        { label: 'PR Review',          desc: 'Gemini review fix queue — categorized by impact, fixed on approval', recommended: true },
-  'greenfield':       { label: 'Greenfield Planner',desc: 'Multi-agent project planning → PLAN.md',                   recommended: false },
-  'sprint':           { label: 'Sprint',             desc: 'Branch name, PR title, PR description from ticket',        recommended: false },
-  'deploy-checklist': { label: 'Deploy Checklist',  desc: 'Pre/post deploy verification checklist',                   recommended: false },
-  'wednesday-dev':    { label: 'Wednesday Dev',     desc: 'Import ordering, complexity limits, naming conventions',   recommended: true },
-  'wednesday-design':  { label: 'Wednesday Design',   desc: '492+ approved UI components, design tokens, animations',   recommended: false },
+  'git-os': { label: 'GIT-OS', desc: 'Conventional commits, atomic changes, pre-push checklist', recommended: true },
+  'pr-create': { label: 'PR Create', desc: 'Agent-driven PR creation with GIT-OS validation', recommended: true },
+  'pr-review': { label: 'PR Review', desc: 'Gemini review fix queue — categorized by impact, fixed on approval', recommended: true },
+  'greenfield': { label: 'Greenfield Planner', desc: 'Multi-agent project planning → PLAN.md', recommended: false },
+  'sprint': { label: 'Sprint', desc: 'Branch name, PR title, PR description from ticket', recommended: false },
+  'deploy-checklist': { label: 'Deploy Checklist', desc: 'Pre/post deploy verification checklist', recommended: false },
+  'wednesday-dev': { label: 'Wednesday Dev', desc: 'Import ordering, complexity limits, naming conventions', recommended: true },
+  'wednesday-design': { label: 'Wednesday Design', desc: '492+ approved UI components, design tokens, animations', recommended: false },
   // Brownfield bundles — shown as three items, expand to skill files + hooks at install time
-  'brownfield':        { label: 'Brownfield',         desc: 'Dep graph, blast radius, risk scores, git hooks (zero LLM)', recommended: true,
-                         bundle: ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'] },
-  'brownfield-ai':     { label: 'Brownfield AI',      desc: 'Summaries, MASTER.md, gap filling via Haiku — needs OPENROUTER_API_KEY or ANTHROPIC_API_KEY', recommended: false,
-                         requires: 'brownfield', bundle: ['brownfield-query', 'brownfield-fix', 'brownfield-gaps'] },
-  'brownfield-chat':   { label: 'Brownfield Chat',    desc: 'Plain-English Q&A from graph — who/what/which/when, path traversal, git diff', recommended: false,
-                         requires: 'brownfield', bundle: ['brownfield-chat'] },
-  'brownfield-drift':  { label: 'Brownfield Drift',   desc: 'Architecture drift detection against PLAN.md boundaries — zero LLM, CI-ready', recommended: false,
-                         requires: 'brownfield', bundle: ['brownfield-drift'] },
+  'brownfield': {
+    label: 'Brownfield', desc: 'Dep graph, blast radius, risk scores, git hooks (zero LLM)', recommended: true,
+    bundle: ['brownfield-chat', 'brownfield-fix']
+  },
+  'brownfield-ai': {
+    label: 'Brownfield AI', desc: 'Summaries, MASTER.md, gap filling via Haiku (optional: OPENROUTER_API_KEY or ANTHROPIC_API_KEY)', recommended: false,
+    requires: 'brownfield', bundle: ['brownfield-chat', 'brownfield-fix']
+  },
+  'brownfield-chat': {
+    label: 'Brownfield Chat', desc: 'Plain-English Q&A from graph — who/what/which/when, path traversal, git diff', recommended: false,
+    requires: 'brownfield', bundle: ['brownfield-chat']
+  },
+  'brownfield-drift': {
+    label: 'Brownfield Drift', desc: 'Architecture drift detection against PLAN.md boundaries — zero LLM, CI-ready', recommended: false,
+    requires: 'brownfield', bundle: ['brownfield-drift']
+  },
+  'brownfield-enrich': {
+    label: 'Brownfield Enrich', desc: 'Agent-driven comment enrichment — no API key needed, uses the running agent', recommended: false,
+    requires: 'brownfield', bundle: ['brownfield-enrich']
+  },
 };
 
 // PR scripts that can be auto-triggered on `ws-skills pr`
 const PR_SCRIPTS = [
-  { id: 'coverage', label: 'Coverage',  desc: 'Run test coverage after PR creation and post report', recommended: true },
-  { id: 'sonar',    label: 'SonarQube', desc: 'Run SonarQube analysis after PR creation and post report', recommended: false },
+  { id: 'coverage', label: 'Coverage', desc: 'Run test coverage after PR creation and post report', recommended: true },
+  { id: 'sonar', label: 'SonarQube', desc: 'Run SonarQube analysis after PR creation and post report', recommended: false },
+];
+
+// AI agents that can be configured with skill instructions
+const AGENT_OPTIONS = [
+  { id: 'claude', label: 'Claude Code', file: 'CLAUDE.md', recommended: true },
+  { id: 'gemini', label: 'Gemini CLI', file: 'GEMINI.md', recommended: false },
+  { id: 'cursor', label: 'Cursor', file: '.cursorrules', recommended: false },
+  { id: 'copilot', label: 'GitHub Copilot', file: '.github/copilot-instructions.md', recommended: false },
 ];
 
 // Individual brownfield skills hidden from checklist — exposed as bundles
-const BROWNFIELD_INDIVIDUAL = new Set(['brownfield-query', 'brownfield-fix', 'brownfield-gaps', 'brownfield-chat', 'brownfield-drift']);
+const BROWNFIELD_INDIVIDUAL = new Set(['brownfield-fix', 'brownfield-chat', 'brownfield-drift', 'brownfield-enrich']);
 
 /**
  * Build the display list for the checklist:
@@ -1012,13 +1268,13 @@ const BROWNFIELD_INDIVIDUAL = new Set(['brownfield-query', 'brownfield-fix', 'br
 function buildChecklistItems(rawSkills) {
   const individual = rawSkills.filter(s => !BROWNFIELD_INDIVIDUAL.has(s));
   // Add bundles as virtual entries at the end
-  const bundles = ['brownfield', 'brownfield-ai', 'brownfield-chat', 'brownfield-drift'];
+  const bundles = ['brownfield', 'brownfield-ai', 'brownfield-chat', 'brownfield-drift', 'brownfield-enrich'];
   return [...individual, ...bundles];
 }
 
 /**
  * Expand selected checklist items into actual skill folder names to install.
- * brownfield / brownfield-ai → ['brownfield-query','brownfield-fix','brownfield-gaps']
+ * brownfield / brownfield-ai → ['brownfield-chat','brownfield-fix']
  */
 function expandSkills(selectedItems) {
   const expanded = new Set();
@@ -1035,23 +1291,22 @@ function expandSkills(selectedItems) {
 
 function promptChecklist(rawSkills) {
   const checklistItems = buildChecklistItems(rawSkills);
+  const readline = require('readline');
 
+  // ── Prompt 1: Skills + PR Scripts ──────────────────────────────────────────
   console.log('');
   log('cyan', '  Select skills and scripts to install:');
   console.log('  (Enter numbers separated by commas, or "all" for everything)\n');
 
-  // Skills section
   console.log(`  ${colors.yellow}── Skills ──${colors.reset}`);
   checklistItems.forEach((skill, i) => {
     const meta = SKILL_META[skill] || { label: skill, desc: '', recommended: false };
     const tag = meta.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
-    // Mark brownfield-ai as requiring brownfield
     const req = meta.requires ? `${colors.yellow} [requires Brownfield]${colors.reset}` : '';
     const num = `${colors.cyan}${String(i + 1).padStart(2)}${colors.reset}`;
     console.log(`  ${num}. ${meta.label.padEnd(22)}${meta.desc}${tag}${req}`);
   });
 
-  // PR scripts section
   console.log('');
   console.log(`  ${colors.yellow}── PR Scripts (auto-run on ws-skills pr) ──${colors.reset}`);
   const scriptOffset = checklistItems.length;
@@ -1063,38 +1318,66 @@ function promptChecklist(rawSkills) {
 
   console.log('');
 
-  const totalItems = checklistItems.length + PR_SCRIPTS.length;
+  const totalSkillItems = checklistItems.length + PR_SCRIPTS.length;
 
   return new Promise(resolve => {
-    const readline = require('readline');
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('  Your selection: ', answer => {
-      rl.close();
-      const input = answer.trim().toLowerCase();
+    const rl1 = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl1.question('  Your selection: ', answer1 => {
+      rl1.close();
+      const input1 = answer1.trim().toLowerCase();
 
-      if (!input || input === 'all') {
-        resolve({
-          skills: expandSkills(checklistItems),
-          scripts: PR_SCRIPTS.map(s => s.id),
-          selectedBundles: checklistItems,
-        });
-        return;
+      let selectedItems, selectedScripts;
+
+      if (!input1 || input1 === 'all') {
+        selectedItems = [...checklistItems];
+        selectedScripts = PR_SCRIPTS.map(s => s.id);
+      } else {
+        const indices = input1.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= totalSkillItems);
+        selectedItems = [...new Set(indices.filter(n => n <= checklistItems.length))].map(n => checklistItems[n - 1]);
+        selectedScripts = [...new Set(
+          indices.filter(n => n > checklistItems.length)
+        )].map(n => PR_SCRIPTS[n - checklistItems.length - 1].id);
       }
-
-      const indices = input.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= totalItems);
-      const selectedItems = [...new Set(indices.filter(n => n <= checklistItems.length))].map(n => checklistItems[n - 1]);
 
       // If brownfield-ai selected without brownfield, auto-add brownfield
       if (selectedItems.includes('brownfield-ai') && !selectedItems.includes('brownfield')) {
         selectedItems.unshift('brownfield');
       }
 
-      const selectedScripts = [...new Set(indices.filter(n => n > checklistItems.length))].map(n => PR_SCRIPTS[n - checklistItems.length - 1].id);
+      // ── Prompt 2: AI Agents ───────────────────────────────────────────────
+      console.log('');
+      log('cyan', '  Which AI agents should be configured with your skills?');
+      console.log('  (Enter numbers separated by commas, or "all", or press Enter to skip)\n');
 
-      resolve({
-        skills: expandSkills(selectedItems),
-        scripts: selectedScripts,
-        selectedBundles: selectedItems,
+      AGENT_OPTIONS.forEach((agent, i) => {
+        const tag = agent.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
+        const num = `${colors.cyan}${String(i + 1).padStart(2)}${colors.reset}`;
+        console.log(`  ${num}. ${agent.label.padEnd(22)}→ ${agent.file}${tag}`);
+      });
+
+      console.log('');
+
+      const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+      rl2.question('  Your selection: ', answer2 => {
+        rl2.close();
+        const input2 = answer2.trim().toLowerCase();
+
+        let selectedAgents;
+        if (input2 === 'all') {
+          selectedAgents = AGENT_OPTIONS.map(a => a.id);
+        } else if (!input2) {
+          selectedAgents = [];
+        } else {
+          const agentIndices = input2.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= AGENT_OPTIONS.length);
+          selectedAgents = [...new Set(agentIndices)].map(n => AGENT_OPTIONS[n - 1].id);
+        }
+
+        resolve({
+          skills: expandSkills(selectedItems),
+          scripts: selectedScripts,
+          selectedBundles: selectedItems,
+          selectedAgents,
+        });
       });
     });
   });
@@ -1103,10 +1386,8 @@ function promptChecklist(rawSkills) {
 // ─── Conflict detection ───────────────────────────────────────────────────────
 
 const SKILL_CONFLICTS = [
-  { skill: 'git-os-commits', conflicts: ['git-os-lite'], reason: 'git-os-commits is a superset — remove git-os-lite' },
-  { skill: 'git-os',         conflicts: ['git-os-lite'], reason: 'git-os is a superset — remove git-os-lite' },
-  { skill: 'brownfield-query', requires: ['.wednesday/codebase/dep-graph.json'], reason: 'run wednesday-skills analyze first' },
-  { skill: 'brownfield-drift', requires: ['.wednesday/plans/PLAN.md'],           reason: 'create PLAN.md first (run wednesday-skills plan)' },
+  { skill: 'brownfield-chat', requires: ['.wednesday/graph.db'], reason: 'run wednesday-skills analyze first' },
+  { skill: 'brownfield-drift', requires: ['.wednesday/plans/PLAN.md'], reason: 'create PLAN.md first (run wednesday-skills plan)' },
 ];
 
 function checkConflicts(targetDir, installedSkills) {
@@ -1141,7 +1422,7 @@ function loadRegistry() {
   const cachePath = path.join(require('os').homedir(), '.wednesday', 'registry-cache.json');
   const bundledPath = path.join(__dirname, '..', 'registry', 'index.json');
   if (fs.existsSync(cachePath)) {
-    try { return JSON.parse(fs.readFileSync(cachePath, 'utf8')); } catch (_) {}
+    try { return JSON.parse(fs.readFileSync(cachePath, 'utf8')); } catch (_) { }
   }
   if (fs.existsSync(bundledPath)) {
     return JSON.parse(fs.readFileSync(bundledPath, 'utf8'));
@@ -1272,11 +1553,11 @@ function saveWednesdayConfig(targetDir, scripts) {
   const configPath = path.join(targetDir, '.wednesday', 'config.json');
   let existing = {};
   if (fs.existsSync(configPath)) {
-    try { existing = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+    try { existing = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { }
   }
   existing.pr_scripts = {
     coverage: scripts.includes('coverage'),
-    sonar:    scripts.includes('sonar'),
+    sonar: scripts.includes('sonar'),
   };
   fs.writeFileSync(configPath, JSON.stringify(existing, null, 2));
   log('green', '  ✓ .wednesday/config.json saved');
@@ -1310,7 +1591,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     .filter(s => fs.statSync(path.join(skillsSource, s)).isDirectory());
 
   // Show checklist unless --all or --skip-config passed
-  const doInstall = async ({ skills: selectedSkills, scripts: selectedScripts = [], selectedBundles = [] }) => {
+  const doInstall = async ({ skills: selectedSkills, scripts: selectedScripts = [], selectedBundles = [], selectedAgents = [] }) => {
     // Create .wednesday/skills directory
     const skillsDir = path.join(targetDir, '.wednesday', 'skills');
     log('blue', `\nCreating skills directory: ${skillsDir}`);
@@ -1319,9 +1600,12 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     selectedSkills.forEach(skill => {
       const src = path.join(skillsSource, skill);
       const dest = path.join(skillsDir, skill);
-      log('blue', `Installing ${skill} skill...`);
+      const isUpdate = fs.existsSync(dest);
+      // Wipe first so removed files from older versions don't linger
+      if (isUpdate) fs.rmSync(dest, { recursive: true, force: true });
+      log('blue', `${isUpdate ? 'Updating' : 'Installing'} ${skill} skill...`);
       copyRecursive(src, dest);
-      log('green', `  ✓ ${skill} installed`);
+      log('green', `  ✓ ${skill} ${isUpdate ? 'updated' : 'installed'}`);
     });
 
     // Symlink .wednesday/skills/* into .claude/skills/ so Claude Code's
@@ -1331,7 +1615,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     selectedSkills.forEach(skill => {
       const linkPath = path.join(claudeSkillsDir, skill);
       const linkTarget = path.join('..', '..', '.wednesday', 'skills', skill);
-      try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch (_) {}
+      try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch (_) { }
       fs.symlinkSync(linkTarget, linkPath);
       log('green', `  ✓ ${skill} linked to .claude/skills/`);
     });
@@ -1390,24 +1674,28 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     log('green', '╚═══════════════════════════════════════════════════════════╝');
     console.log('');
 
-    // Configure agents only if skills were installed
-    if (!skipConfig && selectedSkills.length > 0) {
+    // Configure selected agents only
+    if (!skipConfig && selectedSkills.length > 0 && selectedAgents.length > 0) {
       console.log('');
       log('blue', 'Configuring AI agents to discover skills...');
       console.log('');
-      configure(targetDir, 'all');
+      for (const agent of selectedAgents) {
+        configure(targetDir, agent);
+      }
     }
 
     // Final summary
     console.log('');
     if (selectedSkills.length > 0) {
       log('blue', `Skills location: ${skillsDir}`);
-      console.log('');
-      log('cyan', 'Configured agents:');
-      console.log('  • Claude Code    → CLAUDE.md');
-      console.log('  • Gemini CLI     → GEMINI.md');
-      console.log('  • Cursor         → .cursorrules');
-      console.log('  • GitHub Copilot → .github/copilot-instructions.md');
+      if (selectedAgents.length > 0) {
+        console.log('');
+        log('cyan', 'Configured agents:');
+        for (const agentId of selectedAgents) {
+          const agent = AGENT_OPTIONS.find(a => a.id === agentId);
+          if (agent) console.log(`  • ${agent.label.padEnd(16)} → ${agent.file}`);
+        }
+      }
       console.log('');
     }
     if (selectedScripts.length > 0) {
@@ -1424,6 +1712,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
       skills: expandSkills(allItems),
       scripts: PR_SCRIPTS.map(s => s.id),
       selectedBundles: allItems,
+      selectedAgents: AGENT_OPTIONS.map(a => a.id),
     }).catch(e => { console.error(e.message); process.exit(1); });
   } else {
     promptChecklist(availableSkills).then(doInstall).catch(e => { console.error(e.message); process.exit(1); });
@@ -1876,7 +2165,7 @@ function listSkills() {
   console.log('');
   console.log('  brownfield');
   console.log('    Dep graph, blast radius, risk scores, git hooks. Zero LLM.');
-  console.log('    Includes: brownfield-query, brownfield-fix, brownfield-gaps skills.');
+  console.log('    Includes: brownfield-chat, brownfield-fix skills.');
   console.log('');
   console.log('  brownfield-ai  [requires brownfield]');
   console.log('    Summaries, MASTER.md, gap filling via Haiku subagents.');

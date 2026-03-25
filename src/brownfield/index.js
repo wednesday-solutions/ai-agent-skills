@@ -5,11 +5,12 @@
 
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const fs     = require('fs');
+const path   = require('path');
+const crypto = require('crypto');
 
-const { buildGraph, collectFiles, writeGraph } = require('./engine/graph');
-const { diffFiles, saveCache, loadCachedNodes, saveCachedNodes } = require('./engine/cache');
+const { buildGraph, collectFiles, writeGraph, computeRiskScore } = require('./engine/graph');
+const { GraphStore } = require('./engine/store');
 const { blastRadius } = require('./analysis/blast-radius');
 const { apiSurface, buildApiSurface } = require('./analysis/api-surface');
 const { findDeadCode, findCircularDeps } = require('./analysis/dead-code');
@@ -24,13 +25,29 @@ const { generateOnboarding, ONBOARDING_QUESTIONS } = require('./summarization/on
 const { planRefactor } = require('./reasoning/refactor-planner');
 const { planMigration } = require('./reasoning/migration-strategy');
 const { qaMasterMd } = require('./reasoning/master-qa');
-const { generateGuide, generateSummary } = require('./summarization/guide');
 const { answerQuestion } = require('./query/chat-engine');
 const { detectDrift, loadConstraints, formatDriftReport } = require('./analysis/drift');
 const { genTests, selectTargets } = require('./reasoning/test-generator');
-const { hasApiKey, getApiKey } = require('./core/llm-client');
+const { hasApiKey, getApiKey, tokenLogger } = require('./core/llm-client');
 const { analyseComments } = require('./analysis/comment-intel');
 const { detectFeatureModules } = require('./analysis/feature-modules');
+
+/**
+ * Compute SHA-1 hashes for a list of absolute file paths.
+ * Returns { relPath: hash } — used for incremental change detection.
+ */
+function computeHashes(files, rootDir) {
+  const result = {};
+  for (const fp of files) {
+    const rel = path.relative(rootDir, fp);
+    try {
+      result[rel] = crypto.createHash('sha1').update(fs.readFileSync(fp)).digest('hex');
+    } catch {
+      result[rel] = null;
+    }
+  }
+  return result;
+}
 
 /**
  * Build a test coverage map from the graph.
@@ -69,6 +86,7 @@ function paths(rootDir) {
     analysisDir:  path.join(wednesdayDir, 'codebase', 'analysis'),
     refactorDir:  path.join(wednesdayDir, 'codebase', 'refactor'),
     hooksDir:     path.join(wednesdayDir, 'hooks'),
+    dbPath:       path.join(wednesdayDir, 'graph.db'),
     depGraph:     path.join(wednesdayDir, 'codebase', 'dep-graph.json'),
     summaries:    path.join(wednesdayDir, 'codebase', 'summaries.json'),
     masterMd:     path.join(wednesdayDir, 'codebase', 'MASTER.md'),
@@ -76,10 +94,26 @@ function paths(rootDir) {
 }
 
 /**
- * Load existing graph from disk
+ * Load existing graph — prefers SQLite store, falls back to dep-graph.json.
+ * Returns the same object shape as dep-graph.json for full backward compat.
  */
 function loadGraph(rootDir) {
   const p = paths(rootDir);
+
+  // Try SQLite store first (Phase A — single indexed file, no full-read penalty)
+  if (fs.existsSync(p.dbPath)) {
+    try {
+      const store = GraphStore.open(p.dbPath);
+      if (!store.isEmpty()) {
+        const graph = store.toGraphObject(rootDir);
+        store.close();
+        return graph;
+      }
+      store.close();
+    } catch { /* fall through to JSON */ }
+  }
+
+  // Fallback: dep-graph.json (projects not yet migrated to Phase A)
   if (!fs.existsSync(p.depGraph)) return null;
   try {
     return JSON.parse(fs.readFileSync(p.depGraph, 'utf8'));
@@ -102,12 +136,38 @@ function loadSummaries(rootDir) {
 }
 
 /**
- * Load comment intelligence from disk (generated during analyze)
+ * Load comment intelligence from disk.
+ * Merges base comments.json with comments-enriched.json overlay (if present).
+ * The enrichment overlay is written by the AI agent — no Bash needed.
  */
 function loadCommentIntel(p) {
   const commentPath = path.join(p.analysisDir, 'comments.json');
   if (!fs.existsSync(commentPath)) return null;
-  try { return JSON.parse(fs.readFileSync(commentPath, 'utf8')); } catch { return null; }
+  let base;
+  try { base = JSON.parse(fs.readFileSync(commentPath, 'utf8')); } catch { return null; }
+
+  // Merge enrichment overlay (comments-enriched.json) if present
+  const enrichPath = path.join(p.analysisDir, 'comments-enriched.json');
+  if (fs.existsSync(enrichPath)) {
+    try {
+      const enriched = JSON.parse(fs.readFileSync(enrichPath, 'utf8'));
+      if (enriched.enrichedAt) base.enrichedAt = enriched.enrichedAt;
+      if (enriched.reversePrd) base.reversePrd = enriched.reversePrd;
+      if (enriched.modules && typeof enriched.modules === 'object') {
+        for (const mod of (base.modules || [])) {
+          const overlay = enriched.modules[mod.dir];
+          if (overlay) {
+            if (overlay.purpose    !== undefined) mod.purpose    = overlay.purpose;
+            if (overlay.techDebt   !== undefined) mod.techDebt   = overlay.techDebt;
+            if (overlay.isBizFeature !== undefined) mod.isBizFeature = overlay.isBizFeature;
+            if (overlay.ideas      !== undefined) mod.ideas      = overlay.ideas;
+          }
+        }
+      }
+    } catch { /* enrichment overlay is optional — ignore parse errors */ }
+  }
+
+  return base;
 }
 
 /**
@@ -120,71 +180,92 @@ async function analyze(rootDir, opts = {}) {
   const silent = opts.silent || false;
   const log = silent ? () => {} : console.log;
   const start = Date.now();
+  tokenLogger.setCommand('analyze');
 
   log('Collecting files...');
   const allFiles = collectFiles(rootDir, { ignore: opts.ignore });
 
-  // ── Incremental mode ──────────────────────────────────────────────────────
+  // Open store (creates .wednesday/graph.db on first run)
+  const store = GraphStore.open(p.dbPath);
+
+  // ── Hash all files for change detection ───────────────────────────────────
+  const allHashes = computeHashes(allFiles, rootDir);
+
+  // ── Determine which files need (re)parsing ────────────────────────────────
   let filesToParse = allFiles;
-  let cachedNodes = {};
 
   if (opts.incremental && !opts.full) {
-    const { changed, unchanged, hashes } = diffFiles(allFiles, p.cacheDir);
-    log(`Changed: ${changed.length} / ${allFiles.length} files`);
+    filesToParse = allFiles.filter(fp => {
+      const rel = path.relative(rootDir, fp);
+      return allHashes[rel] !== store.getFileHash(rel);
+    });
 
-    if (changed.length === 0 && !opts.refreshAnalysis) {
+    log(`Changed: ${filesToParse.length} / ${allFiles.length} files`);
+
+    if (filesToParse.length === 0 && !opts.refreshAnalysis) {
       log('No changes detected. Graph is up to date.');
+      store.close();
       return { graph: loadGraph(rootDir), changed: 0, elapsed: Date.now() - start };
     }
-
-    cachedNodes = loadCachedNodes(unchanged, p.cacheDir, rootDir);
-    filesToParse = changed;
-    saveCache(p.cacheDir, hashes);
-  } else {
-    // Full scan — save all hashes
-    const { hashes } = diffFiles(allFiles, p.cacheDir);
-    saveCache(p.cacheDir, hashes);
   }
 
   log(`Parsing ${filesToParse.length} files...`);
 
-  // Build graph (only changed files if incremental)
+  // Build graph (only changed files in incremental mode)
   const apiKey = process.env.OPENROUTER_API_KEY || null;
-  const graph = buildGraph(rootDir, {
+  const partialGraph = buildGraph(rootDir, {
     files: filesToParse,
-    withGitHistory: !opts.silent,  // skip git history in silent/post-commit mode
+    withGitHistory: !opts.silent,
   });
 
-  // Merge cached nodes
-  Object.assign(graph.nodes, cachedNodes);
+  // ── Merge with existing store nodes (incremental) or use full graph ───────
+  let mergedNodes;
+  if (opts.incremental && !opts.full && !store.isEmpty()) {
+    const storeGraph = store.toGraphObject(rootDir);
+    mergedNodes = { ...storeGraph.nodes, ...partialGraph.nodes };
+  } else {
+    mergedNodes = partialGraph.nodes;
+  }
 
-  // Recompute importedBy after merge
-  for (const node of Object.values(graph.nodes)) {
+  // ── Recompute importedBy + risk scores on merged graph ────────────────────
+  for (const node of Object.values(mergedNodes)) {
     node.importedBy = [];
   }
-  for (const [file, node] of Object.entries(graph.nodes)) {
+  for (const [file, node] of Object.entries(mergedNodes)) {
     for (const imp of node.imports) {
-      if (graph.nodes[imp]) {
-        graph.nodes[imp].importedBy.push(file);
+      if (mergedNodes[imp]) {
+        mergedNodes[imp].importedBy.push(file);
       }
     }
   }
-
-  // Recompute risk scores
-  for (const node of Object.values(graph.nodes)) {
-    const { computeRiskScore } = require('./engine/graph');
+  for (const node of Object.values(mergedNodes)) {
     node.riskScore = computeRiskScore(node);
   }
 
-  // Save node cache for changed files
-  const newNodes = {};
-  for (const file of filesToParse) {
-    const rel = path.relative(rootDir, file);
-    if (graph.nodes[rel]) newNodes[rel] = graph.nodes[rel];
-  }
-  saveCachedNodes(newNodes, p.cacheDir, rootDir);
+  // ── Persist all nodes to store with hashes ────────────────────────────────
+  store.writeAll(mergedNodes, allHashes);
+  store.setMeta('last_analyzed', new Date().toISOString());
+  store.setMeta('root_dir', rootDir);
+  store.close();
 
-  // Write graph
+  // ── Export dep-graph.json (from merged nodes + supplementary data) ────────
+  const all = Object.values(mergedNodes);
+  const graph = {
+    version: 2,
+    generatedAt: new Date().toISOString(),
+    rootDir,
+    nodes: mergedNodes,
+    packages:   partialGraph.packages   || {},
+    serverless: partialGraph.serverless || {},
+    stats: {
+      totalFiles:    all.length,
+      errorFiles:    all.filter(n => n.error).length,
+      totalEdges:    all.reduce((s, n) => s + n.imports.length, 0),
+      byLang:        all.reduce((acc, n) => { acc[n.lang] = (acc[n.lang] || 0) + 1; return acc; }, {}),
+      gapCount:      all.reduce((s, n) => s + n.gaps.length, 0),
+      highRiskFiles: all.filter(n => n.riskScore > 60).length,
+    },
+  };
   writeGraph(graph, p.codebaseDir);
 
   // Write analysis files if full scan or refresh
@@ -221,6 +302,11 @@ async function analyze(rootDir, opts = {}) {
   const elapsed = Date.now() - start;
   log(`Done. ${Object.keys(graph.nodes).length} files in ${elapsed}ms`);
 
+  if (!silent) {
+    const report = tokenLogger.flush(rootDir);
+    tokenLogger.printReport(report);
+  }
+
   return { graph, changed: filesToParse.length, elapsed };
 }
 
@@ -232,8 +318,8 @@ async function fillGaps(rootDir, opts = {}) {
   const graph = loadGraph(rootDir);
   if (!graph) throw new Error('No dep-graph.json found. Run analyze first.');
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error('OPENROUTER_API_KEY not set. Gap filling requires Haiku API access.');
+  const apiKey = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('No API key set. Gap filling requires OPENROUTER_API_KEY or ANTHROPIC_API_KEY.');
 
   const nodes = graph.nodes;
   const targetFile = opts.file ? path.relative(rootDir, path.resolve(rootDir, opts.file)) : null;
@@ -280,18 +366,21 @@ async function fillGaps(rootDir, opts = {}) {
  * summarize command — generate summaries.json + MASTER.md
  */
 async function summarize(rootDir, opts = {}) {
+  tokenLogger.setCommand('summarize');
   const p = paths(rootDir);
   const graph = loadGraph(rootDir);
   if (!graph) throw new Error('No dep-graph.json found. Run analyze first.');
 
   const apiKey = opts.apiKey || process.env.OPENROUTER_API_KEY || null;
-  const { summaries, apiCalls } = await summarizeAll(graph.nodes, rootDir, p.cacheDir, apiKey);
+  // Load commentIntel first — if enrichment has already run, module purposes
+  // skip LLM calls entirely and produce better summaries (developer intent > inference)
+  const commentIntel = loadCommentIntel(p);
+  const { summaries, apiCalls } = await summarizeAll(graph.nodes, rootDir, p.cacheDir, apiKey, commentIntel);
 
   fs.mkdirSync(p.codebaseDir, { recursive: true });
   fs.writeFileSync(p.summaries, JSON.stringify(summaries, null, 2));
 
   const legacy = buildLegacyReport(graph.nodes);
-  const commentIntel = loadCommentIntel(p);
   const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel);
 
   // QA the MASTER.md
@@ -301,280 +390,11 @@ async function summarize(rootDir, opts = {}) {
   }
 
   console.log(`Summaries: ${Object.keys(summaries).length} files | API calls: ${apiCalls} | MASTER.md: ${masterPath}`);
+
+  const report = tokenLogger.flush(rootDir);
+  tokenLogger.printReport(report);
+
   return { summaries, masterPath, qaReport };
-}
-
-/**
- * Build the comment intelligence section lines for MAP_REPORT.md
- */
-function buildCommentIntelSection(intel) {
-  const s = intel.summary;
-  if (!s || s.total === 0) return [];
-
-  const tagRows = Object.entries(s.byType || {})
-    .sort((a, b) => b[1] - a[1])
-    .map(([type, count]) => `| \`${type}\` | ${count} |`)
-    .join('\n');
-
-  const topFileRows = (s.topFiles || []).slice(0, 8)
-    .map(({ file, count }) => `| \`${file}\` | ${count} |`)
-    .join('\n');
-
-  const severityRows = Object.entries(s.bySeverity || {})
-    .sort((a, b) => { const o = { high: 0, medium: 1, low: 2, info: 3 }; return (o[a[0]] ?? 9) - (o[b[0]] ?? 9); })
-    .map(([sev, count]) => `| ${sev} | ${count} |`)
-    .join('\n');
-
-  const lines = [
-    '## Comment intelligence',
-    '',
-    `> ${s.taggedTotal || s.total} tagged + ${s.untaggedTotal || 0} substantive untagged comments across the codebase.`,
-    '',
-    '**By tag:**',
-    '',
-    '| Tag | Count |',
-    '|-----|-------|',
-    tagRows || '| — | — |',
-    '',
-    '**By severity:**',
-    '',
-    '| Severity | Count |',
-    '|----------|-------|',
-    severityRows || '| — | — |',
-    '',
-    '**Most commented files (tech debt density):**',
-    '',
-    '| File | Tagged comments |',
-    '|------|----------------|',
-    topFileRows || '| — | — |',
-    '',
-  ];
-
-  // Module-by-module breakdown (only modules with LLM-enriched purpose)
-  const enrichedModules = (intel.modules || []).filter(m => m.purpose);
-  if (enrichedModules.length > 0) {
-    lines.push('**Module breakdown:**', '');
-    lines.push('| Module | Purpose | Tech Debt | Type |');
-    lines.push('|--------|---------|-----------|------|');
-    enrichedModules.slice(0, 12).forEach(m => {
-      const debt = m.techDebt || '—';
-      const type = m.isBizFeature === true ? 'feature' : m.isBizFeature === false ? 'infra' : '—';
-      lines.push(`| \`${m.dir}/\` | ${m.purpose} | ${debt} | ${type} |`);
-    });
-    lines.push('');
-  }
-
-  // Improvement ideas aggregated across all modules
-  const allIdeas = (intel.modules || []).flatMap(m => (m.ideas || []).map(idea => ({ dir: m.dir, idea })));
-  if (allIdeas.length > 0) {
-    lines.push('**Top improvement ideas (from comments):**', '');
-    allIdeas.slice(0, 8).forEach(({ dir, idea }) => lines.push(`- \`${dir}/\`: ${idea}`));
-    lines.push('');
-  } else if (!intel.reversePrd) {
-    lines.push('> Set `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` to generate AI-synthesised improvement ideas.', '');
-  }
-
-  return lines;
-}
-
-/**
- * Generate MAP_REPORT.md — full summary of the mapping run
- * Stored at .wednesday/codebase/MAP_REPORT.md
- */
-function generateMapReport(rootDir, graph, summaries, legacyReport, gapsFilled, elapsed, commentIntel = null) {
-  const p = paths(rootDir);
-  const nodes = graph.nodes;
-  const all = Object.values(nodes);
-
-  const scoreMap = scoreAll(nodes, buildTestCoverageMap(nodes));
-  const { deadFiles } = findDeadCode(nodes);
-
-  // Coverage by language
-  const byLang = graph.stats.byLang || {};
-  const langRows = Object.entries(byLang)
-    .sort((a, b) => b[1] - a[1])
-    .map(([lang, count]) => `| ${lang} | ${count} |`)
-    .join('\n');
-
-  // Top high-risk files
-  const highRisk = all
-    .filter(n => n.riskScore > 60)
-    .sort((a, b) => b.riskScore - a.riskScore)
-    .slice(0, 10);
-
-  const highRiskRows = highRisk
-    .map(n => {
-      const br = blastRadius(n.file, nodes);
-      const depStr = br.transitive > br.direct
-        ? `${br.direct} direct (+${br.transitive - br.direct} transitive)`
-        : `${br.direct}`;
-      return `| ${n.file} | ${n.riskScore} | ${depStr} | ${scoreMap[n.file]?.band || '?'} |`;
-    })
-    .join('\n');
-
-  // Gap summary
-  const totalGaps = all.reduce((s, n) => s + n.gaps.length, 0);
-  const gapsByType = all.flatMap(n => n.gaps).reduce((acc, g) => {
-    acc[g.type] = (acc[g.type] || 0) + 1;
-    return acc;
-  }, {});
-  const gapRows = Object.entries(gapsByType)
-    .map(([type, count]) => `| ${type} | ${count} |`)
-    .join('\n');
-
-  // Danger zones
-  const dangerRows = (legacyReport.dangerZones || []).slice(0, 10)
-    .map(d => `| ${d.file} | ${d.reason} | ${d.contact} |`)
-    .join('\n');
-
-  // Feature modules — directories that other parts of the codebase depend on
-  const featureModules = detectFeatureModules(nodes, commentIntel).slice(0, 8);
-
-  const entryFiles = all.filter(n => n.isEntryPoint);
-  const uiFiles = all.filter(n => {
-    const lf = n.file.toLowerCase();
-    return /\/(component[s]?|page[s]?|screen[s]?|view[s]?)\//.test(lf);
-  });
-  const serviceFiles = all.filter(n => /service/i.test(n.file) && !n.file.includes('.test.'));
-
-  const lines = [
-    `# Codebase Map Report`,
-    `> Generated: ${new Date().toISOString()}`,
-    `> Project: ${rootDir}`,
-    `> Total time: ${elapsed}ms`,
-    '',
-    ...(commentIntel?.reversePrd ? [
-      '## What this project does',
-      '',
-      commentIntel.reversePrd,
-      '',
-    ] : []),
-    '## New dev guide',
-    '',
-    '> Not sure where to start? Follow this path.',
-    '',
-    entryFiles.length > 0
-      ? `**Step 1 — Entry points** (${entryFiles.length} found):\n${entryFiles.slice(0,5).map(n => `- \`${n.file}\``).join('\n')}`
-      : '**Step 1 —** No explicit entry points detected. Look for `index.*` or `main.*` files.',
-    '',
-    featureModules.length > 0
-      ? `**Step 2 — Feature modules** (directories other features depend on):\n${featureModules.map(d => {
-          const debtBadge = d.techDebt && d.techDebt !== 'none' ? ` [${d.techDebt.toUpperCase()} DEBT]` : '';
-          const purpose = d.purpose ? ` — ${d.purpose}` : ` — ${d.fileCount} files, ${d.externalImporters} external importers`;
-          return `- \`${d.dir}/\`${purpose}${debtBadge}`;
-        }).join('\n')}`
-      : '',
-    '',
-    uiFiles.length > 0
-      ? `**Step 3 — UI layer** (${uiFiles.length} components/pages detected):\n${uiFiles.slice(0,5).map(n => `- \`${n.file}\``).join('\n')}${uiFiles.length > 5 ? `\n  ...and ${uiFiles.length - 5} more. See MASTER.md module map.` : ''}`
-      : '',
-    '',
-    serviceFiles.length > 0
-      ? `**Step 4 — Service layer** (${serviceFiles.length} service files):\n${serviceFiles.slice(0,5).map(n => `- \`${n.file}\``).join('\n')}${serviceFiles.length > 5 ? `\n  ...and ${serviceFiles.length - 5} more.` : ''}`
-      : '',
-    '',
-    '## Summary',
-    '',
-    `| Metric | Value |`,
-    `|--------|-------|`,
-    `| Files mapped | ${all.length} |`,
-    `| Total edges | ${graph.stats.totalEdges} |`,
-    `| Summaries generated | ${Object.keys(summaries).length} |`,
-    `| High-risk files (score > 60) | ${graph.stats.highRiskFiles} |`,
-    `| Dead files | ${deadFiles.length} |`,
-    `| Circular dependencies | ${legacyReport.circularDeps?.length || 0} |`,
-    `| God files | ${legacyReport.godFiles?.length || 0} |`,
-    `| Coverage gaps | ${totalGaps} |`,
-    `| Gaps resolved (subagents) | ${gapsFilled} |`,
-    `| Danger zones | ${legacyReport.dangerZones?.length || 0} |`,
-    '',
-    '## Files by language',
-    '',
-    '| Language | Files |',
-    '|----------|-------|',
-    langRows,
-    '',
-    '## High-risk files',
-    '',
-    '> Files with risk score > 60. Read before modifying.',
-    '',
-    '| File | Score | Dependents (direct + transitive) | Band |',
-    '|------|-------|----------------------------------|------|',
-    highRiskRows || '| *none* | — | — | — |',
-    '',
-    '## Coverage gaps',
-    '',
-    totalGaps > 0 ? [
-      '| Gap type | Count |',
-      '|----------|-------|',
-      gapRows,
-      '',
-      `> Run \`wednesday-skills fill-gaps --min-risk 50\` to resolve gaps (requires OPENROUTER_API_KEY)`,
-    ].join('\n') : '> No gaps detected. Graph coverage is complete.',
-    '',
-    '## Danger zones',
-    '',
-    legacyReport.dangerZones?.length > 0 ? [
-      '| File | Reason | Contact |',
-      '|------|--------|---------|',
-      dangerRows,
-    ].join('\n') : '> No danger zones detected.',
-    '',
-    '## Dead code candidates',
-    '',
-    deadFiles.length > 0
-      ? [
-          `> ${deadFiles.length} files have no importers. They may be unused or only used at runtime (e.g. entry points, dynamically loaded).`,
-          '',
-          '| File | Language | Risk |',
-          '|------|----------|------|',
-          ...deadFiles.slice(0, 20).map(f => {
-            const n = nodes[f] || {};
-            return `| \`${f}\` | ${n.lang || '?'} | ${n.riskScore || 0} |`;
-          }),
-          deadFiles.length > 20 ? `\n> ...and ${deadFiles.length - 20} more. Run \`wednesday-skills dead\` for full list.` : '',
-        ].join('\n')
-      : '> No dead code detected — every file is imported by at least one other.',
-    '',
-    '## All files quick index',
-    '',
-    '> Full file list sorted by risk score. Columns: risk icon, file, language, risk score, dependents.',
-    '',
-    '| | File | Lang | Risk | Deps |',
-    '|--|------|------|------|------|',
-    ...all
-      .sort((a, b) => b.riskScore - a.riskScore)
-      .map(n => {
-        const icon = n.riskScore >= 81 ? '🔴' : n.riskScore >= 61 ? '🟠' : n.riskScore >= 31 ? '🟡' : '🟢';
-        return `| ${icon} | \`${n.file}\` | ${n.lang} | ${n.riskScore} | ${n.importedBy.length} |`;
-      }),
-    '',
-    ...(commentIntel ? buildCommentIntelSection(commentIntel) : []),
-
-    '## Output files',
-    '',
-    '| File | Description |',
-    '|------|-------------|',
-    '| `.wednesday/codebase/dep-graph.json` | Full dependency graph |',
-    '| `.wednesday/codebase/summaries.json` | Module summaries |',
-    '| `.wednesday/codebase/MASTER.md` | Architecture overview (per-file developer guide) |',
-    '| `.wednesday/codebase/MAP_REPORT.md` | This file — map summary + onboarding guide |',
-    '| `.wednesday/codebase/analysis/blast-radius.json` | Top 50 files by blast radius |',
-    '| `.wednesday/codebase/analysis/safety-scores.json` | Risk scores (0–100) per file |',
-    '| `.wednesday/codebase/analysis/dead-code.json` | Dead files + circular deps |',
-    '| `.wednesday/codebase/analysis/api-surface.json` | Public contracts per file |',
-    '| `.wednesday/codebase/analysis/conflicts.json` | Dependency conflicts |',
-    '| `.wednesday/codebase/analysis/comments.json` | Comment intelligence — TODOs, ideas, tech debt |',
-    '',
-    '---',
-    '*Generated by wednesday-skills map — graph analysis only, no raw source read*',
-  ];
-
-  const content = lines.join('\n');
-  const outPath = path.join(p.codebaseDir, 'MAP_REPORT.md');
-  fs.mkdirSync(p.codebaseDir, { recursive: true });
-  fs.writeFileSync(outPath, content);
-  return outPath;
 }
 
 // ── Export all commands for CLI use ──────────────────────────────────────────
@@ -584,6 +404,7 @@ module.exports = {
   summarize,
   loadGraph,
   loadSummaries,
+  loadCommentIntel: (rootDir) => loadCommentIntel(paths(rootDir)),
   paths,
 
   // Analysis commands (used directly by CLI)
@@ -592,6 +413,14 @@ module.exports = {
     if (!graph) throw new Error('Run analyze first.');
     const rel = path.relative(rootDir, path.resolve(rootDir, file));
     return blastRadius(rel, graph.nodes);
+  },
+
+  symbolBlast: (qualifiedName, rootDir) => {
+    const store = GraphStore.open(paths(rootDir).dbPath);
+    const { symbolBlastRadius } = require('./analysis/blast-radius');
+    const result = symbolBlastRadius(qualifiedName, store);
+    store.close();
+    return result;
   },
 
   scoreFile: (file, rootDir) => {
@@ -644,33 +473,14 @@ module.exports = {
     return generateOnboarding(answers, graph || { nodes: {} }, summaries, apiKey);
   },
 
-  generateMapReport,
-
-  guide: async (rootDir) => {
-    const graph = loadGraph(rootDir);
-    if (!graph) throw new Error('Run wednesday-skills map first to build the dependency graph.');
-    const summaries = loadSummaries(rootDir);
-    const p = paths(rootDir);
-    const commentIntel = loadCommentIntel(p);
-    return generateGuide(graph, summaries, p.codebaseDir, commentIntel);
-  },
-
-  summary: async (rootDir) => {
-    const graph = loadGraph(rootDir);
-    if (!graph) throw new Error('Run wednesday-skills map first to build the dependency graph.');
-    const summaries = loadSummaries(rootDir);
-    const legacy = buildLegacyReport(graph.nodes);
-    const p = paths(rootDir);
-    const apiKey = process.env.OPENROUTER_API_KEY || null;
-    const commentIntel = loadCommentIntel(p);
-    return generateSummary(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel);
-  },
-
   chat: async (question, rootDir) => {
     const graph = loadGraph(rootDir);
     if (!graph) throw new Error('Run wednesday-skills analyze first.');
     const summaries = loadSummaries(rootDir);
-    return answerQuestion(question, rootDir, graph, summaries);
+    const store = GraphStore.open(paths(rootDir).dbPath);
+    const result = await answerQuestion(question, rootDir, graph, summaries, store);
+    store.close();
+    return result;
   },
 
   drift: (rootDir, opts = {}) => {

@@ -1,17 +1,19 @@
 /**
- * Comment intelligence — module-wise comment aggregation, LLM enrichment, reverse PRD.
+ * Comment intelligence — module-wise comment aggregation + optional LLM enrichment.
  *
- * Pipeline:
- *   1. collect()    — all comments per file, tagged + substantive untagged, grouped by dir
- *   2. enrich()     — batched Haiku calls (10 modules/call): purpose, techDebt, isBizFeature, ideas
- *   3. reversePrd() — single Haiku call: aggregate module purposes → project description
- *   4. emit()       → .wednesday/codebase/analysis/comments.json
+ * Collection pipeline (always runs, no LLM):
+ *   1. collect()  — tagged + substantive untagged comments, grouped by directory
+ *   2. emit()     → .wednesday/codebase/analysis/comments-raw.md  (pre-enrichment view)
+ *   3. emit()     → .wednesday/codebase/analysis/comments.json    (structural data)
  *
- * The module-level output feeds back into:
+ * Enrichment (purpose / techDebt / isBizFeature / ideas / reversePrd) — two paths:
+ *   A. API key set  → CLI calls Haiku directly during map (fast, no agent needed)
+ *   B. No API key   → LLM fields stay null; brownfield-enrich skill instructs the
+ *                     running agent (Claude, Gemini, etc.) to enrich from comments-raw.md
+ *
+ * The enriched output feeds into:
  *   - detectFeatureModules (isBizFeature boost)
- *   - MASTER.md (per-module comment context)
- *   - MAP_REPORT.md (feature module section)
- *   - SUMMARY.md (reverse PRD as opening paragraph)
+ *   - MASTER.md, MAP_REPORT.md, GUIDE.md, SUMMARY.md
  */
 
 'use strict';
@@ -205,6 +207,14 @@ function collectByModule(nodes, rootDir) {
 }
 
 // ── LLM enrichment ────────────────────────────────────────────────────────────
+//
+// Two enrichment paths — same output shape, different executor:
+//   1. API key available → CLI calls Haiku directly (fast, cheap, no agent needed)
+//   2. No API key        → brownfield-enrich skill instructs the running agent to
+//                          read comments-raw.md and write enriched fields back
+//
+// Both paths produce the same comments.json schema. The skill path sets enrichedAt
+// after writing so consumers can tell which path ran.
 
 /**
  * Build a compact comment digest for a module (fits within token budget).
@@ -212,14 +222,12 @@ function collectByModule(nodes, rootDir) {
 function buildModuleDigest(dir, mod) {
   const lines = [`Module: ${dir}/  (${mod.files.length} files)`];
 
-  // Up to 15 untagged comments (developer intent / explanations)
   const untaggedSample = mod.untagged.slice(0, 15);
   if (untaggedSample.length > 0) {
     lines.push('Comments:');
     untaggedSample.forEach(c => lines.push(`  ${c.file}:${c.line} — ${c.text}`));
   }
 
-  // All tagged items (tech debt signals)
   if (mod.tagged.length > 0) {
     lines.push('Tagged:');
     mod.tagged.slice(0, 20).forEach(c => lines.push(`  [${c.type}] ${c.file}:${c.line} — ${c.text}`));
@@ -243,7 +251,7 @@ MODULES:
 `;
 
 /**
- * Enrich modules with Haiku in batches of BATCH_SIZE.
+ * Enrich modules via direct Haiku calls (API key path).
  * Returns Map<dir, { purpose, techDebt, isBizFeature, ideas }>
  */
 async function enrichModules(moduleMap) {
@@ -254,31 +262,37 @@ async function enrichModules(moduleMap) {
 
   const enriched = new Map();
 
-  // Process in batches
   for (let i = 0; i < dirs.length; i += BATCH_SIZE) {
     const batch = dirs.slice(i, i + BATCH_SIZE);
     const digest = batch
       .map(dir => buildModuleDigest(dir, moduleMap.get(dir)))
       .join('\n\n---\n\n');
 
+    // Baseline = tokens the summarizer would spend calling Haiku per file WITHOUT enrichment.
+    // Each enriched module dir's files would each need a ~150-token Haiku call.
+    // Enrichment prevents all of those calls by providing purpose from comments instead.
+    const batchFileCount = batch.reduce((s, dir) => s + (moduleMap.get(dir)?.files.length || 0), 0);
+    const baselineTokens = batchFileCount * 150;
+
     const raw = await callLLM({
       model: 'haiku',
       messages: [{ role: 'user', content: MODULE_ENRICH_PROMPT + digest }],
       maxTokens: 800,
       temperature: 0,
+      operation: 'comment-intel',
+      baselineTokens,
     });
 
     if (!raw) continue;
 
     try {
-      // Strip any markdown fences if model adds them despite instruction
       const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim();
       const parsed = JSON.parse(cleaned);
       for (const item of parsed) {
         if (item.dir) enriched.set(item.dir, item);
       }
     } catch {
-      // If JSON parse fails, skip this batch — structural data is best-effort
+      // JSON parse failed — skip batch, structural data still written
     }
   }
 
@@ -298,7 +312,7 @@ Module summaries:
 `;
 
 async function buildReversePrd(enrichedModules) {
-  const bizModules = [...enrichedModules.values()].filter(m => m.isBizFeature && m.purpose);
+  const bizModules  = [...enrichedModules.values()].filter(m => m.isBizFeature && m.purpose);
   const infraModules = [...enrichedModules.values()].filter(m => !m.isBizFeature && m.purpose);
 
   if (bizModules.length === 0 && infraModules.length === 0) return null;
@@ -316,27 +330,142 @@ async function buildReversePrd(enrichedModules) {
     messages: [{ role: 'user', content: REVERSE_PRD_PROMPT + digest }],
     maxTokens: 400,
     temperature: 0.2,
+    operation: 'comment-intel',
   });
 
   return result || null;
 }
 
+// ── Raw preprocessing report ─────────────────────────────────────────────────
+
+/**
+ * Write comments-raw.md — the full collection result before any LLM call.
+ * Always generated. Shows exactly what was found per module so you can verify
+ * collection is working during live testing or debugging.
+ */
+function writeRawReport(moduleMap, analysisDir) {
+  const allTagged   = [...moduleMap.values()].flatMap(m => m.tagged);
+  const allUntagged = [...moduleMap.values()].flatMap(m => m.untagged);
+  const totalFiles  = new Set([...allTagged, ...allUntagged].map(i => i.file)).size;
+
+  // Global tag counts
+  const byType = allTagged.reduce((acc, i) => { acc[i.type] = (acc[i.type] || 0) + 1; return acc; }, {});
+  const tagRows = Object.entries(byType).sort((a, b) => b[1] - a[1])
+    .map(([t, n]) => `| \`${t}\` | ${n} |`).join('\n');
+
+  const lines = [
+    '# Comment Collection — Raw Preprocessing',
+    '',
+    `> Generated: ${new Date().toISOString()}`,
+    `> Files with comments: ${totalFiles} | Modules: ${moduleMap.size} | Tagged: ${allTagged.length} | Substantive untagged: ${allUntagged.length}`,
+    `> LLM enrichment: **not run yet** — this file is the pre-LLM view`,
+    '',
+    '## Global tag breakdown',
+    '',
+    '| Tag | Count |',
+    '|-----|-------|',
+    tagRows || '| — | 0 |',
+    '',
+    '---',
+    '',
+  ];
+
+  // Per-module sections — sorted by total comment count descending
+  const sortedModules = [...moduleMap.entries()]
+    .filter(([, m]) => m.tagged.length + m.untagged.length > 0)
+    .sort((a, b) => (b[1].tagged.length + b[1].untagged.length) - (a[1].tagged.length + a[1].untagged.length));
+
+  for (const [dir, mod] of sortedModules) {
+    lines.push(`## \`${dir}/\` — ${mod.files.length} file${mod.files.length !== 1 ? 's' : ''}, ${mod.tagged.length} tagged, ${mod.untagged.length} substantive`);
+    lines.push('');
+
+    // Files in module
+    lines.push(`**Files:** ${mod.files.map(f => `\`${f}\``).join(', ')}`);
+    lines.push('');
+
+    // Tagged comments
+    if (mod.tagged.length > 0) {
+      const tagSummary = Object.entries(
+        mod.tagged.reduce((acc, i) => { acc[i.type] = (acc[i.type] || 0) + 1; return acc; }, {})
+      ).map(([t, n]) => `${n}× ${t}`).join(', ');
+
+      lines.push(`**Tagged (${mod.tagged.length}):** ${tagSummary}`);
+      lines.push('');
+      lines.push('| Severity | Tag | File | Line | Comment |');
+      lines.push('|----------|-----|------|------|---------|');
+      for (const item of mod.tagged) {
+        const sev = item.severity === 'high' ? '🔴' : item.severity === 'medium' ? '🟡' : item.severity === 'low' ? '🔵' : '⚪';
+        const text = item.text.replace(/\|/g, '\\|').slice(0, 100);
+        lines.push(`| ${sev} | \`${item.type}\` | \`${item.file}\` | ${item.line} | ${text} |`);
+      }
+      lines.push('');
+    }
+
+    // Substantive untagged comments
+    if (mod.untagged.length > 0) {
+      lines.push(`**Substantive untagged (${mod.untagged.length}):** developer explanations, architecture notes, etc.`);
+      lines.push('');
+      // Show up to 10 per module — these are the richest signal for purpose extraction
+      const sample = mod.untagged.slice(0, 10);
+      for (const item of sample) {
+        lines.push(`- \`${item.file}\`:${item.line} — ${item.text.replace(/\|/g, '\\|').slice(0, 150)}`);
+      }
+      if (mod.untagged.length > 10) {
+        lines.push(`- *...and ${mod.untagged.length - 10} more*`);
+      }
+      lines.push('');
+    }
+
+    lines.push('---');
+    lines.push('');
+  }
+
+  if (sortedModules.length === 0) {
+    lines.push('> No comments found. Either the codebase has no comments, or all comments were filtered as noise.');
+    lines.push('');
+  }
+
+  lines.push('*Raw collection — no LLM involved. Run `wednesday-skills map` with an API key to enrich with purpose, tech debt, and ideas.*');
+
+  fs.mkdirSync(analysisDir, { recursive: true });
+  const outPath = path.join(analysisDir, 'comments-raw.md');
+  fs.writeFileSync(outPath, lines.join('\n'));
+  return outPath;
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 /**
- * Run the full comment intelligence pipeline.
+ * Run the comment intelligence pipeline.
  *
- * @param {Object} nodes - dep-graph nodes
- * @param {string} rootDir - project root
+ * Always writes:
+ *   - comments-raw.md  — full pre-enrichment view (no LLM, always generated)
+ *   - comments.json    — structural data + LLM fields if enrichment ran
+ *
+ * Enrichment paths (both produce the same output schema):
+ *   - apiKey provided → CLI calls Haiku directly (fast, no agent needed)
+ *   - no apiKey       → LLM fields stay null; use brownfield-enrich skill to
+ *                       have the running agent (Claude/Gemini/etc.) enrich them
+ *
+ * @param {Object} nodes       - dep-graph nodes
+ * @param {string} rootDir     - project root
  * @param {string} analysisDir - .wednesday/codebase/analysis/
- * @param {string|null} apiKey - optional API key
- * @returns {Object} full comment intel result
+ * @param {string|null} apiKey - optional; if omitted, enrichment is skipped
+ * @returns {Object} comment intel result
  */
-async function analyseComments(nodes, rootDir, analysisDir, apiKey) {
+async function analyseComments(nodes, rootDir, analysisDir, apiKey = null) {
   // Step 1: collect all comments, grouped by module
   const moduleMap = collectByModule(nodes, rootDir);
 
-  // Flatten all items for the global tagged summary
+  // Step 2: write raw preprocessing report (always, no LLM)
+  writeRawReport(moduleMap, analysisDir);
+
+  const allModuleCount = [...moduleMap.values()].filter(m => m.tagged.length + m.untagged.length > 0).length;
+  const totalTagged   = [...moduleMap.values()].reduce((n, m) => n + m.tagged.length, 0);
+  const totalUntagged = [...moduleMap.values()].reduce((n, m) => n + m.untagged.length, 0);
+  console.log(`  [comments] ${moduleMap.size} modules scanned — ${totalTagged} tagged, ${totalUntagged} substantive untagged across ${allModuleCount} modules`);
+
+  // Flatten for summary
   const allTagged = [];
   const allUntagged = [];
   for (const mod of moduleMap.values()) {
@@ -344,7 +473,7 @@ async function analyseComments(nodes, rootDir, analysisDir, apiKey) {
     allUntagged.push(...mod.untagged);
   }
 
-  // Build module summaries (without LLM first — structural data)
+  // Structural module summaries
   const modules = [...moduleMap.entries()].map(([dir, mod]) => ({
     dir,
     fileCount: mod.files.length,
@@ -352,7 +481,7 @@ async function analyseComments(nodes, rootDir, analysisDir, apiKey) {
     taggedCount: mod.tagged.length,
     untaggedCount: mod.untagged.length,
     tagsByType: mod.tagged.reduce((acc, i) => { acc[i.type] = (acc[i.type] || 0) + 1; return acc; }, {}),
-    // LLM fields — filled in below if API key available
+    // LLM fields — filled by API key path below, or by brownfield-enrich skill
     purpose: null,
     techDebt: null,
     isBizFeature: null,
@@ -360,36 +489,37 @@ async function analyseComments(nodes, rootDir, analysisDir, apiKey) {
   }));
 
   let reversePrd = null;
+  let enrichedAt = null;
 
   if (apiKey) {
-    // Step 2: enrich each module with Haiku
+    // API key path: enrich directly via Haiku
     const enriched = await enrichModules(moduleMap);
-
-    // Merge LLM data into module summaries
     for (const mod of modules) {
       const llm = enriched.get(mod.dir);
       if (llm) {
-        mod.purpose = llm.purpose || null;
-        mod.techDebt = llm.techDebt || null;
+        mod.purpose      = llm.purpose || null;
+        mod.techDebt     = llm.techDebt || null;
         mod.isBizFeature = llm.isBizFeature ?? null;
-        mod.ideas = llm.ideas || [];
+        mod.ideas        = llm.ideas || [];
       }
     }
-
-    // Step 3: reverse PRD from enriched modules
     reversePrd = await buildReversePrd(enriched);
+    enrichedAt = new Date().toISOString();
+    console.log(`  [comments] ✓ LLM enrichment done via API key`);
+  } else {
+    if (totalTagged + totalUntagged > 0) {
+      console.log(`  [comments] No API key — use the brownfield-enrich skill to enrich with purpose, tech debt and ideas`);
+    }
   }
 
-  // Global summary
-  const byType = allTagged.reduce((acc, i) => { acc[i.type] = (acc[i.type] || 0) + 1; return acc; }, {});
+  const byType     = allTagged.reduce((acc, i) => { acc[i.type] = (acc[i.type] || 0) + 1; return acc; }, {});
   const bySeverity = allTagged.reduce((acc, i) => { acc[i.severity] = (acc[i.severity] || 0) + 1; return acc; }, {});
-
-  // Top files by tagged comment density
-  const byFile = allTagged.reduce((acc, i) => { acc[i.file] = (acc[i.file] || 0) + 1; return acc; }, {});
-  const topFiles = Object.entries(byFile).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([file, count]) => ({ file, count }));
+  const byFile     = allTagged.reduce((acc, i) => { acc[i.file] = (acc[i.file] || 0) + 1; return acc; }, {});
+  const topFiles   = Object.entries(byFile).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([file, count]) => ({ file, count }));
 
   const result = {
     generatedAt: new Date().toISOString(),
+    enrichedAt,   // null = not yet enriched; skill sets this after writing
     reversePrd,
     summary: {
       total: allTagged.length + allUntagged.length,

@@ -5,12 +5,14 @@ permissions:
   allow:
     - Bash(wednesday-skills score *)
     - Bash(wednesday-skills blast *)
+    - Bash(wednesday-skills fill-gaps *)
 ---
 
 ## When to use
 - About to edit, refactor, rename, or delete any file
 - About to change a function signature or exported value
 - Dev asks "is it safe to change X"
+- The file you're about to edit has gaps in dep-graph.json (dynamic require, event emitters, global injection)
 
 ## What to do
 1. Run: wednesday-skills score <file>
@@ -23,6 +25,7 @@ permissions:
    - Cross-language dependents flagged separately
 3. Check .wednesday/codebase/MASTER.md danger zones section
    - If file listed there: read the warning before proceeding
+3a. If the file shows gaps in `.wednesday/codebase/dep-graph.json`, run `wednesday-skills fill-gaps --file <file> --min-risk 50` first — ensures blast radius is complete
 4. Make the change
 5. Read git-os skill before writing commit message
 6. After committing: post-commit hook updates graph automatically

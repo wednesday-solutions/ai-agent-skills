@@ -1,39 +1,39 @@
 /**
  * 2C-1 — Module summarizer
- * ~70 token prompts. Cached by file hash. Free tier → Haiku.
+ *
+ * Improvements over original:
+ *   1. Cache key uses file+exports only — not importedBy (which changes on every new
+ *      importer even though the file's content/purpose hasn't changed)
+ *   2. Skip LLM when commentIntel has a purpose for the module dir — zero tokens,
+ *      better output (developer-written intent beats structural inference)
+ *   3. Prompt uses role + tagged comments instead of importedBy paths — same token
+ *      budget, far more signal about what the file *does*
+ *   4. Structural fallback uses purposeSentence() from guide.js — much better than
+ *      "js module exporting [x]. Used by N modules."
+ *   5. Parallel batch processing — Promise.all in groups of 20, not sequential await
  */
 
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const fs     = require('fs');
+const path   = require('path');
 const crypto = require('crypto');
-const { callLLM } = require('../core/llm-client');
+const { callLLM, hasApiKey, tokenLogger } = require('../core/llm-client');
+const { classifyRole, purposeSentence } = require('./role-classifier');
 
-/**
- * Build the minimal summarization prompt (~70 tokens max)
- */
-function buildPrompt(node, lastCommitMsg) {
-  const exportStr = node.exports.slice(0, 8).join(', ') || 'none';
-  const importersStr = node.importedBy.slice(0, 5).join(', ') || 'none';
-  return `File: ${node.file}
-Lang: ${node.lang}
-Exports: ${exportStr}
-Used by: ${importersStr}
-Last change: ${lastCommitMsg || 'unknown'}
-Write 2 sentences. Start with what it DOES. Name at least one specific function, type, or export. Do not use phrases like "this module contains", "this file handles", or "this module provides".`;
-}
+// Infrastructure roles where the structural fallback is already accurate —
+// these files don't benefit from an LLM call regardless of import count.
+const INFRA_ROLES = new Set(['utility', 'config', 'test file']);
 
-/**
- * Call Haiku for a summary — uses OpenRouter or Anthropic API automatically.
- */
-async function callHaiku(prompt) {
-  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 80 });
-}
+// Directory-name patterns that are definitively infrastructure.
+// Mirrors feature-modules.js INFRA_PATTERNS so both systems agree.
+const INFRA_DIR_RE = /(?:^|[/\\])(utils?|helpers?|lib|config|common|shared|constants?|types?|hooks?|styles?|assets|public|static|vendor|generated|migrations?|seeds?|fixtures?|mocks?|stubs?|i18n|locale|theme)(?:[/\\]|$)/i;
+const BIZ_DIR_RE   = /(?:^|[/\\])(auth|payments?|billing|orders?|users?|accounts?|checkout|notifications?|subscriptions?|cart|products?|inventory|dashboard|reports?|analytics|messaging|chat|booking|scheduling|transactions?|invoices?|onboarding|sessions?|roles?|permissions?)(?:[/\\]|$)/i;
 
-/**
- * Load summary cache
- */
+const BATCH_SIZE = 20;
+
+// ── Cache ─────────────────────────────────────────────────────────────────────
+
 function loadSummaryCache(cacheDir) {
   const f = path.join(cacheDir, 'summary-cache.json');
   if (!fs.existsSync(f)) return {};
@@ -46,72 +46,199 @@ function saveSummaryCache(cacheDir, cache) {
 }
 
 /**
- * Summarize all nodes, using cache where possible
- * @param {Object} nodes      - graph nodes
- * @param {string} rootDir    - project root
- * @param {string} cacheDir   - .wednesday/cache
- * @param {string} apiKey     - OpenRouter API key (null = skip LLM)
- * @returns {Object} summaries keyed by file
+ * Cache key: file path + exports list only.
+ * importedBy is intentionally excluded — a new file importing this one doesn't
+ * change what this file *does*, so the cached summary is still valid.
  */
-async function summarizeAll(nodes, _rootDir, cacheDir, _apiKey) {
-  const cache = loadSummaryCache(cacheDir);
-  const summaries = {};
-  let apiCalls = 0;
+function cacheKey(file, node) {
+  return crypto.createHash('sha1')
+    .update(JSON.stringify({ file, exports: node.exports }))
+    .digest('hex');
+}
+
+// ── Comment intel helpers ─────────────────────────────────────────────────────
+
+/**
+ * Build dir→moduleIntel map from commentIntel for O(1) lookups.
+ */
+function buildCommentByDir(commentIntel) {
+  const map = new Map();
+  if (!commentIntel || !commentIntel.modules) return map;
+  for (const mod of commentIntel.modules) {
+    map.set(mod.dir, mod);
+  }
+  return map;
+}
+
+/**
+ * Pull top 2 tagged comment texts for a file's dir from commentIntel.items.
+ * Returns an array of strings like ["FIXME: token refresh fails silently", "TODO: extract retry"]
+ */
+function topTaggedComments(file, commentIntel) {
+  if (!commentIntel || !commentIntel.items) return [];
+  const dir = path.dirname(file);
+  return commentIntel.items
+    .filter(item => item.file && path.dirname(item.file) === dir && item.tag)
+    .slice(0, 2)
+    .map(item => `${item.tag}: ${item.text}`);
+}
+
+// ── Prompt builder ─────────────────────────────────────────────────────────────
+
+/**
+ * Build a ~70 token prompt.
+ * Uses role + tagged comments instead of importedBy paths — same budget, better signal.
+ */
+function buildPrompt(file, node, lastCommitMsg, taggedComments) {
+  const role      = classifyRole(file, node);
+  const exportStr = node.exports.slice(0, 6).join(', ') || 'none';
+  const commentStr = taggedComments.length > 0
+    ? `\nDev notes: ${taggedComments.join(' | ')}`
+    : '';
+
+  return `File: ${file}
+Role: ${role}
+Exports: ${exportStr}
+Last change: ${lastCommitMsg || 'unknown'}${commentStr}
+Write 2 sentences. Start with what it DOES. Name at least one specific function, type, or export. Do not use phrases like "this module contains", "this file handles", or "this module provides".`;
+}
+
+// ── LLM call ─────────────────────────────────────────────────────────────────
+
+async function callHaiku(prompt) {
+  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 80, operation: 'summarize' });
+}
+
+// ── Zero-cost structural fallback ─────────────────────────────────────────────
+
+/**
+ * Fallback when LLM unavailable. Uses guide.js role classifier + purpose sentence
+ * instead of the original weak "js module exporting [x]. Used by N modules."
+ */
+function generateStructuralSummary(file, node) {
+  if (node.isBarrel)    return `Re-exports from ${node.imports.length} module${node.imports.length !== 1 ? 's' : ''} in the ${path.basename(path.dirname(file))} directory.`;
+  if (node.isEntryPoint) return 'Entry point that initialises the application.';
+  return purposeSentence(file, node);
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Summarize all nodes, using cache where possible.
+ *
+ * @param {Object}      nodes        - dep-graph nodes
+ * @param {string}      _rootDir     - project root (unused, kept for API compat)
+ * @param {string}      cacheDir     - .wednesday/cache
+ * @param {string|null} _apiKey      - unused (reads from env via hasApiKey())
+ * @param {Object|null} commentIntel - output of analyseComments (optional)
+ * @returns {{ summaries: Object, apiCalls: number }}
+ */
+async function summarizeAll(nodes, _rootDir, cacheDir, _apiKey, commentIntel = null) {
+  const cache        = loadSummaryCache(cacheDir);
+  const commentByDir = buildCommentByDir(commentIntel);
+  const summaries    = {};
+  let apiCalls       = 0;
+
+  // ── Pass 1: serve from cache or comment intel (zero API calls) ────────────
+  const needsLlm = []; // { file, node } pairs still needing summarization
 
   for (const [file, node] of Object.entries(nodes)) {
     if (node.error) continue;
 
-    // Cache key: hash of exports + importedBy (changes when graph changes)
-    const cacheKey = crypto.createHash('sha1')
-      .update(JSON.stringify({ exports: node.exports, importedBy: node.importedBy }))
-      .digest('hex');
+    const key = cacheKey(file, node);
 
-    if (cache[cacheKey]) {
-      summaries[file] = cache[cacheKey];
+    // Cache hit — 0 tokens spent, baseline still saved
+    if (cache[key]) {
+      summaries[file] = cache[key];
+      tokenLogger.recordCacheHit('summarize');
       continue;
     }
 
-    // Need to generate
-    const lastCommit = node.meta?.gitHistory?.lastCommit;
-    const prompt = buildPrompt(node, lastCommit);
+    // Comment intel has a developer-written purpose for this module dir — use it
+    // directly and skip the LLM call entirely. Better quality, zero tokens.
+    const dir   = path.dirname(file);
+    const intel = commentByDir.get(dir);
+    if (intel && intel.purpose) {
+      const summary = intel.purpose;
+      summaries[file] = summary;
+      cache[key]      = summary;
+      tokenLogger.recordCacheHit('summarize');
+      continue;
+    }
 
-    let summary = null;
-    const { hasApiKey } = require('../core/llm-client');
-    if (hasApiKey()) {
-      try {
-        summary = await callHaiku(prompt);
-        apiCalls++;
-      } catch {
-        summary = null;
+    // Tier gate: only high-value files get LLM calls.
+    // A file is high-value if it meets ANY of:
+    //   1. High risk score — many dependents or public contract
+    //   2. Entry point or barrel — structural importance
+    //   3. Lives in a biz-feature directory (auth, payments, orders…)
+    //   4. Heavily imported AND not an infra role — reach matters only for non-utilities
+    //
+    // Utilities, configs, and test files always get structural fallback regardless of
+    // import count — a date formatter imported by 30 files is still just a date formatter.
+    const role         = classifyRole(file, node);
+    const isInfraRole  = INFRA_ROLES.has(role);
+    const dirPath      = path.dirname(file);
+    const dirIsBiz     = BIZ_DIR_RE.test(dirPath)
+      || (commentByDir.get(dirPath)?.isBizFeature === true);
+    const dirIsInfra   = !dirIsBiz && (INFRA_DIR_RE.test(dirPath)
+      || commentByDir.get(dirPath)?.isBizFeature === false);
+
+    const isHighValue = node.riskScore > 40
+      || node.isEntryPoint
+      || node.isBarrel
+      || dirIsBiz
+      || (node.importedBy.length > 5 && !isInfraRole && !dirIsInfra);
+
+    if (!isHighValue) {
+      const summary   = generateStructuralSummary(file, node);
+      summaries[file] = summary;
+      cache[key]      = summary;
+      continue;
+    }
+
+    needsLlm.push({ file, node, key });
+  }
+
+  // ── Pass 2: LLM for high-value files — parallel batches of BATCH_SIZE ─────
+  if (needsLlm.length > 0 && hasApiKey()) {
+    for (let i = 0; i < needsLlm.length; i += BATCH_SIZE) {
+      const batch = needsLlm.slice(i, i + BATCH_SIZE);
+
+      const results = await Promise.all(batch.map(async ({ file, node, key }) => {
+        const lastCommit   = node.meta?.gitHistory?.lastCommit;
+        const taggedComments = topTaggedComments(file, commentIntel);
+        const prompt       = buildPrompt(file, node, lastCommit, taggedComments);
+
+        let summary = null;
+        try {
+          summary = await callHaiku(prompt);
+          apiCalls++;
+        } catch {
+          summary = null;
+        }
+
+        return { file, key, summary };
+      }));
+
+      for (const { file, key, summary } of results) {
+        const final = summary || generateStructuralSummary(file, nodes[file]);
+        summaries[file] = final;
+        cache[key]      = final;
       }
     }
+  }
 
-    // Fallback: generate structural summary without LLM
-    if (!summary) {
-      summary = generateStructuralSummary(node);
+  // ── Pass 3: structural fallback for anything still missing ────────────────
+  for (const { file, node, key } of needsLlm) {
+    if (!summaries[file]) {
+      const summary   = generateStructuralSummary(file, node);
+      summaries[file] = summary;
+      cache[key]      = summary;
     }
-
-    summaries[file] = summary;
-    cache[cacheKey] = summary;
   }
 
   saveSummaryCache(cacheDir, cache);
-
   return { summaries, apiCalls };
-}
-
-/**
- * Zero-cost structural summary when LLM unavailable
- */
-function generateStructuralSummary(node) {
-  const exportStr = node.exports.slice(0, 3).join(', ');
-  const importerCount = node.importedBy.length;
-
-  if (node.isBarrel) return `Barrel file that re-exports from ${node.imports.length} modules.`;
-  if (node.isEntryPoint) return `Entry point that initialises the application.`;
-  if (importerCount === 0 && node.exports.length === 0) return `Utility or script with no public interface.`;
-
-  return `${node.lang} module exporting [${exportStr || 'nothing'}]. Used by ${importerCount} other module${importerCount !== 1 ? 's' : ''}.`;
 }
 
 module.exports = { summarizeAll, generateStructuralSummary };

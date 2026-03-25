@@ -1,6 +1,6 @@
 ---
 name: pr-review-agent
-description: Use when asked to review a PR, check a PR for issues, or when a PR is ready for review. Runs triage, blast radius, and drift check automatically.
+description: Full PR review orchestrator. Use when asked to review a PR or check if it is ready to merge. Runs blast radius + drift check on changed files, then hands off to pr-review for comment triage and fixes. Do NOT use pr-review directly for full reviews — use this.
 license: MIT
 metadata:
   author: wednesday-solutions
@@ -39,7 +39,7 @@ permissions:
    - High-risk changed files (score + dependent count)
    - Architecture violations (if any)
 
-4. **triage-fix** — Wait for dev approval: "@agent fix #N" or "@agent fix all". Apply fixes in priority order. Read git-os-lite or git-os skill before committing. One commit per fix item.
+4. **triage-fix** — Wait for dev approval: "@agent fix #N" or "@agent fix all". Apply fixes in priority order. Read git-os skill before committing. One commit per fix item.
 
 ## Never
 - Fix without explicit dev approval

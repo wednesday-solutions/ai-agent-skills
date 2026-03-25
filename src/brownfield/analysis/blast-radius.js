@@ -53,4 +53,38 @@ function blastRadius(file, nodes) {
   };
 }
 
-module.exports = { blastRadius };
+/**
+ * Find all files that transitively call a given symbol.
+ * Uses CALLS edges from the SQLite store — much more precise than import-level BFS.
+ *
+ * @param {string} qualifiedName — 'src/auth/token.js::signToken'
+ * @param {GraphStore} store
+ * @returns {{ direct: string[], transitive: string[], count: number }}
+ */
+function symbolBlastRadius(qualifiedName, store) {
+  const direct = store.getCallers(qualifiedName);
+  const visited = new Set(direct);
+  const queue = [...direct];
+
+  // BFS: expand callers of callers (file-level import BFS beyond direct callers)
+  // For the transitive layer, fall back to import edges (callers of callers don't have
+  // CALLS-edge resolution yet — file level is fine for transitive hops)
+  while (queue.length > 0) {
+    const current = queue.shift();
+    const importers = store.getImporters(current);
+    for (const imp of importers) {
+      if (!visited.has(imp)) {
+        visited.add(imp);
+        queue.push(imp);
+      }
+    }
+  }
+
+  return {
+    direct,
+    transitive: [...visited].filter(f => !direct.includes(f)),
+    count: visited.size,
+  };
+}
+
+module.exports = { blastRadius, symbolBlastRadius };

@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Gemini PR review skill. Fetches Gemini bot comments on the PR, categorizes by impact, posts a fix queue, and applies fixes on dev approval in priority order.
+description: Fix engine for PR review comments. Fetches review comments (Gemini bot or human), categorizes by impact, posts a prioritized fix queue, and applies fixes on dev approval. Called directly for quick fixes, or internally by pr-review-agent as part of full PR review.
 license: MIT
 metadata:
   author: wednesday-solutions

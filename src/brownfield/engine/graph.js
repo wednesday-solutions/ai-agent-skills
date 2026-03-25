@@ -200,6 +200,7 @@ function buildGraph(rootDir, opts = {}) {
       isBarrel: result.meta?.isBarrel || false,
       nestEdges: nestInfo.edges,
       meta: { ...result.meta, ...nestInfo.meta, ...(gitData ? { gitHistory: gitData } : {}) },
+      symbols: result.symbols || [],
       error: result.error,
     };
   }
@@ -262,6 +263,27 @@ function buildGraph(rootDir, opts = {}) {
   // ── Compute risk scores ───────────────────────────────────────────────────
   for (const node of Object.values(nodes)) {
     node.riskScore = computeRiskScore(node);
+  }
+
+  // ── Extract Call Edges (Phase C) ──────────────────────────────────────────
+  const { buildSymbolIndex } = require('./symbol-index');
+  const { extractCallEdges } = require('./calls-extractor');
+
+  if (opts.extractCalls !== false) {
+    const symbolIndex = buildSymbolIndex(nodes);
+
+    for (const [rel, node] of Object.entries(nodes)) {
+      if (node.error || node.lang === 'shell' || node.lang === 'config') continue;
+
+      let src = '';
+      try { src = fs.readFileSync(path.join(rootDir, rel), 'utf8'); } catch { continue; }
+      
+      const stripped = src
+        .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+        .replace(/\/\/[^\n]*/g, '');
+
+      node.calls = extractCallEdges(rel, stripped, node, symbolIndex);
+    }
   }
 
   // ── Supplementary: CocoaPods + SPM ───────────────────────────────────────

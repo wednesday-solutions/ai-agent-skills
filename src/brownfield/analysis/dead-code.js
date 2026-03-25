@@ -5,6 +5,8 @@
 
 'use strict';
 
+const path = require('path');
+
 /**
  * Files that are definitely not dead even if nothing imports them:
  * - Standalone scripts (bin/, scripts/, tools/, tasks/, cli/)
@@ -15,7 +17,7 @@
  */
 function isSafelyUnimported(file, node) {
   const f = file.toLowerCase();
-  const base = require('path').basename(f);
+  const base = path.basename(f);
 
   // Standalone script directories
   if (/^\/?(?:bin|scripts?|tools?|tasks?|cli|hack|seed|fixture|migration)\//.test(f)) return true;
@@ -49,10 +51,27 @@ function isSafelyUnimported(file, node) {
  * Find dead files.
  * A file is dead when nothing imports it AND it's not an entry point,
  * barrel, config, script, test, or dynamically loaded file.
- * @returns {{ deadFiles: string[] }}
+ *
+ * When commentIntel is provided (zero extra LLM tokens), each dead file is annotated:
+ *   risk: 'high'    — in a biz-feature module (never auto-delete)
+ *   risk: 'low'     — in an infra/utility module (safe to remove)
+ *   risk: 'unknown' — module not yet enriched
+ *
+ * @param {Object} nodes
+ * @param {Object|null} commentIntel - output of analyseComments (optional)
+ * @returns {{ deadFiles: Array<{file, risk}>, unusedExports: {}, riskByFile: Object }}
  */
-function findDeadCode(nodes) {
+function findDeadCode(nodes, commentIntel = null) {
+  // Build dir → isBizFeature lookup from enriched comments
+  const bizByDir = new Map();
+  if (commentIntel && commentIntel.modules) {
+    for (const mod of commentIntel.modules) {
+      bizByDir.set(mod.dir, mod.isBizFeature);
+    }
+  }
+
   const deadFiles = [];
+  const riskByFile = {};
 
   for (const [file, node] of Object.entries(nodes)) {
     if (node.isEntryPoint)          continue;
@@ -66,14 +85,18 @@ function findDeadCode(nodes) {
     if (isSafelyUnimported(file, node)) continue;
 
     if (node.importedBy.length === 0) {
+      const dir = path.dirname(file);
+      const isBiz = bizByDir.has(dir) ? bizByDir.get(dir) : null;
+      const risk = isBiz === true ? 'high' : isBiz === false ? 'low' : 'unknown';
       deadFiles.push(file);
+      riskByFile[file] = risk;
     }
   }
 
   // unusedExports removed — the previous logic (flag all exports from 0-importer files)
   // was identical to dead files and created false positives. True per-export unused
   // detection requires named import tracking which is a separate feature.
-  return { deadFiles, unusedExports: {} };
+  return { deadFiles, unusedExports: {}, riskByFile };
 }
 
 /**

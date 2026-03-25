@@ -11,16 +11,17 @@
 
 'use strict';
 
-const https = require('https');
+const https       = require('https');
+const tokenLogger = require('./token-logger');
 
 const OPENROUTER_MODELS = {
-  haiku:  'anthropic/claude-haiku-4-5',
-  sonnet: 'anthropic/claude-sonnet-4-6',
+  haiku:  process.env.OPENROUTER_MODEL_HAIKU || 'stepfun/step-3.5-flash:free',
+  sonnet: process.env.OPENROUTER_MODEL_SONNET || 'anthropic/claude-sonnet-4-6',
 };
 
 const ANTHROPIC_MODELS = {
-  haiku:  'claude-haiku-4-5-20251001',
-  sonnet: 'claude-sonnet-4-6',
+  haiku:  process.env.ANTHROPIC_MODEL_HAIKU || 'claude-haiku-4-5-20251001',
+  sonnet: process.env.ANTHROPIC_MODEL_SONNET || 'claude-sonnet-4-6',
 };
 
 /**
@@ -41,28 +42,39 @@ function detectProvider() {
  * Call the LLM.
  *
  * @param {Object} opts
- * @param {string} opts.model       - 'haiku' | 'sonnet' | full model ID
- * @param {Array}  opts.messages    - [{role, content}] array
- * @param {string} [opts.system]    - system prompt (optional)
- * @param {number} [opts.maxTokens] - default 300
+ * @param {string} opts.model         - 'haiku' | 'sonnet' | full model ID
+ * @param {Array}  opts.messages      - [{role, content}] array
+ * @param {string} [opts.system]      - system prompt (optional)
+ * @param {number} [opts.maxTokens]   - default 300
  * @param {number} [opts.temperature] - default 0
- * @param {string} [opts.apiKey]    - override auto-detected key
- * @param {string} [opts.provider]  - override auto-detected provider
+ * @param {string} [opts.apiKey]      - override auto-detected key
+ * @param {string} [opts.provider]    - override auto-detected provider
+ * @param {string} [opts.operation]   - label for token logger (e.g. 'summarize')
  * @returns {Promise<string|null>} response text, or null on failure
  */
-function callLLM(opts) {
-  const { model = 'haiku', messages, system, maxTokens = 300, temperature = 0 } = opts;
+async function callLLM(opts) {
+  const { model = 'haiku', messages, system, maxTokens = 300, temperature = 0, operation = 'default', baselineTokens } = opts;
 
   let { provider, key } = opts.apiKey
     ? { provider: opts.provider || 'openrouter', key: opts.apiKey }
     : detectProvider();
 
-  if (!key) return Promise.resolve(null);
+  if (!key) return null;
 
-  if (provider === 'anthropic') {
-    return callAnthropic({ model, messages, system, maxTokens, temperature, key });
-  }
-  return callOpenRouter({ model, messages, system, maxTokens, temperature, key });
+  const { text, usage } = provider === 'anthropic'
+    ? await callAnthropic({ model, messages, system, maxTokens, temperature, key })
+    : await callOpenRouter({ model, messages, system, maxTokens, temperature, key });
+
+  // Record to token logger — baselineTokens can be passed by caller for dynamic baselines
+  tokenLogger.record({
+    operation,
+    model: (provider === 'anthropic' ? ANTHROPIC_MODELS[model] : OPENROUTER_MODELS[model]) || model,
+    inputTokens:  usage.input,
+    outputTokens: usage.output,
+    baselineTokens,            // undefined = use BASELINE[operation] default in logger
+  });
+
+  return text;
 }
 
 // ── OpenRouter ────────────────────────────────────────────────────────────────
@@ -90,9 +102,12 @@ function callOpenRouter({ model, messages, system, maxTokens, temperature, key }
       'X-Title': 'Wednesday Skills',
     },
     body,
-    parseResponse: (data) => {
+    extractResult: (data) => {
       const json = JSON.parse(data);
-      return json.choices?.[0]?.message?.content?.trim() || null;
+      return {
+        text:  json.choices?.[0]?.message?.content?.trim() || null,
+        usage: { input: json.usage?.prompt_tokens || 0, output: json.usage?.completion_tokens || 0 },
+      };
     },
   });
 }
@@ -120,16 +135,19 @@ function callAnthropic({ model, messages, system, maxTokens, temperature, key })
       'anthropic-version': '2023-06-01',
     },
     body,
-    parseResponse: (data) => {
+    extractResult: (data) => {
       const json = JSON.parse(data);
-      return json.content?.[0]?.text?.trim() || null;
+      return {
+        text:  json.content?.[0]?.text?.trim() || null,
+        usage: { input: json.usage?.input_tokens || 0, output: json.usage?.output_tokens || 0 },
+      };
     },
   });
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
-function makeRequest({ hostname, path, headers, body, parseResponse, timeoutMs = 60000 }) {
+function makeRequest({ hostname, path, headers, body, extractResult, timeoutMs = 60000 }) {
   return new Promise((resolve, reject) => {
     const options = {
       hostname,
@@ -146,8 +164,8 @@ function makeRequest({ hostname, path, headers, body, parseResponse, timeoutMs =
       let data = '';
       res.on('data', c => { data += c; });
       res.on('end', () => {
-        try { resolve(parseResponse(data)); }
-        catch { resolve(null); }
+        try { resolve(extractResult(data)); }
+        catch { resolve({ text: null, usage: { input: 0, output: 0 } }); }
       });
     });
     req.on('error', reject);
@@ -171,4 +189,4 @@ function getApiKey() {
   return process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || null;
 }
 
-module.exports = { callLLM, hasApiKey, getApiKey, detectProvider };
+module.exports = { callLLM, hasApiKey, getApiKey, detectProvider, tokenLogger };

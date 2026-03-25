@@ -1,7 +1,7 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-03-23T12:25:41.920Z",
-  "count": 17,
+  "updatedAt": "2026-03-24T12:00:00.000Z",
+  "count": 14,
   "skills": [
     {
       "name": "brownfield-chat",
@@ -43,32 +43,6 @@
       "path": "skills/brownfield-fix"
     },
     {
-      "name": "brownfield-gaps",
-      "version": "1.0.0",
-      "description": "Use when a file has low graph coverage, contains unannotated dynamic patterns, or when the dev asks to improve codebase mapping on a specific file.",
-      "tags": [],
-      "requires": [],
-      "conflicts": [],
-      "author": "wednesday-solutions",
-      "license": "MIT",
-      "wordCount": 290,
-      "downloads": 0,
-      "path": "skills/brownfield-gaps"
-    },
-    {
-      "name": "brownfield-query",
-      "version": "1.0.0",
-      "description": "Use when asked what a module does, what breaks if a file changes, what a dependency conflict means, or what the architecture of this codebase is.",
-      "tags": [],
-      "requires": [],
-      "conflicts": [],
-      "author": "wednesday-solutions",
-      "license": "MIT",
-      "wordCount": 240,
-      "downloads": 0,
-      "path": "skills/brownfield-query"
-    },
-    {
       "name": "deploy-checklist",
       "version": "1.0.0",
       "description": "Pre-deploy and post-deploy checklist skill. Ensures env vars, migrations, CI, rollback plan, smoke tests, and monitoring are verified before and after every deployment.",
@@ -95,28 +69,6 @@
       "path": "skills/git-os"
     },
     {
-      "name": "git-os-lite",
-      "version": "1.0.0",
-      "description": "Use before making any commit or creating any branch. Enforces conventional commits and atomic commit rules.",
-      "tags": [
-        "git",
-        "commits",
-        "workflow"
-      ],
-      "requires": [
-        ""
-      ],
-      "conflicts": [
-        "git-os",
-        "git-os-commits"
-      ],
-      "author": "wednesday-solutions",
-      "license": "MIT",
-      "wordCount": 287,
-      "downloads": 0,
-      "path": "skills/git-os-lite"
-    },
-    {
       "name": "greenfield",
       "version": "1.0.0",
       "description": "Parallel persona planning for new projects. Research agent runs first to build domain context, then Architect, PM, and Security agents run in parallel. Synthesis agent combines all perspectives into a detailed GSD-style PLAN.md with Tensions section.",
@@ -135,7 +87,7 @@
       "description": "Use when asked to audit a module, check its health, or assess whether it should be refactored. Runs structural query, risk check, and test generation automatically.",
       "tags": [],
       "requires": [
-        "brownfield-query",
+        "brownfield-chat",
         "brownfield-fix"
       ],
       "conflicts": [],
@@ -151,7 +103,7 @@
       "description": "Use when a dev is new to the project, asks for an overview, or wants to get oriented quickly. Fills graph gaps then runs a guided codebase interview.",
       "tags": [],
       "requires": [
-        "brownfield-gaps",
+        "brownfield-fix",
         "brownfield-chat"
       ],
       "conflicts": [],

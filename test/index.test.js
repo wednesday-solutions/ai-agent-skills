@@ -185,30 +185,6 @@ if (!filter || filter === 'plan') {
   }
 }
 
-// ─── 6. Phase 4 — GIT-OS Lite ─────────────────────────────────────────────────
-
-if (!filter || filter === 'phase4' || filter === 'git-os-lite') {
-  section('phase4 — git-os-lite');
-
-  const skillFile = path.join(ROOT, 'skills', 'git-os-lite', 'SKILL.md');
-  assert('SKILL.md exists', fs.existsSync(skillFile));
-
-  if (fs.existsSync(skillFile)) {
-    const content = fs.readFileSync(skillFile, 'utf8');
-    const wordCount = content.split(/\s+/).filter(Boolean).length;
-    assert('under 500 words', wordCount < 500, `${wordCount} words`);
-    assert('has name field',         content.includes('name:'));
-    assert('has description field',  content.includes('description:'));
-    assert('has When to use',        content.includes('## When to use'));
-    assert('has What to do',         content.includes('## What to do'));
-    assert('has Never',              content.includes('## Never'));
-    assert('has conflicts metadata', content.includes('conflicts:'));
-    assert('conflicts git-os',       content.includes('git-os'));
-    assert('no org references',      !content.includes('wednesday-solutions') || content.includes('author: wednesday-solutions'));
-    assert('no hardcoded model names', !content.match(/claude-\d|haiku|sonnet|gemma|gpt-/i));
-  }
-}
-
 // ─── 7. Phase 4 — Trimmed CLI ─────────────────────────────────────────────────
 
 if (!filter || filter === 'phase4' || filter === 'cli') {
@@ -392,7 +368,6 @@ if (!filter || filter === 'phase4' || filter === 'registry') {
     assert('registry has updatedAt field', !!reg.updatedAt);
     assert('registry has skills array',    Array.isArray(reg.skills));
     assert('registry has 10+ skills',      reg.skills.length >= 10);
-    assert('git-os-lite in registry',      reg.skills.some(s => s.name === 'git-os-lite'));
     assert('pr-review-agent in registry',  reg.skills.some(s => s.name === 'pr-review-agent'));
     assert('all skills have name',         reg.skills.every(s => !!s.name));
     assert('all skills have description',  reg.skills.every(s => !!s.description));
@@ -423,18 +398,18 @@ if (!filter || filter === 'phase4' || filter === 'analytics') {
 
   const { record, stats, loadUsage, saveUsage } = require(path.join(ROOT, 'lib', 'analytics'));
   const TMP_ANALYTICS = path.join(require('os').tmpdir(), 'ws-analytics-' + Date.now());
-  fs.mkdirSync(path.join(TMP_ANALYTICS, '.wednesday', 'skills', 'git-os-lite'), { recursive: true });
+  fs.mkdirSync(path.join(TMP_ANALYTICS, '.wednesday', 'skills', 'git-os'), { recursive: true });
   fs.mkdirSync(path.join(TMP_ANALYTICS, '.wednesday', 'skills', 'brownfield-query'), { recursive: true });
 
   // record()
-  record(TMP_ANALYTICS, 'git-os-lite',     { model: 'free',  cost: 0 });
-  record(TMP_ANALYTICS, 'git-os-lite',     { model: 'free',  cost: 0 });
+  record(TMP_ANALYTICS, 'git-os',          { model: 'free',  cost: 0 });
+  record(TMP_ANALYTICS, 'git-os',          { model: 'free',  cost: 0 });
   record(TMP_ANALYTICS, 'brownfield-query',{ model: 'cheap', cost: 0.001 });
 
   const usage = loadUsage(TMP_ANALYTICS);
   assert('record: usage.json created',       fs.existsSync(path.join(TMP_ANALYTICS, '.wednesday', 'cache', 'usage.json')));
   assert('record: 3 calls logged',           usage.calls.length === 3);
-  assert('record: git-os-lite appears twice',usage.calls.filter(c => c.skill === 'git-os-lite').length === 2);
+  assert('record: git-os appears twice',     usage.calls.filter(c => c.skill === 'git-os').length === 2);
   assert('record: cost stored correctly',    usage.calls[2].cost === 0.001);
   assert('record: model stored correctly',   usage.calls[0].model === 'free');
   assert('record: timestamp stored',         !!usage.calls[0].ts);
@@ -446,7 +421,7 @@ if (!filter || filter === 'phase4' || filter === 'analytics') {
 
   stats(TMP_ANALYTICS, {});
   assert('stats: shows call count',  out.includes('3 calls'));
-  assert('stats: shows top skill',   out.includes('git-os-lite'));
+  assert('stats: shows top skill',   out.includes('git-os'));
   assert('stats: shows cost',        out.includes('$0.00'));
 
   out = '';
@@ -459,7 +434,7 @@ if (!filter || filter === 'phase4' || filter === 'analytics') {
   assert('stats --stale: recently used skill not flagged', !out.includes('brownfield-query — not triggered'));
 
   out = '';
-  stats(TMP_ANALYTICS, { skill: 'git-os-lite' });
+  stats(TMP_ANALYTICS, { skill: 'git-os' });
   assert('stats --skill: shows total calls', out.includes('2'));
   assert('stats --skill: shows last used',   out.includes('Last used'));
 

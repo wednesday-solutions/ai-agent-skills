@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeRead } = require('../core/parser');
+const { safeRead, lineAt } = require('../core/parser');
 
 function parse(filePath, rootDir) {
   const src = safeRead(filePath);
@@ -118,8 +118,41 @@ function parse(filePath, rootDir) {
     exports: [...exports],
     gaps,
     meta,
+    symbols: extractSymbols(src),
     error: false,
   };
+}
+
+/**
+ * Extract top-level (un-indented) function and class definitions with line numbers.
+ */
+function extractSymbols(src) {
+  const symbols = [];
+  let m;
+
+  // Top-level def: no leading whitespace
+  const defRe = /^(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/gm;
+  while ((m = defRe.exec(src)) !== null) {
+    symbols.push({
+      name:      m[1],
+      kind:      'function',
+      lineStart: lineAt(src, m.index),
+      signature: src.slice(m.index, m.index + 80).split('\n')[0].trim(),
+    });
+  }
+
+  // Top-level class
+  const classRe = /^class\s+([A-Za-z_]\w*)/gm;
+  while ((m = classRe.exec(src)) !== null) {
+    symbols.push({
+      name:      m[1],
+      kind:      'class',
+      lineStart: lineAt(src, m.index),
+      signature: src.slice(m.index, m.index + 80).split('\n')[0].trim(),
+    });
+  }
+
+  return symbols;
 }
 
 /**
@@ -154,10 +187,6 @@ function resolvePythonImport(fromFile, rawImport, rootDir) {
 
   // External package
   return rawImport;
-}
-
-function lineAt(src, idx) {
-  return src.slice(0, idx).split('\n').length;
 }
 
 module.exports = { parse };

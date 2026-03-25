@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeRead } = require('../core/parser');
+const { safeRead, lineAt } = require('../core/parser');
 
 /**
  * Load the module path from go.mod in rootDir
@@ -82,8 +82,42 @@ function parse(filePath, rootDir, _aliases, modulePathCache) {
     exports: [...exports],
     gaps,
     meta: { ...meta, modulePath },
+    symbols: extractSymbols(src),
     error: false,
   };
+}
+
+/**
+ * Extract top-level functions, methods, and struct/interface types with line numbers.
+ */
+function extractSymbols(src) {
+  const symbols = [];
+  let m;
+
+  // func declarations: func FuncName(  /  func (receiver) MethodName(
+  // Capture both free functions and methods — use the function/method name (last ident before '(')
+  const fnRe = /^func(?:\s*\([^)]*\))?\s+(\w+)\s*\[?/gm;
+  while ((m = fnRe.exec(src)) !== null) {
+    symbols.push({
+      name:      m[1],
+      kind:      'function',
+      lineStart: lineAt(src, m.index),
+      signature: src.slice(m.index, m.index + 80).split('\n')[0].trim(),
+    });
+  }
+
+  // type declarations: type Foo struct / type Bar interface
+  const typeRe = /^type\s+(\w+)\s+(?:struct|interface)/gm;
+  while ((m = typeRe.exec(src)) !== null) {
+    symbols.push({
+      name:      m[1],
+      kind:      'class',
+      lineStart: lineAt(src, m.index),
+      signature: src.slice(m.index, m.index + 80).split('\n')[0].trim(),
+    });
+  }
+
+  return symbols;
 }
 
 function resolveGoImport(importPath, rootDir, modulePath) {

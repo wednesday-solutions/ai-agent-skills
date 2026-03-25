@@ -196,11 +196,20 @@ function loadAliases(rootDir) {
   return null;
 }
 
+/**
+ * Return the 1-based line number of the character at `idx` in `src`.
+ * Shared by all language adapters for symbol extraction.
+ */
+function lineAt(src, idx) {
+  return src.slice(0, idx).split('\n').length;
+}
+
 module.exports = {
   detectLang,
   safeRead,
   resolveImport,
   resolveAlias,
   loadAliases,
+  lineAt,
   EXT_MAP,
 };

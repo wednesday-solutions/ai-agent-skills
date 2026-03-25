@@ -46,6 +46,7 @@
   },
   "dependencies": {
     "@octokit/rest": "^20.0.2",
+    "better-sqlite3": "^12.8.0",
     "ink": "^4.4.1",
     "react": "^18.2.0"
   },

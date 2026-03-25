@@ -252,9 +252,10 @@ function buildGraph(rootDir, opts = {}) {
   // Entry points: files that are not imported by anyone, AND not barrel files
   for (const node of Object.values(nodes)) {
     if (node.importedBy.length === 0 && !node.isBarrel) {
-      // Heuristic: check filename patterns
+      // Heuristic: check filename patterns and directory
       const basename = path.basename(node.file, path.extname(node.file));
-      if (['index', 'main', 'app', 'server', 'handler', 'bootstrap'].includes(basename.toLowerCase())) {
+      const isBin = node.file.startsWith('bin/') || node.file.startsWith('scripts/');
+      if (isBin || ['index', 'main', 'app', 'server', 'handler', 'bootstrap', 'cli'].includes(basename.toLowerCase())) {
         node.isEntryPoint = true;
       }
     }

@@ -381,7 +381,9 @@ async function summarize(rootDir, opts = {}) {
   fs.writeFileSync(p.summaries, JSON.stringify(summaries, null, 2));
 
   const legacy = buildLegacyReport(graph.nodes);
-  const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel);
+  const store = GraphStore.open(p.dbPath);
+  const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel, 0, 0, {}, store);
+  store.close();
 
   // QA the MASTER.md
   const qaReport = await qaMasterMd(masterPath, summaries, apiKey);
@@ -470,7 +472,11 @@ module.exports = {
     const graph = loadGraph(rootDir);
     const summaries = loadSummaries(rootDir);
     const apiKey = process.env.OPENROUTER_API_KEY || null;
-    return generateOnboarding(answers, graph || { nodes: {} }, summaries, apiKey);
+    const p = paths(rootDir);
+    const store = GraphStore.open(p.dbPath);
+    const result = await generateOnboarding(answers, graph || { nodes: {} }, summaries, apiKey, null, store);
+    store.close();
+    return result;
   },
 
   chat: async (question, rootDir) => {

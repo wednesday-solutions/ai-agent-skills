@@ -138,7 +138,7 @@ function isHighValue(node) {
 /**
  * Generate full MASTER.md — every file documented in detail
  */
-async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null, gapsFilled = 0, elapsed = 0, insights = {}) {
+async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null, gapsFilled = 0, elapsed = 0, insights = {}, store = null) {
   const nodes = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
 
@@ -196,7 +196,7 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   // ── Table of contents ─────────────────────────────────────────────────────
   lines.push('## Table of contents');
   lines.push('');
-  lines.push('1. [New dev quick-start](#new-dev-quick-start)');
+  lines.push('1. [Primary application flows](#primary-application-flows)');
   lines.push('2. [Architecture overview](#architecture-overview)');
   lines.push('3. [Entry points](#entry-points)');
   lines.push('4. [Danger zones](#danger-zones)');
@@ -213,47 +213,29 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push('13. [Output files](#output-files)');
   lines.push('');
 
-  // ── New dev quick-start ────────────────────────────────────────────────────
-  lines.push('## New dev quick-start');
+  // ── Primary application flows ──────────────────────────────────────────────
+  lines.push('## Primary application flows');
   lines.push('');
-  lines.push('> Read these files in order to get up to speed. They cover the most critical paths.');
+  lines.push('> Traced functional paths from entry points to core logic. Read these to understand the execution lifecycle.');
   lines.push('');
 
-  // Entry points first
-  const entryFiles = allNodes.filter(([, n]) => n.isEntryPoint).map(([f]) => f);
-  if (entryFiles.length > 0) {
-    lines.push('**1. Entry points — start here:**');
-    for (const f of entryFiles.slice(0, 5)) {
-      lines.push(`   - \`${f}\``);
-    }
-    lines.push('');
-  }
+  const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
+  const flows = store ? discoverPrimaryFlows(store, 5, 4) : [];
 
-  // Feature modules — directories other parts of the codebase depend on, enriched by comment intel
-  const featureModules = detectFeatureModules(nodes, commentIntel).slice(0, 5);
-  if (featureModules.length > 0) {
-    lines.push('**2. Feature modules (directories other features depend on):**');
-    for (const fm of featureModules) {
-      const debtBadge = fm.techDebt && fm.techDebt !== 'none' ? ` [${fm.techDebt.toUpperCase()} DEBT]` : '';
-      const purpose = fm.purpose ? ` — ${fm.purpose}` : ` — ${fm.fileCount} files, ${fm.externalImporters} external importers`;
-      lines.push(`   - \`${fm.dir}/\`${purpose}${debtBadge}`);
+  if (flows.length > 0) {
+    for (const flow of flows) {
+      lines.push(`### 🏁 ${flow.entry}`);
+      lines.push(`${flow.description}`);
+      lines.push('');
+      const steps = flow.path.split(' -> ');
+      lines.push(`\`\`\`mermaid
+graph LR
+  ${steps.map((step, i) => `step${i}["${path.basename(step)}"]`).join(' --> ')}
+\`\`\``);
+      lines.push('');
     }
-    lines.push('');
-  }
-
-  // Danger zones to avoid without context
-  if (legacyReport?.dangerZones?.length > 0) {
-    lines.push('**3. Danger zones — do NOT touch without reading the section below:**');
-    for (const dz of legacyReport.dangerZones.slice(0, 3)) {
-      lines.push(`   - \`${dz.file}\` — ${dz.reason}`);
-    }
-    lines.push('');
-  }
-
-  // Dead code to ignore
-  const deadCount = allNodes.filter(([, n]) => n.importedBy.length === 0 && !n.isEntryPoint && !n.isBarrel).length;
-  if (deadCount > 0) {
-    lines.push(`**4.** There are **${deadCount}** files with no importers (potential dead code). Run \`wednesday-skills dead\` to list them before modifying.`);
+  } else {
+    lines.push('*No complex functional flows detected. This may be a simple utility or standalone script.*');
     lines.push('');
   }
 

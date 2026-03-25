@@ -185,7 +185,7 @@ Use these skills for all structural questions:
 ## Mapping the codebase
 If asked to "map the codebase", "analyse the codebase", "understand the codebase",
 or "build the knowledge graph" — run via Bash tool:
-  wednesday-skills map
+  wednesday-skills map --full
 
 (Optional but recommended: For better architectural summaries and automatic dynamic gap-filling, configure an OpenRouter API key and a fast/cheap coding model first by running: wednesday-skills config)
 
@@ -550,12 +550,14 @@ async function runMap(targetDir, opts = {}) {
         },
       });
 
-      const { generateMasterMd: rfGenerateMasterMd } = require('../src/brownfield/summarization/master-md');
       const rfCodebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
+      const { GraphStore } = require('../src/brownfield/engine/store');
+      const store = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
       const rfMasterPath = await rfGenerateMasterMd(
         graph, summaries, legacyReport, rfCodebaseDir, null,
-        commentIntel, 0, 0, rfInsights
+        commentIntel, 0, 0, rfInsights, store
       );
+      store.close();
       log('green', `  ✓ MASTER.md regenerated: ${rfMasterPath}`);
       if (commentIntel) log('green', '  ✓ safety-scores.json, dead-code.json updated with comment intel');
     }
@@ -650,10 +652,13 @@ async function runMap(targetDir, opts = {}) {
   if (insights.healthNarrative) log('green', '   ✓ Health narrative generated');
 
   const codebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
+  const { GraphStore } = require('../src/brownfield/engine/store');
+  const store = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
   const masterOutPath = await generateMasterMd(
     graph, summaries, legacyReport, codebaseDir, apiKey,
-    commentIntel, gapsFilled, Date.now() - mapStart, insights
+    commentIntel, gapsFilled, Date.now() - mapStart, insights, store
   );
+  store.close();
   log('green', `   ✓ ${masterOutPath}`);
   console.log('');
 

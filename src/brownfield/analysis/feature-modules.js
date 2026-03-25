@@ -5,16 +5,33 @@
  *   - Contains 2+ files
  *   - Has at least 1 external importer (a file outside the directory that imports into it)
  *
- * Ranked by external importer count — directories that other features depend on
- * are more "core" to the architecture than ones that only depend inward.
+ * Ranked by: isBizFeature first, then external importer count.
+ * isBizFeature is sourced from comment intel (post-enrichment) or inferred from
+ * directory name heuristics (pre-enrichment, zero LLM tokens).
  *
- * This is different from "most-imported files" (utility detection). Feature modules
- * surface the logical units of the codebase — auth/, payments/, users/ — not helpers.
+ * Pre-enrichment tiebreaker: taggedCount — directories with more TODO/FIXME/HACK tags
+ * signal active business logic (devs rarely tag utility files).
  */
 
 'use strict';
 
 const path = require('path');
+
+// Directories that are almost certainly business features regardless of import count
+const BIZ_PATTERNS = /(?:^|[/\\])(auth|payments?|billing|orders?|users?|accounts?|checkout|notifications?|subscriptions?|cart|products?|inventory|dashboard|reports?|analytics|messaging|chat|booking|scheduling|transactions?|invoices?|onboarding|sessions?|roles?|permissions?)(?:[/\\]|$)/i;
+
+// Directories that are almost certainly infrastructure (suppress false biz-feature ranking)
+const INFRA_PATTERNS = /(?:^|[/\\])(utils?|helpers?|lib|config|common|shared|constants?|types?|hooks?|styles?|assets|public|static|vendor|generated|migrations?|seeds?|fixtures?|mocks?|stubs?|i18n|locale|theme)(?:[/\\]|$)/i;
+
+/**
+ * Infer isBizFeature from directory name when comment intel hasn't run yet.
+ * Returns true/false/null — null means "unknown, use importer count only".
+ */
+function inferBizFeature(dir) {
+  if (BIZ_PATTERNS.test(dir)) return true;
+  if (INFRA_PATTERNS.test(dir)) return false;
+  return null;
+}
 
 /**
  * @param {Object} nodes - dep-graph nodes
@@ -60,29 +77,42 @@ function detectFeatureModules(nodes, commentIntel = null) {
   }
 
   return Object.values(dirMap)
-    .filter(d => d.files.length >= 2 && d.externalImporters.size > 0)
+    .filter(d => {
+      if (d.files.length < 2) return false;
+      if (d.externalImporters.size === 0) return false;
+
+      const intel = commentByDir.get(d.dir);
+
+      // Hard-exclude directories that are definitively infra:
+      //   - LLM/enrichment explicitly marked isBizFeature: false
+      //   - Name matches INFRA_PATTERNS AND no enrichment override says otherwise
+      if (intel?.isBizFeature === false) return false;
+      if (intel?.isBizFeature !== true && INFRA_PATTERNS.test(d.dir)) return false;
+
+      return true;
+    })
     .map(d => {
       const intel = commentByDir.get(d.dir) || {};
+      // isBizFeature: prefer LLM-enriched value, fall back to name heuristic
+      const isBizFeature = intel.isBizFeature ?? inferBizFeature(d.dir);
       return {
         dir: d.dir,
         fileCount: d.files.length,
         externalImporters: d.externalImporters.size,
         internalImporters: d.internalImporters.size,
         files: d.files,
-        // Comment intel enrichment
         purpose: intel.purpose || null,
         techDebt: intel.techDebt || null,
-        isBizFeature: intel.isBizFeature ?? null,
+        isBizFeature,
         ideas: intel.ideas || [],
         taggedCount: intel.taggedCount || 0,
         untaggedCount: intel.untaggedCount || 0,
       };
     })
     .sort((a, b) => {
-      // isBizFeature modules rank above infrastructure regardless of importer count
-      const bizA = a.isBizFeature === true ? 1 : 0;
-      const bizB = b.isBizFeature === true ? 1 : 0;
-      if (bizB !== bizA) return bizB - bizA;
+      // 1st: tagged comments — more TODO/FIXME = more active business logic
+      if (b.taggedCount !== a.taggedCount) return b.taggedCount - a.taggedCount;
+      // 2nd: external importer count
       return b.externalImporters - a.externalImporters;
     });
 }

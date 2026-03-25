@@ -189,7 +189,7 @@ function buildContext(fileEntry, nodes, summaries, rootDir) {
 // ── Sonnet API call ───────────────────────────────────────────────────────────
 
 async function callSonnet(prompt) {
-  return callLLM({ model: 'sonnet', messages: [{ role: 'user', content: prompt }], maxTokens: 1200 });
+  return callLLM({ model: 'sonnet', messages: [{ role: 'user', content: prompt }], maxTokens: 1200, operation: 'test-gen' });
 }
 
 // ── Output path resolver ──────────────────────────────────────────────────────

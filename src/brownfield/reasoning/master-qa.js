@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
+const { callLLM } = require('../core/llm-client');
 
 const GENERIC_PHRASES = [
   'utility functions',
@@ -83,7 +83,7 @@ ${sample}
 
 Is this useful for a developer who has never seen this codebase? Answer: yes/no + one sentence reason.`;
 
-    const review = await callHaiku(prompt, apiKey);
+    const review = await callHaiku(prompt);
     if (review && review.toLowerCase().startsWith('no')) {
       report.masterMdIssues.push(`LLM readability check: ${review}`);
       report.score -= 15;
@@ -93,39 +93,8 @@ Is this useful for a developer who has never seen this codebase? Answer: yes/no 
   return report;
 }
 
-async function callHaiku(prompt, apiKey) {
-  return new Promise(resolve => {
-    const body = JSON.stringify({
-      model: 'anthropic/claude-haiku-4-5',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 100,
-      temperature: 0,
-    });
-
-    const options = {
-      hostname: 'openrouter.ai',
-      path: '/api/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Length': Buffer.byteLength(body),
-      },
-    };
-
-    const req = https.request(options, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(data).choices?.[0]?.message?.content?.trim() || null); }
-        catch { resolve(null); }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.setTimeout(20000, () => { req.destroy(); resolve(null); });
-    req.write(body);
-    req.end();
-  });
+async function callHaiku(prompt) {
+  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 100, operation: 'qa' });
 }
 
 module.exports = { qaMasterMd, flagGenericSummaries };

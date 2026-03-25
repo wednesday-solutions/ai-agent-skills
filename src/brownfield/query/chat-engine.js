@@ -19,6 +19,7 @@ const { callLLM, hasApiKey } = require('../core/llm-client');
  */
 function classify(question) {
   const q = question.toLowerCase();
+  if (/what calls|who calls|who uses|callers of|uses \w+\(/.test(q)) return 'symbol-blast';
   if (/who wrote|who knows|last (modified|touched|changed) by|who (last touched|owns|authored)/.test(q)) return 'git-history';
   if (/what does .+ do|what is .+ (for|used for)|explain .+|describe .+|tell me about/.test(q)) return 'summary-lookup';
   if (/what (breaks|will break)|blast radius|dependents of|what depends on|what (imports|uses) .+/.test(q)) return 'blast-radius';
@@ -159,7 +160,31 @@ function handleGitHistory(question, nodes, rootDir) {
 
 // ── Handler: summary lookup ───────────────────────────────────────────────────
 
-function handleSummaryLookup(question, nodes, summaries) {
+function handleSummaryLookup(question, nodes, summaries, store) {
+  // 1. Try to extract a function/class name from the question
+  const symbolMatch = question.match(/what does\s+(\w+)\s+do|explain\s+(\w+)|how does\s+(\w+)/i);
+  const candidateName = symbolMatch && (symbolMatch[1] || symbolMatch[2] || symbolMatch[3]);
+
+  if (candidateName && store) {
+    const matches = store.findSymbol(candidateName);
+    if (matches.length === 1) {
+      // Single unambiguous match
+      const { file, lineStart, signature } = matches[0];
+      const fileSummary = summaries[file] || 'No summary available.';
+      return {
+        answer: `**${candidateName}** (${file}:${lineStart})\n\`${signature}\`\n\n${fileSummary}`,
+        source: 'symbols table + summaries.json',
+      };
+    } else if (matches.length > 1) {
+      // Ambiguous — list matches and fall back to file summary
+      const list = matches.map(m => `  ${m.file}:${m.lineStart}`).join('\n');
+      return {
+        answer: `Found ${matches.length} definitions of \`${candidateName}\`:\n${list}`,
+        source: 'symbols table',
+      };
+    }
+  }
+
   const mention = extractFileMention(question);
   const file = mention ? findNode(mention, nodes) : null;
 
@@ -193,6 +218,29 @@ function handleSummaryLookup(question, nodes, summaries) {
   }
 
   return { answer: lines.join('\n'), source: 'summaries.json + dep-graph.json', file };
+}
+
+async function handleSymbolBlast(question, store) {
+  // Extract symbol name from question
+  const m = question.match(/(?:calls|uses|callers of)\s+(\w+)/i);
+  if (!m) return { answer: 'Could not identify symbol name.', source: 'n/a' };
+
+  const name = m[1];
+  const matches = store.findSymbol(name);
+  if (matches.length === 0) {
+    return { answer: `No symbol named \`${name}\` found in the graph.`, source: 'symbols table' };
+  }
+
+  const { symbolBlastRadius } = require('../analysis/blast-radius');
+  const results = matches.map(sym => {
+    const blast = symbolBlastRadius(sym.qualifiedName, store);
+    return `**${sym.qualifiedName}** (${sym.kind})\n  Direct callers: ${blast.direct.length}\n  Transitive: ${blast.transitive.length}`;
+  });
+
+  return {
+    answer: results.join('\n\n'),
+    source: 'symbols table + CALLS edges (SQLite BFS)',
+  };
 }
 
 // ── Handler: blast radius ─────────────────────────────────────────────────────
@@ -519,6 +567,7 @@ async function callHaiku(question, context) {
   return callLLM({
     model: 'haiku',
     maxTokens: 300,
+    operation: 'chat-synthesis',
     messages: [{
       role: 'user',
       content: `You are a codebase expert. Answer this question using ONLY the graph data below. If the answer isn't in the data, say "Not mapped — run wednesday-skills analyze to capture this information."
@@ -565,17 +614,20 @@ async function handleSynthesis(question, nodes, summaries) {
  * @param {string|null} apiKey - OpenRouter key (only needed for synthesis)
  * @returns {Promise<{answer: string, source: string, type: string}>}
  */
-async function answerQuestion(question, rootDir, graph, summaries) {
+async function answerQuestion(question, rootDir, graph, summaries, store = null) {
   const type = classify(question);
   const nodes = graph.nodes;
   let result;
 
   switch (type) {
+    case 'symbol-blast':
+      result = await handleSymbolBlast(question, store);
+      break;
     case 'git-history':
       result = handleGitHistory(question, nodes, rootDir);
       break;
     case 'summary-lookup':
-      result = handleSummaryLookup(question, nodes, summaries);
+      result = handleSummaryLookup(question, nodes, summaries, store);
       break;
     case 'blast-radius':
       result = handleBlastRadius(question, nodes);

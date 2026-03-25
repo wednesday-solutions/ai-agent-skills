@@ -67,7 +67,7 @@ Task: Group these exports into logical concerns (2-4 groups). Return JSON: {"gro
  * Call Haiku — uses OpenRouter or Anthropic API automatically.
  */
 async function callHaiku(prompt) {
-  const text = await callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 300 });
+  const text = await callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 300, operation: 'gap-fill' });
   if (!text) return null;
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (jsonMatch) {

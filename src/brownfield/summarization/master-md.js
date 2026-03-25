@@ -539,143 +539,7 @@ const ROLE_ONBOARDING = {
 /**
  * Full file section — every detail
  */
-function formatFileSection(file, node, summary, nodes, legacyReport) {
-  const lines = [];
-  const riskBand = riskLabel(node.riskScore);
-  const isDanger = legacyReport?.dangerZones?.some(d => d.file === file);
-  const isGod = legacyReport?.godFiles?.some(g => g.file === file);
-  const role = classifyRole(file, node);
 
-  // File heading with risk indicator
-  const riskIcon = node.riskScore >= 81 ? '🔴' : node.riskScore >= 61 ? '🟠' : node.riskScore >= 31 ? '🟡' : '🟢';
-  lines.push(`#### ${riskIcon} \`${file}\``);
-  lines.push('');
-
-  // Onboarding note — role-based quick primer for new devs
-  lines.push(`> **Onboarding note (${role}):** ${ROLE_ONBOARDING[role]}`);
-  lines.push('');
-
-  // Summary
-  lines.push(summary || `*${node.lang} module*`);
-  lines.push('');
-
-  // Key stats inline
-  const flags = [];
-  if (node.isEntryPoint) flags.push('entry-point');
-  if (node.isBarrel) flags.push('barrel');
-  if (isGod) flags.push('⚠️ god-file');
-  if (isDanger) flags.push('⚠️ danger-zone');
-  if (node.meta?.framework) flags.push(node.meta.framework);
-  if (node.meta?.isProvider) flags.push('di-provider');
-  if (node.meta?.isController) flags.push(`controller:${node.meta.controllerPath || ''}`);
-
-  lines.push(`| Property | Value |`);
-  lines.push(`|----------|-------|`);
-  lines.push(`| Language | ${node.lang} |`);
-  lines.push(`| Risk score | **${node.riskScore}/100** — ${riskBand} |`);
-  lines.push(`| Blast radius | ${node.importedBy.length} direct dependent${node.importedBy.length !== 1 ? 's' : ''} |`);
-  lines.push(`| Exports | ${node.exports.length} |`);
-  lines.push(`| Imports | ${node.imports.length} |`);
-  if (flags.length > 0) lines.push(`| Flags | ${flags.join(', ')} |`);
-  lines.push('');
-
-  // Exports — all of them
-  if (node.exports.length > 0) {
-    lines.push(`**Exports:** \`${node.exports.join('`, `')}\``);
-    lines.push('');
-  }
-
-  // Frontend use — which UI files import this module
-  const frontendConsumers = node.importedBy.filter(f => {
-    const lf = f.toLowerCase();
-    return /\/(component[s]?|page[s]?|screen[s]?|view[s]?|hook[s]?)\//.test(lf)
-      || /component|page|screen|view/i.test(path.basename(lf, path.extname(lf)))
-      || /use[A-Z]/.test(path.basename(lf, path.extname(lf)));
-  });
-  if (frontendConsumers.length > 0) {
-    lines.push(`**Frontend use:** Used by ${frontendConsumers.length} UI file${frontendConsumers.length !== 1 ? 's' : ''}: ${frontendConsumers.map(f => `\`${f}\``).join(', ')}`);
-    lines.push('');
-  } else if (role === 'ui-component' || role === 'react-hook') {
-    lines.push(`**Frontend use:** This IS a frontend module.`);
-    lines.push('');
-  }
-
-  // Imports — split internal vs external
-  const internalImports = node.imports.filter(i => nodes[i]);
-  const externalImports = node.imports.filter(i => !nodes[i] && !i.startsWith('serverless:'));
-  const configImports = node.imports.filter(i => i.startsWith('serverless:'));
-
-  if (internalImports.length > 0) {
-    lines.push(`**Internal imports:** ${internalImports.map(i => `\`${i}\``).join(', ')}`);
-    lines.push('');
-  }
-  if (externalImports.length > 0) {
-    lines.push(`**External packages:** ${externalImports.map(i => `\`${i}\``).join(', ')}`);
-    lines.push('');
-  }
-  if (configImports.length > 0) {
-    lines.push(`**Serverless triggers:** ${configImports.map(i => `\`${i}\``).join(', ')}`);
-    lines.push('');
-  }
-
-  // Imported by
-  if (node.importedBy.length > 0) {
-    lines.push(`**Imported by:** ${node.importedBy.map(i => `\`${i}\``).join(', ')}`);
-    lines.push('');
-  } else if (!node.isEntryPoint && !node.isBarrel) {
-    lines.push(`**Imported by:** *nobody — potential dead code*`);
-    lines.push('');
-  }
-
-  // NestJS DI edges
-  if (node.nestEdges?.length > 0) {
-    const diEdges = node.nestEdges.map(e => `\`${e.to}\` (${e.type})`).join(', ');
-    lines.push(`**DI dependencies:** ${diEdges}`);
-    lines.push('');
-  }
-
-  // Git history
-  if (node.meta?.gitHistory) {
-    const g = node.meta.gitHistory;
-    lines.push(`**Git history:**`);
-    lines.push(`- Created: ${g.firstCommit || 'unknown'} (${Math.round((g.ageInDays || 0) / 365 * 10) / 10}yr old)`);
-    lines.push(`- Last modified: ${g.lastCommit || 'unknown'}`);
-    lines.push(`- Total commits: ${g.totalCommits}`);
-    if (g.bugFixCommits > 0) lines.push(`- Bug fixes: **${g.bugFixCommits}** (${g.bugFixCommits >= 3 ? '⚠️ high' : 'normal'})`);
-    if (g.hackCommits > 0) lines.push(`- Known workarounds: **${g.hackCommits}** ⚠️`);
-    if (g.todoCount > 0) lines.push(`- TODO/FIXME/HACK commits: ${g.todoCount}`);
-    if (g.authors?.length > 0) {
-      lines.push(`- Authors: ${g.authors.slice(0, 3).map(a => `${a.email} (${a.commits})`).join(', ')}`);
-    }
-    lines.push('');
-  }
-
-  // Annotations
-  if (node.meta?.annotations?.length > 0) {
-    lines.push(`**Annotations:** ${node.meta.annotations.map(a => `\`@wednesday-skills:${a.type} ${a.value}\``).join(', ')}`);
-    lines.push('');
-  }
-
-  // Gaps
-  if (node.gaps.length > 0) {
-    lines.push(`**Coverage gaps (${node.gaps.length}):**`);
-    for (const gap of node.gaps) {
-      lines.push(`- \`${gap.type}\` at line ${gap.line}: \`${gap.pattern || gap.event || gap.name || ''}\``);
-    }
-    lines.push('');
-  }
-
-  // Danger zone warning inline
-  if (isDanger) {
-    const dz = legacyReport.dangerZones.find(d => d.file === file);
-    lines.push(`> ⚠️ **Danger zone:** ${dz.reason} — Contact: ${dz.contact}`);
-    lines.push('');
-  }
-
-  lines.push('---');
-  lines.push('');
-  return lines;
-}
 
 function appendCommentIntelSection(lines, intel) {
   const enriched = intel.modules.filter(m => m.purpose || m.techDebt);
@@ -760,8 +624,11 @@ function appendLegacySection(lines, report) {
     lines.push('');
     lines.push('| File | Exports | Concerns |');
     lines.push('|------|---------|----------|');
-    for (const gf of report.godFiles) {
+    for (const gf of report.godFiles.slice(0, 20)) {
       lines.push(`| \`${gf.file}\` | ${gf.exports} | ${gf.concerns} |`);
+    }
+    if (report.godFiles.length > 20) {
+      lines.push(`| ... and ${report.godFiles.length - 20} more | | |`);
     }
     lines.push('');
   } else {
@@ -771,8 +638,11 @@ function appendLegacySection(lines, report) {
   if (report.circularDeps?.length > 0) {
     lines.push('### Circular dependencies');
     lines.push('');
-    for (const c of report.circularDeps) {
+    for (const c of report.circularDeps.slice(0, 20)) {
       lines.push(`- **${c.risk}:** \`${c.files.join('\` → \`')}\``);
+    }
+    if (report.circularDeps.length > 20) {
+      lines.push(`- ... and ${report.circularDeps.length - 20} more`);
     }
     lines.push('');
   } else {
@@ -784,8 +654,11 @@ function appendLegacySection(lines, report) {
     lines.push('');
     lines.push('| File | Bug fixes | Age | Coverage | Priority |');
     lines.push('|------|-----------|-----|----------|----------|');
-    for (const td of report.techDebt) {
+    for (const td of report.techDebt.slice(0, 20)) {
       lines.push(`| \`${td.file}\` | ${td.bugFixes} | ${td.age} | ${td.coverage} | **${td.priority}** |`);
+    }
+    if (report.techDebt.length > 20) {
+      lines.push(`| ... and ${report.techDebt.length - 20} more | | | | |`);
     }
     lines.push('');
   }
@@ -797,8 +670,11 @@ function appendLegacySection(lines, report) {
     lines.push('');
     lines.push('| File | Line | Pattern | Suggested annotation |');
     lines.push('|------|------|---------|----------------------|');
-    for (const p of report.unannotatedDynamic) {
+    for (const p of report.unannotatedDynamic.slice(0, 20)) {
       lines.push(`| \`${p.file}\` | ${p.line} | \`${p.pattern}\` | \`${p.action}\` |`);
+    }
+    if (report.unannotatedDynamic.length > 20) {
+      lines.push(`| ... and ${report.unannotatedDynamic.length - 20} more | | | |`);
     }
     lines.push('');
   }

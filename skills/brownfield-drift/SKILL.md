@@ -1,6 +1,6 @@
 ---
 name: brownfield-drift
-description: Use when the dev asks if the codebase follows the original architecture plan, or before merging any PR that modifies module boundaries, service communication patterns, or ownership of key concerns.
+description: Enforces architecture boundaries defined in PLAN.md. Use when a PR crosses module/service boundaries, when the dev asks "are we following the architecture?", or as a scheduled architecture health check. Not for querying what a module does — use brownfield-chat for that.
 permissions:
   allow:
     - Bash(wednesday-skills drift *)
@@ -10,8 +10,14 @@ permissions:
 ## When to use
 - Dev asks "are we following the architecture?" or "is this a valid change?"
 - PR touches files near module boundaries or service interfaces
-- Weekly architecture review
-- Any time a cross-service import is added
+- Weekly architecture health check
+- Any cross-service import was just added
+
+## When NOT to use
+- "What does module X do?" → use **brownfield-chat**
+- "What breaks if I change X?" → use **brownfield-chat**
+- Graph coverage is low on a file → use **brownfield-fix (it fills gaps before editing)**
+- No PLAN.md exists — drift requires machine-readable boundaries in PLAN.md
 
 ## What to do
 1. Run `wednesday-skills drift` via Bash tool

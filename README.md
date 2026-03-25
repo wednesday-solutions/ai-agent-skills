@@ -67,7 +67,6 @@ Run in your project root. The installer:
 | `brownfield-gaps` skill | Fill dynamic coverage gaps via targeted Haiku subagents |
 | `brownfield-chat` skill | Plain-English questions answered from the graph — zero LLM for most queries |
 | `brownfield-drift` skill | Architecture drift detection against PLAN.md constraints |
-| `git-os-lite` skill | Public conventional commits — lightweight version of git-os for open source projects |
 | Skill registry | Search, add, remove, and publish community skills (`wednesday-skills search/add/remove`) |
 | Usage analytics | Local-only call tracking per skill — cost and stale skill reporting (`wednesday-skills stats`) |
 
@@ -634,7 +633,7 @@ your-project/
 - Phase 1: Install, configure, git hooks, greenfield planner ✓
 - Phase 2: Brownfield intelligence — dep graph, risk scores, summaries, MASTER.md ✓
 - Phase 3: Chat, drift detection, test generation ✓
-- Phase 4: Public registry, skill builder, usage analytics, git-os-lite, agentic composition ✓ *current*
+- Phase 4: Public registry, skill builder, usage analytics, agentic composition ✓ *current*
 
 ## License
 

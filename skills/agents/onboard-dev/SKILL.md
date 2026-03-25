@@ -6,7 +6,7 @@ metadata:
   author: wednesday-solutions
   version: "1.0"
 requires:
-  - brownfield-gaps
+  - brownfield-fix
   - brownfield-chat
 permissions:
   allow:
@@ -26,7 +26,7 @@ permissions:
 
 ## What to do
 
-1. **brownfield-gaps** — Before answering anything, check for high-risk files with low graph coverage:
+1. **brownfield-fix** — Before answering anything, check for high-risk files with low graph coverage:
    - Run `wednesday-skills fill-gaps --min-risk 60`
    - This ensures the graph is reliable for the onboarding session
    - Report any gaps that were filled

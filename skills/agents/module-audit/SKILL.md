@@ -6,7 +6,7 @@ metadata:
   author: wednesday-solutions
   version: "1.0"
 requires:
-  - brownfield-query
+  - brownfield-chat
   - brownfield-fix
 permissions:
   allow:
@@ -26,7 +26,7 @@ permissions:
 ## What to do
 
 1. **In parallel:**
-   - **brownfield-query** — Read `dep-graph.json` and `summaries.json` for the target module. Report: what it does, its imports, what imports it, and any known conflicts.
+   - **brownfield-chat** — Read `dep-graph.json` and `summaries.json` for the target module. Report: what it does, its imports, what imports it, and any known conflicts.
    - **brownfield-fix** — Run `wednesday-skills score <module>` and `wednesday-skills blast <module>`. Report risk band and total dependent count.
 
 2. Present the combined audit report:

@@ -1,17 +1,24 @@
 ---
 name: brownfield-gaps
-description: Use when a file has low graph coverage, contains unannotated dynamic patterns, or when the dev asks to improve codebase mapping on a specific file.
+description: Improves graph coverage for a specific file with dynamic/unannotated patterns (event emitters, dynamic require, global injection). Use when dep-graph shows gaps on a file or when chat/query returns "not mapped". Not for querying — only for improving coverage.
 permissions:
   allow:
     - Bash(wednesday-skills fill-gaps *)
     - Bash(wednesday-skills analyze *)
 ---
 
+> **Deprecated:** Gap filling is now part of `brownfield-fix`. When editing a file with coverage gaps, `brownfield-fix` automatically triggers gap resolution. Use `brownfield-fix` instead.
+
 ## When to use
-- dep-graph.json shows gaps.eventEmitter or gaps.conditional entries
-- Dev says "this file is not mapped well"
+- dep-graph.json shows `gaps.eventEmitter`, `gaps.dynamic`, or `gaps.conditional` on a file
+- brownfield-chat or brownfield-query returns "not mapped" for an important file
 - Coverage below 80% on a high-risk file (risk > 50)
-- Dynamic require, global injection, or event emitter with no annotation
+- Dev says "this file is not mapped well" or "why doesn't the graph show this dependency"
+
+## When NOT to use
+- Asking what a file does → use **brownfield-query** or **brownfield-chat**
+- Architecture violations → use **brownfield-drift**
+- First-time codebase mapping → use **brownfield-map**
 
 ## What to do
 1. Run: wednesday-skills fill-gaps --file <file> --min-risk 50

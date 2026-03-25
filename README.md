@@ -124,7 +124,7 @@ All workflows run entirely inside Claude Code or Gemini CLI. The IDE loads the r
 
 **Scenario: A new developer joins the backend API squad and is confused.**
 1. **You say:** *"Generate an onboarding guide for the backend."*
-2. **AI Action:** Resolves the `onboard` intent, and utilizes the SQLite Recursive CTE framework to trace deeply nested request flows natively from CLI entry points to the Database.
+2. **AI Action:** Resolves the `onboard` intent, and utilizes the SQLite Recursive CTE framework to trace deeply nested request flows natively from CLI entry points to the core domain logic.
 3. **Outcome:** Provides an extremely focused, functional step-by-step Mermaid diagram execution flow and reading guide specifically for the exact layer the developer needs to touch.
 
 ### D. Fixing a Bug in a High-Risk Monolith 

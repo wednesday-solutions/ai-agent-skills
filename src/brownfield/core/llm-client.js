@@ -126,7 +126,11 @@ function callOpenRouter({ model, messages, system, maxTokens, temperature, key }
       }
       const usage = json.usage || {};
       const text = json.choices?.[0]?.message?.content?.trim() || null;
-      
+
+      if (text === null) {
+        throw new Error(`Text was null but no error field! Raw: ${data.slice(0, 200)}`);
+      }
+
       // Fallback to estimation if provider doesn't return usage (common on some OpenRouter models)
       const estimatedInput = Math.ceil(body.length / 4);
       const estimatedOutput = text ? Math.ceil(text.length / 4) : 0;

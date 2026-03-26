@@ -424,27 +424,35 @@ class GraphStore {
    * Uses a recursive CTE to trace paths from entry points (depth up to 4).
    * @returns {Array<{ path: string, depth: number }>}
    */
-  getPrimaryFlows(maxDepth = 4, limit = 5) {
+  getPrimaryFlows(maxDepth = 6, limit = 5) {
     const query = `
       WITH RECURSIVE
-        path_trace(source, target, depth, path) AS (
-          -- Anchor: start from entry points (only 'imports' kind)
-          SELECT source, target, 1, source || ' -> ' || target
+        path_trace(source, target, depth, path, has_call) AS (
+          -- Anchor: start from entry points
+          SELECT source, target, 1, source || ' -> ' || target, (kind = 'calls')
           FROM edges
           JOIN nodes ON edges.source = nodes.file_path
-          WHERE nodes.is_entry = 1 AND edges.kind = 'imports'
+          WHERE nodes.is_entry = 1
+            AND target NOT LIKE '%Extensions%'
+            AND target NOT LIKE '%Constants%'
           
           UNION ALL
           
           -- Recursive step: find next hop
-          SELECT pt.target, e.target, pt.depth + 1, pt.path || ' -> ' || e.target
+          SELECT pt.target, e.target, pt.depth + 1, pt.path || ' -> ' || e.target, 
+                 pt.has_call OR (e.kind = 'calls')
           FROM path_trace pt
           JOIN edges e ON pt.target = e.source
-          WHERE pt.depth < ? AND e.kind = 'imports' AND pt.path NOT LIKE '%' || e.target || '%'
+          WHERE pt.depth < ? 
+            AND pt.path NOT LIKE '%' || e.target || '%'
+            AND e.target NOT LIKE '%Extensions%'
+            AND e.target NOT LIKE '%Constants%'
+            AND e.target NOT LIKE '%Generated%'
         )
-      SELECT path, depth
+      SELECT path, depth, has_call
       FROM path_trace
-      ORDER BY depth DESC
+      WHERE depth > 2
+      ORDER BY has_call DESC, depth DESC
       LIMIT ?;
     `;
     return this._db.prepare(query).all(maxDepth, limit);

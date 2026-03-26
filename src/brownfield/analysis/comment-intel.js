@@ -219,12 +219,23 @@ function collectByModule(nodes, rootDir) {
 /**
  * Build a compact comment digest for a module (fits within token budget).
  */
-function buildModuleDigest(dir, mod) {
+/**
+ * Build a digest for a module — uses comments if present, otherwise structural file info.
+ */
+function buildModuleDigest(dir, mod, nodes = {}) {
   const lines = [`Module: ${dir}/  (${mod.files.length} files)`];
+
+  const fileInfos = mod.files.slice(0, 10).map(f => {
+    const n = nodes[f];
+    if (!n) return `  ${f}`;
+    const sigs = n.meta?.signatures ? `\n    Signatures:\n    ${n.meta.signatures.slice(0, 300)}` : '';
+    return `  ${f} (exports: ${n.exports.slice(0, 5).join(', ') || 'none'})${sigs}`;
+  });
+  lines.push('Files:\n' + fileInfos.join('\n'));
 
   const untaggedSample = mod.untagged.slice(0, 15);
   if (untaggedSample.length > 0) {
-    lines.push('Comments:');
+    lines.push('Dev Comments:');
     untaggedSample.forEach(c => lines.push(`  ${c.file}:${c.line} — ${c.text}`));
   }
 
@@ -254,10 +265,13 @@ MODULES:
  * Enrich modules via direct Haiku calls (API key path).
  * Returns Map<dir, { purpose, techDebt, isBizFeature, ideas }>
  */
-async function enrichModules(moduleMap) {
+async function enrichModules(moduleMap, nodes = {}) {
+  // Include ALL directories that have high risk or are entry points, even without comments
   const dirs = [...moduleMap.keys()].filter(d => {
     const mod = moduleMap.get(d);
-    return mod.tagged.length > 0 || mod.untagged.length > 0;
+    const hasHighRisk = mod.files.some(f => (nodes[f]?.riskScore || 0) > 40);
+    const hasEntry = mod.files.some(f => nodes[f]?.isEntryPoint);
+    return mod.tagged.length > 0 || mod.untagged.length > 0 || hasHighRisk || hasEntry;
   });
 
   const enriched = new Map();
@@ -265,7 +279,7 @@ async function enrichModules(moduleMap) {
   for (let i = 0; i < dirs.length; i += BATCH_SIZE) {
     const batch = dirs.slice(i, i + BATCH_SIZE);
     const digest = batch
-      .map(dir => buildModuleDigest(dir, moduleMap.get(dir)))
+      .map(dir => buildModuleDigest(dir, moduleMap.get(dir), nodes))
       .join('\n\n---\n\n');
 
     // Baseline = tokens the summarizer would spend calling Haiku per file WITHOUT enrichment.
@@ -492,8 +506,8 @@ async function analyseComments(nodes, rootDir, analysisDir, apiKey = null) {
   let enrichedAt = null;
 
   if (apiKey) {
-    // API key path: enrich directly via Haiku
-    const enriched = await enrichModules(moduleMap);
+    // API key path: enrich directly via Haiku (using nodes for structural context)
+    const enriched = await enrichModules(moduleMap, nodes);
     for (const mod of modules) {
       const llm = enriched.get(mod.dir);
       if (llm) {

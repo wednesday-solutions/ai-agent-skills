@@ -91,16 +91,21 @@ function topTaggedComments(file, commentIntel) {
  */
 function buildPrompt(file, node, lastCommitMsg, taggedComments) {
   const role      = classifyRole(file, node);
-  const exportStr = node.exports.slice(0, 6).join(', ') || 'none';
+  const exportStr = node.exports.slice(0, 8).join(', ') || 'none';
   const commentStr = taggedComments.length > 0
     ? `\nDev notes: ${taggedComments.join(' | ')}`
+    : '';
+  
+  const signatureStr = node.meta?.signatures 
+    ? `\nSignatures:\n${node.meta.signatures.slice(0, 1000)}` 
     : '';
 
   return `File: ${file}
 Role: ${role}
-Exports: ${exportStr}
-Last change: ${lastCommitMsg || 'unknown'}${commentStr}
-Write 2 sentences. Start with what it DOES. Name at least one specific function, type, or export. Do not use phrases like "this module contains", "this file handles", or "this module provides".`;
+Exports: ${exportStr}${signatureStr}${commentStr}
+Last change: ${lastCommitMsg || 'unknown'}
+
+Write 2 sentences. Start with what it DOES. Name at least one specific function, type, or export. Do not use generic phrases like "this module contains" or "this file handles".`;
 }
 
 // ── LLM call ─────────────────────────────────────────────────────────────────
@@ -183,11 +188,11 @@ async function summarizeAll(nodes, _rootDir, cacheDir, _apiKey, commentIntel = n
     const dirIsInfra   = !dirIsBiz && (INFRA_DIR_RE.test(dirPath)
       || commentByDir.get(dirPath)?.isBizFeature === false);
 
-    const isHighValue = node.riskScore > 40
+    const isHighValue = node.riskScore > 50
       || node.isEntryPoint
       || node.isBarrel
       || dirIsBiz
-      || (node.importedBy.length > 5 && !isInfraRole && !dirIsInfra);
+      || (node.importedBy.length > 8 && !isInfraRole && !dirIsInfra);
 
     if (!isHighValue) {
       const summary   = generateStructuralSummary(file, node);

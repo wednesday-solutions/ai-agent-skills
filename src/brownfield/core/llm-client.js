@@ -175,7 +175,11 @@ function makeRequest({ hostname, path, headers, body, extractResult, timeoutMs =
       res.on('data', c => { data += c; });
       res.on('end', () => {
         try { resolve(extractResult(data)); }
-        catch { resolve({ text: null, usage: { input: 0, output: 0 } }); }
+        catch (e) {
+          // If not JSON or extract fails, provide snippet for debugging
+          const snippet = typeof data === 'string' ? data.slice(0, 100) : 'binary/unknown';
+          resolve({ text: null, error: `Parse error: ${e.message} | Raw: ${snippet}`, usage: { input: 0, output: 0 } });
+        }
       });
     });
     req.on('error', reject);

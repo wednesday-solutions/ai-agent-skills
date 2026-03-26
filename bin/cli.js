@@ -25,7 +25,9 @@ for (const envFile of ['.env', '.env.local']) {
   if (fs.existsSync(envPath)) {
     for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
       const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+      if (m && !process.env[m[1]]) {
+        process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
+      }
     }
   }
 }
@@ -1203,7 +1205,7 @@ async function runConfig(targetDir) {
     if (!found) envLines.push(`${key}="${val}"`);
   }
 
-  fs.writeFileSync(envPath, envLines.join('\n').replace(/\\n{2,}/g, '\\n') + '\\n');
+  fs.writeFileSync(envPath, envLines.join('\n') + '\n');
 
   console.log('');
   log('green', `  ✓ Configuration saved to .env`);

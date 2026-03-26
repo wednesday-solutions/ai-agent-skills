@@ -246,7 +246,7 @@ async function validateConnection() {
       operation: 'validate-connection',
     });
 
-    if (typeof result === 'object' && result.error) {
+    if (typeof result === 'object' && result !== null && result.error) {
       return { success: false, error: result.error };
     }
 

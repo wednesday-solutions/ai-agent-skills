@@ -246,16 +246,15 @@ async function validateConnection() {
       operation: 'validate-connection',
     });
 
-    if (typeof result === 'object' && result !== null && result.error) {
-      return { success: false, error: result.error };
+    if (result && typeof result === 'object') {
+      if (result.error) return { success: false, error: `API Error: ${result.error}` };
+      if (result.text && result.text.toUpperCase().includes('OK')) return { success: true, provider };
+      return { success: false, error: `Unexpected text from ${provider}: ${result.text}` };
     }
-
-    if (result && typeof result === 'string' && result.toUpperCase().includes('OK')) {
-      return { success: true, provider };
-    }
-    return { success: false, error: `Invalid response from ${provider}: ${result}` };
+    
+    return { success: false, error: `Invalid result structure from ${provider}: ${JSON.stringify(result)}` };
   } catch (e) {
-    return { success: false, error: e.message };
+    return { success: false, error: `Handshake crashed: ${e.message}` };
   }
 }
 

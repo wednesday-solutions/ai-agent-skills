@@ -64,8 +64,8 @@ async function callLLM(opts) {
       model, messages, system, maxTokens, temperature, key
     });
 
-    if (!result) {
-      throw new Error(`Provider (${provider}) returned no response`);
+    if (!result || typeof result !== 'object') {
+      throw new Error(`Provider (${provider}) returned invalid response type: ${typeof result}`);
     }
 
     if (result.error && operation === 'validate-connection') {
@@ -76,15 +76,15 @@ async function callLLM(opts) {
       tokenLogger.record({
         operation,
         model: (provider === 'anthropic' ? ANTHROPIC_MODELS[model] : OPENROUTER_MODELS[model]) || model,
-        inputTokens:  result.usage.input,
-        outputTokens: result.usage.output,
+        inputTokens:  result.usage?.input || 0,
+        outputTokens: result.usage?.output || 0,
         baselineTokens,
       });
     }
 
-    return result.text;
+    return result.text || null;
   } catch (e) {
-    if (operation === 'validate-connection') return { text: null, error: e.message };
+    if (operation === 'validate-connection') return { text: null, error: e.message || 'Unknown error' };
     return null;
   }
 }

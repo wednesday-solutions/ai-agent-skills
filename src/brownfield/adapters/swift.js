@@ -102,15 +102,33 @@ function parse(filePath, rootDir) {
     }
   }
 
-  // ── #if canImport / conditional imports ─────────────────────────────────────
-  for (const m of src.matchAll(/#if\s+canImport\(([A-Za-z_][A-Za-z0-9_.]*)\)/g)) {
-    const mod = m[1];
-    if (!imports.includes(mod)) gaps.push({ type: 'conditional-import', line: 0, name: mod });
+  // ── Signature extraction (for token-efficient summarization) ───────────────
+  const signatures = [];
+  const lines = src
+    .replace(/\/\*[\s\S]*?\*\//g, '') // remove comments
+    .replace(/\/\/[^\n]*/g, '')
+    .split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Keep declarations but strip bodies if they are on the same line
+    if (/^\s*(?:(?:public|open|private|internal|fileprivate)\s+)?(?:static\s+|class\s+|final\s+)?(?:func|var|let|class|struct|enum|protocol|extension|typealias|actor)\b/.test(line)) {
+      signatures.push(trimmed.replace(/\s*\{.*$/, ' { ... }'));
+    }
   }
+  meta.signatures = signatures.slice(0, 50).join('\n'); // cap at 50 sigs
+
+  // ── #if canImport / conditional imports ─────────────────────────────────────
 
   // ── isBarrel heuristic — files named like index.swift or only re-exports ────
-  const isBarrel = path.basename(filePath, '.swift').toLowerCase() === 'index'
+  const basename = path.basename(filePath, '.swift');
+  const isBarrel = basename.toLowerCase() === 'index'
     || (exports.length === 0 && src.includes('@_exported'));
+
+  // ── isEntryPoint detection (iOS specific) ──────────────────────────────────
+  // @main (Swift 5.3+), @UIApplicationMain (Legacy UIKit), main.swift
+  const isExplicitEntry = src.includes('@main') || src.includes('@UIApplicationMain') || basename === 'main';
+  if (isExplicitEntry) meta.isEntryPoint = true;
 
   return {
     lang: 'swift',

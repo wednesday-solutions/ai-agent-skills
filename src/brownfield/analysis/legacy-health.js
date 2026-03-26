@@ -69,11 +69,12 @@ function buildLegacyReport(nodes, testCoverageMap = {}) {
       });
     }
 
-    // Danger zones
-    if (isDangerZone(gitData, riskScore, coverage ?? 0)) {
+    // Danger zones: tighter threshold (must have risk >60 OR high bug count)
+    const reason = dangerReason(gitData, riskScore, coverage);
+    if (reason && isDangerZone(gitData, riskScore, coverage ?? 0)) {
       report.dangerZones.push({
         file,
-        reason: dangerReason(gitData, riskScore, coverage),
+        reason,
         contact: gitData?.authors?.[0]?.email || 'unknown',
       });
     }
@@ -126,10 +127,10 @@ function computeDebtPriority(gitData, riskScore, coverage) {
 
 function dangerReason(gitData, riskScore, coverage) {
   const reasons = [];
-  if (gitData?.bugFixCommits >= 3) reasons.push(`${gitData.bugFixCommits} bug fixes`);
+  if (gitData?.bugFixCommits >= 4) reasons.push(`${gitData.bugFixCommits} bug fixes`);
   if (gitData?.hackCommits >= 1) reasons.push(`${gitData.hackCommits} known workarounds`);
-  if (riskScore >= 70) reasons.push(`risk score ${riskScore}`);
-  if (coverage === 0 && gitData?.ageInDays > 365) reasons.push('old + untested');
+  if (riskScore >= 75) reasons.push(`high risk score [${riskScore}]`);
+  if (coverage === 0 && gitData?.ageInDays > 365 && riskScore > 50) reasons.push('old + untested');
   return reasons.join(', ');
 }
 

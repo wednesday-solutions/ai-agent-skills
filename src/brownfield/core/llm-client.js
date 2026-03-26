@@ -64,6 +64,10 @@ async function callLLM(opts) {
       model, messages, system, maxTokens, temperature, key
     });
 
+    if (!result) {
+      throw new Error(`Provider (${provider}) returned no response`);
+    }
+
     if (result.error && operation === 'validate-connection') {
       return result;
     }

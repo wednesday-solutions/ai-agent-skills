@@ -30,6 +30,7 @@ for (const envFile of ['.env', '.env.local']) {
   }
 }
 const { syncAdapters, ensureToolsConfig } = require('../src/adapters/index.js');
+const { validateConnection, getApiKey } = require('../src/brownfield/core/llm-client');
 const brownfield = require('../src/brownfield/index.js');
 
 // Colors for terminal output
@@ -502,7 +503,21 @@ function getIDEEquivalent(command, args) {
  */
 async function runMap(targetDir, opts = {}) {
   targetDir = path.resolve(targetDir);
-  const apiKey = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || null;
+  const apiKey = getApiKey();
+
+  if (apiKey) {
+    log('blue', `\n  Checking ${apiKey.startsWith('sk-or') ? 'OpenRouter' : 'Anthropic'} connection...`);
+    const validation = await validateConnection();
+    if (validation.success) {
+      log('green', `  ✓ Connection valid (${validation.provider})`);
+    } else {
+      log('red', `  ✗ Connection failed: ${validation.error}`);
+      log('yellow', '    (Mapping will proceed without AI enrichment)\n');
+      process.env.OPENROUTER_API_KEY = '';
+      process.env.ANTHROPIC_API_KEY = '';
+    }
+  }
+
   const mapStart = Date.now();
 
   // --report-only: skip re-parse, just regenerate output MD files from existing graph + comments
@@ -593,7 +608,8 @@ async function runMap(targetDir, opts = {}) {
   log('green', `   ✓ ${Object.keys(summaries).length} module summaries written`);
   log('green', `   ✓ MASTER.md generated`);
   if (qaReport.flagged.length > 0) {
-    log('yellow', `   ⚠ ${qaReport.flagged.length} generic summaries (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for better summaries)`);
+    const hint = apiKey ? '' : ' (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for even better summaries)';
+    log('yellow', `   ⚠ ${qaReport.flagged.length} generic summaries flagged${hint}`);
   }
   console.log('');
 

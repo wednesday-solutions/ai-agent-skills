@@ -212,7 +212,7 @@ async function analyze(rootDir, opts = {}) {
   log(`Parsing ${filesToParse.length} files...`);
 
   // Build graph (only changed files in incremental mode)
-  const apiKey = process.env.OPENROUTER_API_KEY || null;
+  const apiKey = getApiKey();
   const partialGraph = buildGraph(rootDir, {
     files: filesToParse,
     withGitHistory: !opts.silent,

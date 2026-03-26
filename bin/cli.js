@@ -18,18 +18,24 @@ const fs = require('fs');
 const path = require('path');
 const { execSync, spawn } = require('child_process');
 
-// Load .env / .env.local from cwd if present (no dotenv dependency needed).
-// .env.local takes precedence over .env (loaded second, won't overwrite existing vars).
-for (const envFile of ['.env', '.env.local']) {
-  const envPath = path.join(process.cwd(), envFile);
-  if (fs.existsSync(envPath)) {
-    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (m && !process.env[m[1]]) {
-        process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
-      }
+// Load .env / .env.local from cwd, then fallback to the friday-skills install dir.
+// This ensures the OpenRouter API key and model config are always available
+// even when running `wednesday-skills map` from a different project directory.
+function loadEnvFile(envPath) {
+  if (!fs.existsSync(envPath)) return;
+  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (m && !process.env[m[1]]) {
+      process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
     }
   }
+}
+// 1. Load from CWD (highest priority — project-specific config)
+for (const f of ['.env.local', '.env']) loadEnvFile(path.join(process.cwd(), f));
+// 2. Fallback to the wednesday-skills install directory (global config)
+const skillsDir = path.resolve(__dirname, '..');
+if (skillsDir !== process.cwd()) {
+  for (const f of ['.env.local', '.env']) loadEnvFile(path.join(skillsDir, f));
 }
 const { syncAdapters, ensureToolsConfig } = require('../src/adapters/index.js');
 const { validateConnection, getApiKey } = require('../src/brownfield/core/llm-client');

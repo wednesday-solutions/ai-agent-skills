@@ -16,7 +16,7 @@ const tokenLogger = require('./token-logger');
 
 function getOpenRouterModels() {
   return {
-    haiku:  process.env.OPENROUTER_MODEL_HAIKU || 'stepfun/step-3.5-flash:free',
+    haiku:  process.env.OPENROUTER_MODEL_HAIKU || 'google/gemma-3-27b-it:free',
     sonnet: process.env.OPENROUTER_MODEL_SONNET || 'anthropic/claude-sonnet-4-6',
   };
 }
@@ -126,13 +126,12 @@ function callOpenRouter({ model, messages, system, maxTokens, temperature, key }
         throw new Error(json.error.message || JSON.stringify(json.error));
       }
       const usage = json.usage || {};
-      const text = json.choices?.[0]?.message?.content?.trim() || null;
+      // Some models + providers return content in different fields
+      const text = json.choices?.[0]?.message?.content?.trim()
+        || json.choices?.[0]?.text?.trim()
+        || null;
 
-      if (text === null) {
-        throw new Error(`Text was null but no error field! Keys: ${Object.keys(json).join(', ')} | Raw: ${trimmed.slice(0, 200)}`);
-      }
-
-      // Fallback to estimation if provider doesn't return usage (common on some OpenRouter models)
+      // Fallback token estimation
       const estimatedInput = Math.ceil(body.length / 4);
       const estimatedOutput = text ? Math.ceil(text.length / 4) : 0;
 
@@ -268,13 +267,15 @@ async function validateConnection() {
     });
 
     if (result && result.text && result.text.toUpperCase().includes('OK')) {
-      return { success: true, provider };
+      return { success: true, provider, model: getOpenRouterModels().haiku };
     }
     
     if (result && result.error) return { success: false, error: result.error };
-    return { success: false, error: `Handshake failed. Provider returned: ${JSON.stringify(result)}` };
+    // Content was null or not "OK" — report which model was actually used
+    const usedModel = (provider === 'anthropic') ? getAnthropicModels().haiku : getOpenRouterModels().haiku;
+    return { success: false, error: `Model (${usedModel}) returned empty content. Check model availability or API credits.` };
   } catch (e) {
-    return { success: false, error: `Handshake crashed: ${e.message}` };
+    return { success: false, error: `Handshake crashed: ${e.message.replace(/\n/g, ' ').slice(0, 200)}` };
   }
 }
 

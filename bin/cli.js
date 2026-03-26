@@ -515,8 +515,6 @@ async function runMap(targetDir, opts = {}) {
     } else {
       log('red', `  ✗ Connection failed: ${validation.error}`);
       log('yellow', '    (Mapping will proceed without AI enrichment)\n');
-      process.env.OPENROUTER_API_KEY = '';
-      process.env.ANTHROPIC_API_KEY = '';
     }
   }
 

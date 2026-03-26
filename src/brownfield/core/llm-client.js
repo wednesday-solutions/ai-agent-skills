@@ -244,20 +244,30 @@ async function validateConnection() {
   if (!key) return { success: false, error: 'No API key found. Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY.' };
 
   try {
-    const result = await callLLM({
+    const model = (provider === 'anthropic') ? getAnthropicModels().haiku : getOpenRouterModels().haiku;
+    const body = JSON.stringify(provider === 'anthropic' ? {
+      model,
+      messages: [{ role: 'user', content: 'respond with only "OK"' }],
+      max_tokens: 5,
+    } : {
+      model,
+      messages: [{ role: 'user', content: 'respond with only "OK"' }],
+      max_tokens: 5,
+    });
+
+    const result = await (provider === 'anthropic' ? callAnthropic : callOpenRouter)({
       model: 'haiku',
       messages: [{ role: 'user', content: 'respond with only "OK"' }],
       maxTokens: 5,
-      operation: 'validate-connection',
+      key
     });
 
-    if (result && typeof result === 'object') {
-      if (result.error) return { success: false, error: `API Error: ${result.error}` };
-      if (result.text && result.text.toUpperCase().includes('OK')) return { success: true, provider };
-      return { success: false, error: `Unexpected text from ${provider}: ${result.text}` };
+    if (result && result.text && result.text.toUpperCase().includes('OK')) {
+      return { success: true, provider };
     }
     
-    return { success: false, error: `Invalid result structure from ${provider}: ${JSON.stringify(result)}` };
+    if (result && result.error) return { success: false, error: result.error };
+    return { success: false, error: `Handshake failed. Provider returned: ${JSON.stringify(result)}` };
   } catch (e) {
     return { success: false, error: `Handshake crashed: ${e.message}` };
   }

@@ -104,9 +104,19 @@ function callOpenRouter({ model, messages, system, maxTokens, temperature, key }
     body,
     extractResult: (data) => {
       const json = JSON.parse(data);
+      const usage = json.usage || {};
+      const text = json.choices?.[0]?.message?.content?.trim() || null;
+      
+      // Fallback to estimation if provider doesn't return usage (common on some OpenRouter models)
+      const estimatedInput = Math.ceil(JSON.stringify(messages).length / 4);
+      const estimatedOutput = text ? Math.ceil(text.length / 4) : 0;
+
       return {
-        text:  json.choices?.[0]?.message?.content?.trim() || null,
-        usage: { input: json.usage?.prompt_tokens || 0, output: json.usage?.completion_tokens || 0 },
+        text,
+        usage: { 
+          input:  usage.prompt_tokens     || usage.input_tokens  || estimatedInput, 
+          output: usage.completion_tokens || usage.output_tokens || estimatedOutput 
+        },
       };
     },
   });
@@ -189,4 +199,29 @@ function getApiKey() {
   return process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || null;
 }
 
-module.exports = { callLLM, hasApiKey, getApiKey, detectProvider, tokenLogger };
+/**
+ * Test the connection to the LLM provider.
+ * Returns { success: boolean, error?: string }
+ */
+async function validateConnection() {
+  const { key, provider } = detectProvider();
+  if (!key) return { success: false, error: 'No API key found. Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY.' };
+
+  try {
+    const text = await callLLM({
+      model: 'haiku',
+      messages: [{ role: 'user', content: 'respond with only "OK"' }],
+      maxTokens: 5,
+      operation: 'validate-connection',
+    });
+
+    if (text && text.toUpperCase().includes('OK')) {
+      return { success: true, provider };
+    }
+    return { success: false, error: `Invalid response from ${provider}: ${text}` };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+module.exports = { callLLM, hasApiKey, getApiKey, detectProvider, validateConnection, tokenLogger };

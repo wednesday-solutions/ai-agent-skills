@@ -21,6 +21,21 @@ function getOpenRouterModels() {
   };
 }
 
+// Ordered fallback chain — tried left to right on 429 or empty content.
+// User's OPENROUTER_MODEL_HAIKU is always tried first (injected at runtime).
+function getFreeModelChain() {
+  const primary = process.env.OPENROUTER_MODEL_HAIKU || 'google/gemma-3-27b-it:free';
+  const defaults = [
+    'google/gemma-3-27b-it:free',
+    'openai/gpt-oss-20b:free',
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'stepfun/step-3.5-flash:free',
+    'nousresearch/hermes-3-llama-3.1-405b:free',
+  ];
+  // Primary first, then the rest without duplicates
+  return [primary, ...defaults.filter(m => m !== primary)];
+}
+
 function getAnthropicModels() {
   return {
     haiku:  process.env.ANTHROPIC_MODEL_HAIKU || 'claude-haiku-4-5-20251001',
@@ -96,8 +111,9 @@ async function callLLM(opts) {
 
 // ── OpenRouter ────────────────────────────────────────────────────────────────
 
-function callOpenRouter({ model, messages, system, maxTokens, temperature, key }) {
-  const resolvedModel = getOpenRouterModels()[model] || model;
+function callOpenRouter({ model, resolvedModelId, messages, system, maxTokens, temperature, key }) {
+  // resolvedModelId lets caller bypass the alias map (used in fallback chain)
+  const resolvedModel = resolvedModelId || getOpenRouterModels()[model] || model;
 
   const allMessages = system
     ? [{ role: 'system', content: system }, ...messages]
@@ -247,36 +263,62 @@ async function validateConnection() {
   const { key, provider } = detectProvider();
   if (!key) return { success: false, error: 'No API key found. Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY.' };
 
-  try {
-    const model = (provider === 'anthropic') ? getAnthropicModels().haiku : getOpenRouterModels().haiku;
-    const body = JSON.stringify(provider === 'anthropic' ? {
-      model,
-      messages: [{ role: 'user', content: 'respond with only "OK"' }],
-      max_tokens: 5,
-    } : {
-      model,
-      messages: [{ role: 'user', content: 'respond with only "OK"' }],
-      max_tokens: 5,
-    });
-
-    const result = await (provider === 'anthropic' ? callAnthropic : callOpenRouter)({
-      model: 'haiku',
-      messages: [{ role: 'user', content: 'respond with only "OK"' }],
-      maxTokens: 5,
-      key
-    });
-
-    if (result && result.text && result.text.toUpperCase().includes('OK')) {
-      return { success: true, provider, model: getOpenRouterModels().haiku };
+  // Anthropic: single model, no free chain needed
+  if (provider === 'anthropic') {
+    try {
+      const result = await callAnthropic({
+        model: 'haiku',
+        messages: [{ role: 'user', content: 'respond with only "OK"' }],
+        maxTokens: 5,
+        key,
+      });
+      if (result?.text) return { success: true, provider, model: getAnthropicModels().haiku };
+      return { success: false, error: 'Anthropic returned empty content.' };
+    } catch (e) {
+      return { success: false, error: e.message };
     }
-    
-    if (result && result.error) return { success: false, error: result.error };
-    // Content was null or not "OK" — report which model was actually used
-    const usedModel = (provider === 'anthropic') ? getAnthropicModels().haiku : getOpenRouterModels().haiku;
-    return { success: false, error: `Model (${usedModel}) returned empty content. Check model availability or API credits.` };
-  } catch (e) {
-    return { success: false, error: `Handshake crashed: ${e.message.replace(/\n/g, ' ').slice(0, 200)}` };
   }
+
+  // OpenRouter: try each model in the fallback chain
+  const chain = getFreeModelChain();
+  const lastErrors = [];
+
+  for (const modelId of chain) {
+    try {
+      const result = await callOpenRouter({
+        model: 'haiku',
+        resolvedModelId: modelId,
+        messages: [{ role: 'user', content: 'respond with only "OK"' }],
+        maxTokens: 5,
+        key,
+      });
+
+      if (result?.text?.toUpperCase().includes('OK')) {
+        // Update env so subsequent calls in this session use the working model
+        process.env.OPENROUTER_MODEL_HAIKU = modelId;
+        return { success: true, provider, model: modelId };
+      }
+
+      if (result?.error) {
+        const errMsg = result.error;
+        // 429: rate-limited — try next model
+        if (errMsg.includes('429')) { lastErrors.push(`${modelId}: rate-limited`); continue; }
+        // Empty content from this model — try next
+        lastErrors.push(`${modelId}: ${errMsg.slice(0, 80)}`); continue;
+      }
+
+      // Non-"OK" text or null — try next
+      lastErrors.push(`${modelId}: empty response`);
+    } catch (e) {
+      const msg = e.message || '';
+      if (msg.includes('429') || msg.includes('rate')) {
+        lastErrors.push(`${modelId}: rate-limited`); continue;
+      }
+      lastErrors.push(`${modelId}: ${msg.slice(0, 80)}`);
+    }
+  }
+
+  return { success: false, error: `All models exhausted.\n  ${lastErrors.join('\n  ')}` };
 }
 
 module.exports = { callLLM, hasApiKey, getApiKey, detectProvider, validateConnection, tokenLogger };

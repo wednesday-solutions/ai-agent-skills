@@ -517,9 +517,10 @@ async function runMap(targetDir, opts = {}) {
     log('blue', `\n  Checking ${apiKey.startsWith('sk-or') ? 'OpenRouter' : 'Anthropic'} connection...`);
     const validation = await validateConnection();
     if (validation.success) {
-      log('green', `  ✓ Connection valid (${validation.provider})`);
+      const modelInfo = validation.model ? ` → ${validation.model}` : '';
+      log('green', `  ✓ Connection valid (${validation.provider}${modelInfo})`);
     } else {
-      log('red', `  ✗ Connection failed: ${validation.error}`);
+      log('red',    `  ✗ Connection failed: ${validation.error}`);
       log('yellow', '    (Mapping will proceed without AI enrichment)\n');
     }
   }

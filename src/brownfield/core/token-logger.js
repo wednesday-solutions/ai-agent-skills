@@ -30,6 +30,7 @@ const BASELINE = {
   'insights':      3000,   // full graph scan equivalent
   'test-gen':      1200,   // target file + context reads
   'conflict':      1500,   // module pair reads
+  'product-orientation': 4500, // ~15 file signatures x 300 tokens
   'default':        300,
 };
 

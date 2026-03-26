@@ -65,7 +65,7 @@ function inferFeatures(allNodes) {
 }
 
 // ── Tech stack builder ────────────────────────────────────────────────────────
-function buildTechStack(allNodes, pkgJson, stats, frameworks) {
+function buildTechStack(allNodes, pkgJson, stats, frameworks, graphPackages) {
   const stack = { languages: [], frameworks: [], libraries: [], platform: null };
 
   // Languages
@@ -103,15 +103,31 @@ function buildTechStack(allNodes, pkgJson, stats, frameworks) {
       'tailwindcss', 'styled-components', '@emotion',
       'stripe', 'twilio', 'sendgrid', 'firebase', 'supabase',
       'aws-sdk', '@aws-sdk', 'socket.io', 'ws',
+      'lottie', 'kingfisher', 'cloudinary', 'iqkeyboardmanagerswift',
+      'googlesignin', 'facebooksdk', 'cluster', 'mapkit', 'arkit',
+      'coredata', 'linkpresentation', 'firebaseanalytics', 'firebasecrashlytics', 'firebasemessaging',
     ];
     const allDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
+    
+    // Add pods and spm packages to potential libraries
+    if (graphPackages?.ios) {
+      if (graphPackages.ios.cocoapods?.pods) graphPackages.ios.cocoapods.pods.forEach(p => allDeps[p.toLowerCase()] = 'latest');
+      if (graphPackages.ios.cocoapods?.lockPods) graphPackages.ios.cocoapods.lockPods.forEach(p => allDeps[p.toLowerCase()] = 'latest');
+      if (graphPackages.ios.spm?.packages) graphPackages.ios.spm.packages.forEach(p => allDeps[p.name.toLowerCase()] = 'latest');
+    }
+
     for (const lib of KEY_LIBS) {
-      if (Object.keys(allDeps).some(d => d === lib || d.startsWith(`${lib}/`) || d.startsWith(`@${lib}`))) {
-        const display = lib.startsWith('@') ? lib : lib.replace(/^@[^/]+\//, '');
+      if (Object.keys(allDeps).some(d => d.toLowerCase() === lib || d.toLowerCase().startsWith(`${lib}/`) || d.toLowerCase().startsWith(`@${lib}/`))) {
+        const display = lib.startsWith('@') ? lib : lib.charAt(0).toUpperCase() + lib.slice(1);
         if (!stack.libraries.includes(display)) stack.libraries.push(display);
       }
     }
   }
+
+  // Deduplicate and sort
+  stack.languages = [...new Set(stack.languages)].sort();
+  stack.frameworks = [...new Set(stack.frameworks)].sort();
+  stack.libraries = [...new Set(stack.libraries)].sort();
 
   return stack;
 }
@@ -162,11 +178,24 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   const lines = [];
 
   // ── Header ────────────────────────────────────────────────────────────────
+  // ── Header ────────────────────────────────────────────────────────────────
   lines.push(`# Codebase Intelligence — MASTER.md`);
   lines.push(`> Generated: ${new Date().toISOString()}`);
   lines.push(`> Project root: ${graph.rootDir}`);
   lines.push(`> Files: ${graph.stats.totalFiles} | Edges: ${graph.stats.totalEdges} | High-risk: ${graph.stats.highRiskFiles} | Dead: ${deadFiles.length} | Gaps filled: ${gapsFilled}${elapsed ? ` | Time: ${elapsed}ms` : ''}`);
   lines.push('');
+
+  // ── Product orientation (AI-generated from features/signatures) ────────────
+  if (apiKey) {
+    const features = inferFeatures(allNodes);
+    const productOrientation = await callHaikuProductOrientation(features, sampleRepresentativeNodes(nodes, 15));
+    if (productOrientation) {
+      lines.push('## Product orientation');
+      lines.push('');
+      lines.push(`${productOrientation}`);
+      lines.push('');
+    }
+  }
 
   // ── Codebase health (AI narrative) ────────────────────────────────────────
   if (insights.healthNarrative) {
@@ -239,6 +268,30 @@ graph LR
     lines.push('');
   }
 
+  // ── User Journeys ──────────────────────────────────────────────────────────
+  const journeysPath = path.join(graph.rootDir, '.wednesday', 'journeys.json');
+  if (fs.existsSync(journeysPath)) {
+    try {
+      const { journeys } = JSON.parse(fs.readFileSync(journeysPath, 'utf8'));
+      if (journeys && journeys.length > 0) {
+        lines.push('## User journeys');
+        lines.push('');
+        lines.push('> High-level business flows across the application.');
+        lines.push('');
+        for (const j of journeys) {
+          lines.push(`### 📽️ ${j.name}`);
+          lines.push(`${j.description}`);
+          lines.push('');
+          lines.push(`\`\`\`mermaid
+graph LR
+  ${j.steps.map((s, i) => `s${i}["${s}"]`).join(' --> ')}
+\`\`\``);
+          lines.push('');
+        }
+      }
+    } catch { /* ignore invalid journeys.json */ }
+  }
+
   // ── Architecture overview ─────────────────────────────────────────────────
   lines.push('## Architecture overview');
   lines.push('');
@@ -253,14 +306,48 @@ graph LR
     lines.push('');
   }
 
-  const highValue = Object.values(nodes).filter(isHighValue);
-  if (apiKey && highValue.length > 0) {
-    const arch = await callHaikuArchitecture(highValue, graph.stats);
-    lines.push(arch || generateStructuralArchOverview(graph.stats, highValue));
-  } else {
-    lines.push(generateStructuralArchOverview(graph.stats, highValue));
+  const { detectArchitecturePattern } = require('../analysis/architecture');
+  const detectedArch = detectArchitecturePattern(nodes);
+  
+  const representativeNodes = sampleRepresentativeNodes(nodes, 10);
+  if (apiKey && representativeNodes.length > 0) {
+    const arch = await callHaikuArchitecture(representativeNodes, graph.stats);
+    let archText = arch || generateStructuralArchOverview(graph.stats, representativeNodes);
+    lines.push(archText);
   }
   lines.push('');
+
+  // ── Scene Inventory (Clean Swift / VIP specific) ──────────────────────────
+  if (detectedArch === 'Clean Swift (VIP)') {
+    lines.push('### Scene inventory');
+    lines.push('');
+    lines.push('> Mapping of visual scenes to their Clean Swift components.');
+    lines.push('');
+    lines.push('| Scene | ViewController | Interactor | Presenter | Router |');
+    lines.push('|-------|----------------|------------|-----------|--------|');
+
+    const scenes = {};
+    for (const [file] of allNodes) {
+      const match = path.basename(file).match(/^(.+)(ViewController|Interactor|Presenter|Router|Worker)\.swift$/);
+      if (match) {
+        const name = match[1];
+        const type = match[2];
+        scenes[name] = scenes[name] || {};
+        scenes[name][type] = file;
+      }
+    }
+
+    for (const [name, files] of Object.entries(scenes).sort()) {
+      if (Object.keys(files).length >= 3) { // Only show scenes with most components
+        const vc = files.ViewController ? `[\`${path.basename(files.ViewController)}\`](#${files.ViewController.replace(/\//g, '').replace(/\./g, '').toLowerCase()})` : '—';
+        const interactor = files.Interactor ? `\`${path.basename(files.Interactor)}\`` : '—';
+        const presenter = files.Presenter ? `\`${path.basename(files.Presenter)}\`` : '—';
+        const router = files.Router ? `\`${path.basename(files.Router)}\`` : '—';
+        lines.push(`| **${name}** | ${vc} | ${interactor} | ${presenter} | ${router} |`);
+      }
+    }
+    lines.push('');
+  }
 
   // Language breakdown
   lines.push('### Language breakdown');
@@ -387,7 +474,19 @@ graph LR
     const riskIcon     = avgRisk >= 61 ? '🔴' : avgRisk >= 31 ? '🟡' : '🟢';
     const debt         = intel?.techDebt && intel.techDebt !== 'none' ? `**${intel.techDebt.toUpperCase()}**` : '—';
     const type         = intel?.isBizFeature === true ? '`biz`' : intel?.isBizFeature === false ? '`infra`' : '—';
-    const purpose      = intel?.purpose ? intel.purpose.split('.')[0] : '—';
+    
+    // Fallback purpose: structural summary if no semantic purpose
+    let purpose = intel?.purpose ? intel.purpose.split('.')[0] : null;
+    if (!purpose) {
+      const roles = dirNodes.reduce((acc, [, n]) => {
+        const r = n.isEntryPoint ? 'entry' : (n.isBarrel ? 'barrel' : (n.lang === 'swift' ? 'module' : 'util'));
+        acc[r] = (acc[r] || 0) + 1;
+        return acc;
+      }, {});
+      const roleStr = Object.entries(roles).map(([r, c]) => `${c} ${r}${c > 1 ? 's' : ''}`).join(', ');
+      purpose = `Contains ${roleStr}`;
+    }
+
     lines.push(`| \`${dir}\` | ${dirNodes.length} | ${riskIcon} ${avgRisk} | ${debt} | ${type} | ${purpose} |`);
   }
   lines.push('');
@@ -395,7 +494,7 @@ graph LR
   // ── Tech stack ─────────────────────────────────────────────────────────────
   const pkgJson = readPackageJson(graph.rootDir);
   const frameworks = new Set(allNodes.map(([, n]) => n.meta?.framework).filter(Boolean));
-  const stack = buildTechStack(allNodes, pkgJson, graph.stats, frameworks);
+  const stack = buildTechStack(allNodes, pkgJson, graph.stats, frameworks, graph.packages);
 
   lines.push('## Tech stack');
   lines.push('');
@@ -620,6 +719,8 @@ function appendLegacySection(lines, report) {
   if (report.circularDeps?.length > 0) {
     lines.push('### Circular dependencies');
     lines.push('');
+    lines.push('> ℹ️ **Note for Swift developers**: Swift allows "circular" type references (where two classes refer to each other). The graph tracks these as dependency edges. In many cases, these are not runtime issues but rather a side effect of object modeling.');
+    lines.push('');
     for (const c of report.circularDeps.slice(0, 20)) {
       lines.push(`- **${c.risk}:** \`${c.files.join('\` → \`')}\``);
     }
@@ -709,16 +810,92 @@ function generateStructuralArchOverview(stats, highValue) {
   return `${stats.totalFiles} files across ${langs}. ${stats.totalEdges} dependency edges tracked. ${highValue.length} high-value modules (entry points or widely imported). ${stats.highRiskFiles} files with risk score above 60.`;
 }
 
-async function callHaikuArchitecture(highValue, stats) {
-  const topFiles = highValue.slice(0, 8).map(n =>
-    `${n.file}: exports [${n.exports.slice(0, 3).join(',')}] — imported by ${n.importedBy.length} files`
-  ).join('\n');
+function sampleRepresentativeNodes(nodes, maxCount = 10) {
+  const allNodes = Object.values(nodes);
+  const layerPatterns = [
+    { name: 'Interactor', re: /Interactor/ },
+    { name: 'Presenter', re: /Presenter/ },
+    { name: 'Router', re: /Router/ },
+    { name: 'ViewController', re: /ViewController/ },
+    { name: 'Service', re: /Service/ },
+    { name: 'Repository', re: /Repository/ },
+    { name: 'Controller', re: /\.controller\./ },
+    { name: 'Middleware', re: /middleware/i },
+  ];
 
-  const prompt = `Codebase: ${stats.totalFiles} files, languages: ${JSON.stringify(stats.byLang)}
-Top modules:\n${topFiles}
-Write 3 specific sentences describing the architecture. Name actual patterns and frameworks used.`;
+  const samples = [];
+  for (const pattern of layerPatterns) {
+    const layerFiles = allNodes.filter(n => pattern.re.test(n.file) && !n.isBarrel);
+    if (layerFiles.length > 0) {
+      // Pick the most "typical" one (median risk score)
+      layerFiles.sort((a, b) => a.riskScore - b.riskScore);
+      samples.push(layerFiles[Math.floor(layerFiles.length / 2)]);
+    }
+  }
 
-  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 200, operation: 'arch-overview' });
+  // Fill remaining slots with high-risk files
+  if (samples.length < maxCount) {
+    const highRisk = allNodes
+      .filter(n => !samples.includes(n))
+      .sort((a, b) => b.riskScore - a.riskScore)
+      .slice(0, maxCount - samples.length);
+    samples.push(...highRisk);
+  }
+
+  return samples.slice(0, maxCount);
 }
 
-module.exports = { generateMasterMd, isHighValue };
+async function callHaikuArchitecture(sampleNodes, stats) {
+  const fileContexts = sampleNodes.map(n => {
+    const sigs = n.meta?.signatures ? `\nSignatures:\n${n.meta.signatures.slice(0, 500)}` : '';
+    return `File: ${n.file}\nRole: ${classifyRole(n.file, n)}\nExports: ${n.exports.slice(0, 10).join(', ')}${sigs}`;
+  }).join('\n\n---\n\n');
+
+  const prompt = `Project Stats: ${stats.totalFiles} files, ${stats.totalLines} lines.
+Primary Frameworks: ${stats.techStack}
+
+Analyze these representative files and describe the overall software architecture pattern (e.g., Clean Swift/VIP, MVC, MVVM, Hexagonal). 
+Explain how data flows between these components.
+
+REPRESENTATIVE SAMPLES:
+${fileContexts}
+
+Write 3 concise paragraphs. Focus on structural boundaries and data flow.`;
+
+  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 400, operation: 'arch-overview' });
+}
+
+async function callHaikuProductOrientation(features, sampleNodes) {
+  const domainList = Object.keys(features).join(', ');
+  const fileContexts = sampleNodes.map(n => {
+    const sigs = n.meta?.signatures ? `\nSignatures:\n${n.meta.signatures.slice(0, 300)}` : '';
+    return `File: ${n.file}\nExports: ${n.exports.slice(0, 5).join(', ')}${sigs}`;
+  }).join('\n\n---\n\n');
+
+  const prompt = `Based on the feature domains (${domainList}) and these representative code signatures, write a 2-paragraph "Product Orientation" for a new developer. 
+Identify what this app actually DOES (e.g., social app, fintech, marketplace, AR tool). 
+Describe the core user value and the main business entities (e.g. Users, Orders, Assets).
+Keep it professional but descriptive. No code-speak in the first paragraph.
+
+SAMPLES:
+${fileContexts}
+
+Format: 2 paragraphs of plain text.`;
+
+  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 400, operation: 'product-orientation' });
+}
+
+function classifyRole(file, node) {
+  if (node.isEntryPoint) return 'Entry Point';
+  if (node.isBarrel) return 'Barrel / Index';
+  if (file.includes('Service')) return 'Service / API';
+  if (file.includes('Repository')) return 'Data / Persistence';
+  if (file.includes('View')) return 'UI Component';
+  if (file.includes('Model')) return 'Data Model';
+  if (file.includes('Interactor')) return 'Business Logic (VIP)';
+  if (file.includes('Presenter')) return 'Presentation Logic (VIP)';
+  if (file.includes('Router')) return 'Navigation (VIP)';
+  return 'Utility / Logic';
+}
+
+module.exports = { generateMasterMd, isHighValue, callHaikuProductOrientation, callHaikuArchitecture };

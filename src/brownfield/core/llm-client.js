@@ -14,15 +14,19 @@
 const https       = require('https');
 const tokenLogger = require('./token-logger');
 
-const OPENROUTER_MODELS = {
-  haiku:  process.env.OPENROUTER_MODEL_HAIKU || 'stepfun/step-3.5-flash:free',
-  sonnet: process.env.OPENROUTER_MODEL_SONNET || 'anthropic/claude-sonnet-4-6',
-};
+function getOpenRouterModels() {
+  return {
+    haiku:  process.env.OPENROUTER_MODEL_HAIKU || 'stepfun/step-3.5-flash:free',
+    sonnet: process.env.OPENROUTER_MODEL_SONNET || 'anthropic/claude-sonnet-4-6',
+  };
+}
 
-const ANTHROPIC_MODELS = {
-  haiku:  process.env.ANTHROPIC_MODEL_HAIKU || 'claude-haiku-4-5-20251001',
-  sonnet: process.env.ANTHROPIC_MODEL_SONNET || 'claude-sonnet-4-6',
-};
+function getAnthropicModels() {
+  return {
+    haiku:  process.env.ANTHROPIC_MODEL_HAIKU || 'claude-haiku-4-5-20251001',
+    sonnet: process.env.ANTHROPIC_MODEL_SONNET || 'claude-sonnet-4-6',
+  };
+}
 
 /**
  * Detect which API key is available.
@@ -73,9 +77,10 @@ async function callLLM(opts) {
     }
 
     if (result.text) {
+      const modelMap = provider === 'anthropic' ? getAnthropicModels() : getOpenRouterModels();
       tokenLogger.record({
         operation,
-        model: (provider === 'anthropic' ? ANTHROPIC_MODELS[model] : OPENROUTER_MODELS[model]) || model,
+        model: modelMap[model] || model,
         inputTokens:  result.usage?.input || 0,
         outputTokens: result.usage?.output || 0,
         baselineTokens,
@@ -92,7 +97,7 @@ async function callLLM(opts) {
 // ── OpenRouter ────────────────────────────────────────────────────────────────
 
 function callOpenRouter({ model, messages, system, maxTokens, temperature, key }) {
-  const resolvedModel = OPENROUTER_MODELS[model] || model;
+  const resolvedModel = getOpenRouterModels()[model] || model;
 
   const allMessages = system
     ? [{ role: 'system', content: system }, ...messages]
@@ -140,7 +145,7 @@ function callOpenRouter({ model, messages, system, maxTokens, temperature, key }
 // ── Anthropic API ─────────────────────────────────────────────────────────────
 
 function callAnthropic({ model, messages, system, maxTokens, temperature, key }) {
-  const resolvedModel = ANTHROPIC_MODELS[model] || model;
+  const resolvedModel = getAnthropicModels()[model] || model;
 
   const bodyObj = {
     model: resolvedModel,

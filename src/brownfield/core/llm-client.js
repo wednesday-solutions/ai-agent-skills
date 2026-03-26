@@ -59,22 +59,30 @@ async function callLLM(opts) {
     ? { provider: opts.provider || 'openrouter', key: opts.apiKey }
     : detectProvider();
 
-  if (!key) return null;
+  try {
+    const result = await (provider === 'anthropic' ? callAnthropic : callOpenRouter)({
+      model, messages, system, maxTokens, temperature, key
+    });
 
-  const { text, usage } = provider === 'anthropic'
-    ? await callAnthropic({ model, messages, system, maxTokens, temperature, key })
-    : await callOpenRouter({ model, messages, system, maxTokens, temperature, key });
+    if (result.error && operation === 'validate-connection') {
+      return result;
+    }
 
-  // Record to token logger — baselineTokens can be passed by caller for dynamic baselines
-  tokenLogger.record({
-    operation,
-    model: (provider === 'anthropic' ? ANTHROPIC_MODELS[model] : OPENROUTER_MODELS[model]) || model,
-    inputTokens:  usage.input,
-    outputTokens: usage.output,
-    baselineTokens,            // undefined = use BASELINE[operation] default in logger
-  });
+    if (result.text) {
+      tokenLogger.record({
+        operation,
+        model: (provider === 'anthropic' ? ANTHROPIC_MODELS[model] : OPENROUTER_MODELS[model]) || model,
+        inputTokens:  result.usage.input,
+        outputTokens: result.usage.output,
+        baselineTokens,
+      });
+    }
 
-  return text;
+    return result.text;
+  } catch (e) {
+    if (operation === 'validate-connection') return { text: null, error: e.message };
+    return null;
+  }
 }
 
 // ── OpenRouter ────────────────────────────────────────────────────────────────
@@ -104,11 +112,14 @@ function callOpenRouter({ model, messages, system, maxTokens, temperature, key }
     body,
     extractResult: (data) => {
       const json = JSON.parse(data);
+      if (json.error) {
+        throw new Error(json.error.message || JSON.stringify(json.error));
+      }
       const usage = json.usage || {};
       const text = json.choices?.[0]?.message?.content?.trim() || null;
       
       // Fallback to estimation if provider doesn't return usage (common on some OpenRouter models)
-      const estimatedInput = Math.ceil(JSON.stringify(messages).length / 4);
+      const estimatedInput = Math.ceil(body.length / 4);
       const estimatedOutput = text ? Math.ceil(text.length / 4) : 0;
 
       return {
@@ -147,9 +158,21 @@ function callAnthropic({ model, messages, system, maxTokens, temperature, key })
     body,
     extractResult: (data) => {
       const json = JSON.parse(data);
+      if (json.error) {
+        throw new Error(json.error.message || JSON.stringify(json.error));
+      }
+      const text = json.content?.[0]?.text?.trim() || null;
+      const usage = json.usage || {};
+      
+      const estimatedInput = Math.ceil(body.length / 4);
+      const estimatedOutput = text ? Math.ceil(text.length / 4) : 0;
+
       return {
-        text:  json.content?.[0]?.text?.trim() || null,
-        usage: { input: json.usage?.input_tokens || 0, output: json.usage?.output_tokens || 0 },
+        text,
+        usage: { 
+          input:  usage.input_tokens  || estimatedInput, 
+          output: usage.output_tokens || estimatedOutput 
+        },
       };
     },
   });
@@ -212,17 +235,21 @@ async function validateConnection() {
   if (!key) return { success: false, error: 'No API key found. Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY.' };
 
   try {
-    const text = await callLLM({
+    const result = await callLLM({
       model: 'haiku',
       messages: [{ role: 'user', content: 'respond with only "OK"' }],
       maxTokens: 5,
       operation: 'validate-connection',
     });
 
-    if (text && text.toUpperCase().includes('OK')) {
+    if (typeof result === 'object' && result.error) {
+      return { success: false, error: result.error };
+    }
+
+    if (result && typeof result === 'string' && result.toUpperCase().includes('OK')) {
       return { success: true, provider };
     }
-    return { success: false, error: `Invalid response from ${provider}: ${text}` };
+    return { success: false, error: `Invalid response from ${provider}: ${result}` };
   } catch (e) {
     return { success: false, error: e.message };
   }

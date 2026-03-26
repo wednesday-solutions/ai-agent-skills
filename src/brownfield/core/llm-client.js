@@ -120,7 +120,8 @@ function callOpenRouter({ model, messages, system, maxTokens, temperature, key }
     },
     body,
     extractResult: (data) => {
-      const json = JSON.parse(data);
+      const trimmed = data.trim();
+      const json = JSON.parse(trimmed);
       if (json.error) {
         throw new Error(json.error.message || JSON.stringify(json.error));
       }
@@ -128,7 +129,7 @@ function callOpenRouter({ model, messages, system, maxTokens, temperature, key }
       const text = json.choices?.[0]?.message?.content?.trim() || null;
 
       if (text === null) {
-        throw new Error(`Text was null but no error field! Raw: ${data.slice(0, 200)}`);
+        throw new Error(`Text was null but no error field! Keys: ${Object.keys(json).join(', ')} | Raw: ${trimmed.slice(0, 200)}`);
       }
 
       // Fallback to estimation if provider doesn't return usage (common on some OpenRouter models)

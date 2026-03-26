@@ -16,23 +16,22 @@ const tokenLogger = require('./token-logger');
 
 function getOpenRouterModels() {
   return {
-    haiku:  process.env.OPENROUTER_MODEL_HAIKU || 'google/gemma-3-27b-it:free',
-    sonnet: process.env.OPENROUTER_MODEL_SONNET || 'anthropic/claude-sonnet-4-6',
+    haiku:  process.env.OPENROUTER_MODEL_HAIKU || 'google/gemini-2.5-flash-lite',
+    sonnet: process.env.OPENROUTER_MODEL_SONNET || 'google/gemini-2.5-flash',
   };
 }
 
 // Ordered fallback chain — tried left to right on 429 or empty content.
 // User's OPENROUTER_MODEL_HAIKU is always tried first (injected at runtime).
 function getFreeModelChain() {
-  const primary = process.env.OPENROUTER_MODEL_HAIKU || 'google/gemma-3-27b-it:free';
+  const primary = process.env.OPENROUTER_MODEL_HAIKU || 'google/gemini-2.5-flash-lite';
   const defaults = [
-    'google/gemma-3-27b-it:free',
-    'openai/gpt-oss-20b:free',
-    'meta-llama/llama-3.3-70b-instruct:free',
-    'stepfun/step-3.5-flash:free',
-    'nousresearch/hermes-3-llama-3.1-405b:free',
+    'google/gemini-2.5-flash-lite',      // cheap paid, reliable
+    'google/gemma-3-27b-it:free',        // free, 27B
+    'meta-llama/llama-3.3-70b-instruct:free', // free, 70B
+    'nousresearch/hermes-3-llama-3.1-405b:free', // free, 405B
+    'stepfun/step-3.5-flash:free',       // free, last resort
   ];
-  // Primary first, then the rest without duplicates
   return [primary, ...defaults.filter(m => m !== primary)];
 }
 
@@ -282,6 +281,7 @@ async function validateConnection() {
   // OpenRouter: try each model in the fallback chain
   const chain = getFreeModelChain();
   const lastErrors = [];
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   for (const modelId of chain) {
     try {
@@ -294,27 +294,29 @@ async function validateConnection() {
       });
 
       if (result?.text?.toUpperCase().includes('OK')) {
-        // Update env so subsequent calls in this session use the working model
+        // Pin working model for this session
         process.env.OPENROUTER_MODEL_HAIKU = modelId;
         return { success: true, provider, model: modelId };
       }
 
       if (result?.error) {
         const errMsg = result.error;
-        // 429: rate-limited — try next model
-        if (errMsg.includes('429')) { lastErrors.push(`${modelId}: rate-limited`); continue; }
-        // Empty content from this model — try next
-        lastErrors.push(`${modelId}: ${errMsg.slice(0, 80)}`); continue;
+        if (errMsg.includes('429'))                                lastErrors.push(`${modelId}: rate-limited`);
+        else if (errMsg.includes('guardrail') || errMsg.includes('No endpoints')) lastErrors.push(`${modelId}: blocked by account guardrails`);
+        else                                                       lastErrors.push(`${modelId}: ${errMsg.slice(0, 80)}`);
+        await sleep(300);
+        continue;
       }
 
-      // Non-"OK" text or null — try next
+      // Non-"OK" response — try next
       lastErrors.push(`${modelId}: empty response`);
+      await sleep(300);
     } catch (e) {
       const msg = e.message || '';
-      if (msg.includes('429') || msg.includes('rate')) {
-        lastErrors.push(`${modelId}: rate-limited`); continue;
-      }
-      lastErrors.push(`${modelId}: ${msg.slice(0, 80)}`);
+      if (msg.includes('429') || msg.includes('rate'))             lastErrors.push(`${modelId}: rate-limited`);
+      else if (msg.includes('guardrail') || msg.includes('No endpoints')) lastErrors.push(`${modelId}: blocked by account guardrails`);
+      else                                                         lastErrors.push(`${modelId}: ${msg.slice(0, 80)}`);
+      await sleep(300);
     }
   }
 

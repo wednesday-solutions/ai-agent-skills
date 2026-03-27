@@ -4,9 +4,10 @@ description: Unified codebase Q&A — handles all structural, historical, and na
 permissions:
   allow:
     - Read(.wednesday/codebase/MASTER.md)
-    - Read(.wednesday/codebase/summaries.json)
-    - Read(.wednesday/codebase/dep-graph.json)
-    - Read(.wednesday/codebase/analysis/*)
+    - Read(.wednesday/codebase/analysis/daemons.json)
+    - Read(.wednesday/codebase/analysis/adapters.json)
+    - Read(.wednesday/codebase/analysis/dead-code.json)
+    - Bash(sqlite3 .wednesday/graph.db *)
     - Bash(git log *)
     - Bash(git diff *)
 ---
@@ -24,108 +25,151 @@ Any codebase question — single file or multi-module:
 - "Who last touched X?"
 - "What is the architecture of this project?"
 - "What needs to be mocked in tests?"
+- "Show me all services / controllers / hooks"
 
-## Token-efficient decision tree
+## DB-first lookup strategy
 
-**Read the minimum source that answers the question. Stop as soon as you have the answer.**
+**Always query the DB first. Only read JSON/MD files if the DB has no answer.**
+
+The graph DB at `.wednesday/graph.db` has everything in one place:
+- `nodes` — file path, lang, role, band, risk score, summary, exports, is_test, is_entry
+- `edges` — imports and call relationships between files
+- `symbols` — function/class definitions with signatures
+- `daemons` — background processes, event listeners, timers
+- `adapters` — external services (redis, stripe, prisma, etc.)
 
 ```
-Question                           → Read this (in order, stop when answered)
-─────────────────────────────────────────────────────────────────────────────
-Architecture / "what does this     → MASTER.md only
-  project do?"
-
-"What does module X do?"           → summaries.json → find X entry only
-                                   → fallback: MASTER.md section for X
-
-"What does X import?"              → dep-graph.json → nodes["X"] only
-"Who imports X?"                     (never load the full file — read the
-"What are X's exports?"              node entry and its direct edges)
-"Risk score of X?"
-
-"What breaks if I change X?"       → dep-graph.json → BFS from X via
-                                     importedBy, depth ≤ 5, max 10 nodes
-
-"What daemons / background         → analysis/daemons.json (small, purpose-built)
-  processes exist?"
-
-"What external services / adapters → analysis/adapters.json (small, purpose-built)
-  are used?" / "What to mock?"
-
-"Which files are high-risk?"       → analysis/safety-scores.json
-
-"Dead code?"                       → analysis/dead-code.json
-
-"Git history / who wrote X /       → Bash(git log) — only case needing Bash
-  what changed recently?"
+Question type                  → DB query first                      → Fallback
+───────────────────────────────────────────────────────────────────────────────
+Architecture / overview        → (skip DB, read MASTER.md directly)
+"What does X do?"              → SELECT summary,role,band FROM nodes WHERE file_path LIKE '%X%'
+"Who imports X?"               → SELECT source FROM edges WHERE target LIKE '%X%' AND kind='imports'
+"What does X import?"          → SELECT target FROM edges WHERE source LIKE '%X%' AND kind='imports'
+"What breaks if X changes?"    → recursive CTE blast radius query (see below)
+"All services / controllers"   → SELECT file_path,summary FROM nodes WHERE role = 'service'
+"High-risk files"              → SELECT file_path,summary,risk_score FROM nodes WHERE band='critical' OR band='risky' ORDER BY risk_score DESC LIMIT 10
+"Dead code?"                   → Read analysis/dead-code.json (not in DB)
+"Daemons / background jobs"    → SELECT file_path,kind,event FROM daemons
+"What adapters / mocking?"     → SELECT file_path,kind,library FROM adapters
+"Find files about payments"    → SELECT file_path,summary FROM nodes WHERE summary LIKE '%payment%' OR file_path LIKE '%payment%'
+"Git history / who wrote X"    → Bash(git log) — only case needing git
 ```
 
 ---
 
-## How to answer — by question type
+## Exact queries by question type
 
 ### Architecture / overview
-1. `Read .wednesday/codebase/MASTER.md` — overview, flows, tech stack, danger zones
-2. Do NOT read dep-graph.json for overview questions — MASTER.md has it all
+1. `Read .wednesday/codebase/MASTER.md` — health snapshot, flows, module map, tech stack
+2. Do NOT query the DB for overview questions — MASTER.md has it all
 
-### "What does X do?" (module summary)
-1. `Read .wednesday/codebase/summaries.json`
-2. Extract only the entry for the file/module in question
-3. Report: summary + risk score + blast radius count
-4. If not in summaries → search MASTER.md for the module section
+### "What does X do?" (single file)
+```sql
+SELECT file_path, role, band, risk_score, summary, exports
+FROM nodes
+WHERE file_path LIKE '%X%'
+LIMIT 3;
+```
+Report: role + band + summary + exports. If summary is empty, node was not mapped — suggest `wednesday-skills map`.
 
-### "What does X import / who imports X / what are X's exports / risk score?"
-1. `Read .wednesday/codebase/dep-graph.json`
-2. Extract ONLY `nodes["<file>"]` — do not read more than 5 nodes per answer
-3. Report: `imports[]`, `importedBy[]`, `exports[]`, `riskScore`, `isEntryPoint`
+### "What does X import?" / "Who imports X?" / "Exports?"
+```sql
+-- Imports (what X depends on)
+SELECT target FROM edges WHERE source = 'exact/path.js' AND kind = 'imports';
+
+-- Importers (who depends on X)
+SELECT source FROM edges WHERE target = 'exact/path.js' AND kind = 'imports';
+```
+Use exact path when known. Use `LIKE '%X%'` to find path first via nodes query.
 
 ### "What breaks if I change X?" (blast radius)
-1. `Read .wednesday/codebase/dep-graph.json`
-2. Start at `nodes["X"]`, BFS over `importedBy` (depth ≤ 5)
-3. Report: direct dependents, transitive count, cross-language hits
-4. Never load more than 10 nodes into context
+```sql
+WITH RECURSIVE blast(file, depth) AS (
+  SELECT target, 1 FROM edges WHERE source = 'path/to/X.js' AND kind = 'imports'
+  UNION
+  SELECT e.target, b.depth + 1 FROM edges e JOIN blast b ON e.source = b.file
+  WHERE b.depth < 5
+)
+SELECT file, depth FROM blast ORDER BY depth;
+```
+Report: direct count at depth=1, transitive total, max depth reached.
 
-### Daemons / "what background processes / event listeners / queues exist?"
-1. `Read .wednesday/codebase/analysis/daemons.json`
-2. Report `total` and `byKind` breakdown
-3. Kinds: `event-listener`, `event-emitter`, `interval`, `timeout`, `queue-consumer`, `websocket-handler`, `cron-job`, `process-signal`
-4. Show file + event + line for each
+### "All controllers / services / hooks / etc."
+```sql
+SELECT file_path, summary, risk_score, band
+FROM nodes
+WHERE role = 'service'   -- or 'controller', 'React hook', 'middleware', 'router', 'data model'
+  AND is_test = 0
+ORDER BY risk_score DESC;
+```
 
-### Adapters / "what external services?" / "what needs mocking?"
-1. `Read .wednesday/codebase/analysis/adapters.json`
-2. Report `total` and `byKind` grouped by category → library → files
-3. Categories: `database`, `http-client`, `cache`, `storage`, `email`, `payment`, `auth`, `message-queue`, `sms`, `push`, `monitoring`
+### "High-risk / critical files"
+```sql
+SELECT file_path, role, summary, risk_score
+FROM nodes
+WHERE band IN ('critical', 'risky')
+  AND is_test = 0
+ORDER BY risk_score DESC
+LIMIT 10;
+```
 
-### High-risk / untested files
-1. `Read .wednesday/codebase/analysis/safety-scores.json`
-2. Filter by score > threshold, sort descending
-3. Report top 10 with score and file path
+### "Find files related to X topic"
+```sql
+SELECT file_path, role, summary, risk_score
+FROM nodes
+WHERE (summary LIKE '%X%' OR file_path LIKE '%X%')
+  AND is_test = 0
+ORDER BY risk_score DESC
+LIMIT 10;
+```
 
-### Dead code
+### "What daemons / background processes exist?"
+```sql
+SELECT file_path, kind, event, line FROM daemons ORDER BY kind;
+```
+Or for a specific file: `SELECT kind, event, line FROM daemons WHERE file_path LIKE '%X%'`
+
+### "What external services / adapters?" / "What to mock?"
+```sql
+SELECT file_path, kind, library, line FROM adapters ORDER BY kind, library;
+```
+Or by category: `SELECT file_path, library FROM adapters WHERE kind = 'database'`
+
+### "Dead code / unused exports"
 1. `Read .wednesday/codebase/analysis/dead-code.json`
-2. Report deadFiles + unusedExports
+2. Report `deadFiles` count + `unusedExports` top entries
 
-### Git history / "who wrote X / what changed recently?"
-1. `Bash(git log --follow --oneline -20 -- <file>)` for file history
-2. `Bash(git log --since="30 days ago" --oneline)` for recent activity
-3. This is the **only** question type that needs a Bash call
+### "Git history / who wrote X / what changed recently?"
+```bash
+git log --follow --oneline -20 -- <file>
+git log --since="30 days ago" --oneline
+```
+Only case that needs a Bash git call.
 
-### Path traversal / "how does a request get from X to Y?"
-1. `Read .wednesday/codebase/dep-graph.json`
-2. BFS through `imports` edges from source toward target (depth ≤ 6)
-3. Report the shortest path found
+---
+
+## How to run sqlite3 queries
+
+```bash
+sqlite3 .wednesday/graph.db "SELECT file_path, role, summary FROM nodes WHERE band='critical' ORDER BY risk_score DESC LIMIT 10"
+```
+
+Always use `-separator` or default pipe-separated output. For multi-line results use:
+```bash
+sqlite3 -column -header .wednesday/graph.db "SELECT ..."
+```
 
 ---
 
 ## Source citation
 
-Always end with the source used:
-- `MASTER.md` — architecture, tech stack, flows, danger zones
-- `summaries.json` — module purpose
-- `dep-graph.json` — structural relationships
-- `daemons.json` — background processes
-- `adapters.json` — external service boundaries
-- `safety-scores.json` — risk ranking
+Always end with which source answered the question:
+- `graph.db nodes` — file metadata, role, summary, risk
+- `graph.db edges` — import/call relationships
+- `graph.db symbols` — function/class definitions
+- `graph.db daemons` — background processes
+- `graph.db adapters` — external service boundaries
+- `MASTER.md` — architecture overview, flows, module map
 - `dead-code.json` — unused files/exports
 - `git log` — history/authorship
 - `not-mapped` — data missing, tell dev to run `wednesday-skills map`
@@ -134,8 +178,8 @@ Always end with the source used:
 
 ## Never
 - Read raw source files (*.ts, *.js, *.go) to answer structural questions
-- Load the full dep-graph.json for a single-file question — extract only the node
-- Load more than 10 nodes per answer
+- Load summaries.json or dep-graph.json — the DB has this data now
+- Load more than 10 nodes into context per answer
 - Answer from Claude training knowledge about this specific codebase
 - Guess when graph data is missing — say "Not mapped" and suggest `wednesday-skills map`
-- Call any CLI tool via Bash except `git log` / `git diff`
+- Call any CLI tool via Bash except `sqlite3`, `git log`, `git diff`

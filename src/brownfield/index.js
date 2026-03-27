@@ -383,8 +383,15 @@ async function summarize(rootDir, opts = {}) {
   fs.mkdirSync(p.codebaseDir, { recursive: true });
   fs.writeFileSync(p.summaries, JSON.stringify(summaries, null, 2));
 
-  const legacy = buildLegacyReport(graph.nodes);
+  // Write summaries + bands back to DB so queries don't need to load JSON
+  const scoreMap = scoreAll(graph.nodes, {}, commentIntel);
   const store = GraphStore.open(p.dbPath);
+  store.updateSummaries(summaries);
+  store.updateScores(
+    Object.fromEntries(Object.entries(scoreMap).map(([f, s]) => [f, { band: s.band, score: s.score }]))
+  );
+
+  const legacy = buildLegacyReport(graph.nodes);
   const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel, 0, 0, {}, store);
   store.close();
 

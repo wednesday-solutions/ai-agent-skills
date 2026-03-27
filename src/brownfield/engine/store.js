@@ -42,6 +42,13 @@ try {
         run: (args) => {
           if (sql.includes('INSERT INTO nodes')) {
             db._data.nodes[args.file_path] = args;
+          } else if (sql.includes('UPDATE nodes SET summary')) {
+            // args = (summary, file_path) positional
+            const [summary, fp] = Array.isArray(args) ? args : [args, null];
+            if (db._data.nodes[fp]) db._data.nodes[fp].summary = summary;
+          } else if (sql.includes('UPDATE nodes SET band')) {
+            const [band, score, fp] = Array.isArray(args) ? args : [args, 0, null];
+            if (db._data.nodes[fp]) { db._data.nodes[fp].band = band; db._data.nodes[fp].risk_score = score; }
           } else if (sql.includes('INSERT INTO edges')) {
             db._data.edges.push(args);
           } else if (sql.includes('INSERT INTO metadata')) {
@@ -104,6 +111,10 @@ CREATE TABLE IF NOT EXISTS nodes (
   risk_score   INTEGER NOT NULL DEFAULT 0,
   is_entry     INTEGER NOT NULL DEFAULT 0,
   is_barrel    INTEGER NOT NULL DEFAULT 0,
+  is_test      INTEGER NOT NULL DEFAULT 0,
+  role         TEXT    NOT NULL DEFAULT '',
+  band         TEXT    NOT NULL DEFAULT '',
+  summary      TEXT    NOT NULL DEFAULT '',
   exports      TEXT    NOT NULL DEFAULT '[]',
   gaps         TEXT    NOT NULL DEFAULT '[]',
   meta         TEXT    NOT NULL DEFAULT '{}',
@@ -157,6 +168,9 @@ CREATE INDEX IF NOT EXISTS idx_edges_file     ON edges(file_path);
 CREATE INDEX IF NOT EXISTS idx_nodes_lang     ON nodes(lang);
 CREATE INDEX IF NOT EXISTS idx_nodes_risk     ON nodes(risk_score);
 CREATE INDEX IF NOT EXISTS idx_nodes_entry    ON nodes(is_entry);
+CREATE INDEX IF NOT EXISTS idx_nodes_role     ON nodes(role);
+CREATE INDEX IF NOT EXISTS idx_nodes_band     ON nodes(band);
+CREATE INDEX IF NOT EXISTS idx_nodes_test     ON nodes(is_test);
 CREATE INDEX IF NOT EXISTS idx_symbols_file   ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name   ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_daemons_file   ON daemons(file_path);
@@ -184,7 +198,30 @@ class GraphStore {
     this._db.pragma('synchronous = NORMAL'); // safe + faster than FULL
     this._db.pragma('foreign_keys = OFF');   // we manage integrity ourselves
     this._db.exec(SCHEMA);
+    this._migrate();
     this._prepare();
+  }
+
+  // ── Migrations for existing DBs ──────────────────────────────────────────────
+  _migrate() {
+    // ALTER TABLE ADD COLUMN is safe to run repeatedly — errors mean column exists
+    const newCols = [
+      'ALTER TABLE nodes ADD COLUMN is_test  INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN role     TEXT    NOT NULL DEFAULT \'\'',
+      'ALTER TABLE nodes ADD COLUMN band     TEXT    NOT NULL DEFAULT \'\'',
+      'ALTER TABLE nodes ADD COLUMN summary  TEXT    NOT NULL DEFAULT \'\'',
+    ];
+    for (const sql of newCols) {
+      try { this._db.exec(sql); } catch { /* column already exists */ }
+    }
+    // New indexes (CREATE INDEX IF NOT EXISTS is idempotent)
+    try {
+      this._db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_nodes_role ON nodes(role);
+        CREATE INDEX IF NOT EXISTS idx_nodes_band ON nodes(band);
+        CREATE INDEX IF NOT EXISTS idx_nodes_test ON nodes(is_test);
+      `);
+    } catch {}
   }
 
   // ── Prepared statements (hot paths) ─────────────────────────────────────────
@@ -193,16 +230,37 @@ class GraphStore {
     this._stmts = {
       upsertNode: this._db.prepare(`
         INSERT INTO nodes
-          (file_path, lang, risk_score, is_entry, is_barrel, exports, gaps, meta, file_hash, error, updated_at)
+          (file_path, lang, risk_score, is_entry, is_barrel, is_test, role, band, summary, exports, gaps, meta, file_hash, error, updated_at)
         VALUES
-          (@file_path, @lang, @risk_score, @is_entry, @is_barrel, @exports, @gaps, @meta, @file_hash, @error, @updated_at)
+          (@file_path, @lang, @risk_score, @is_entry, @is_barrel, @is_test, @role, @band, @summary, @exports, @gaps, @meta, @file_hash, @error, @updated_at)
         ON CONFLICT(file_path) DO UPDATE SET
           lang=excluded.lang, risk_score=excluded.risk_score,
           is_entry=excluded.is_entry, is_barrel=excluded.is_barrel,
+          is_test=excluded.is_test, role=excluded.role, band=excluded.band,
           exports=excluded.exports, gaps=excluded.gaps,
           meta=excluded.meta, file_hash=excluded.file_hash,
           error=excluded.error, updated_at=excluded.updated_at
       `),
+
+      updateSummary: this._db.prepare(
+        `UPDATE nodes SET summary = ? WHERE file_path = ?`
+      ),
+
+      updateBand: this._db.prepare(
+        `UPDATE nodes SET band = ?, risk_score = ? WHERE file_path = ?`
+      ),
+
+      getByRole: this._db.prepare(
+        `SELECT file_path, summary, risk_score, band FROM nodes WHERE role = ? AND is_test = 0 ORDER BY risk_score DESC`
+      ),
+
+      getByBand: this._db.prepare(
+        `SELECT file_path, role, summary, risk_score FROM nodes WHERE band = ? AND is_test = 0 ORDER BY risk_score DESC`
+      ),
+
+      searchSummary: this._db.prepare(
+        `SELECT file_path, role, summary, risk_score, band FROM nodes WHERE summary LIKE ? AND is_test = 0 ORDER BY risk_score DESC LIMIT 10`
+      ),
 
       insertEdge: this._db.prepare(`
         INSERT INTO edges (source, target, kind, file_path)
@@ -322,12 +380,17 @@ class GraphStore {
    * @param {string} [fileHash]
    */
   upsertNode(node, fileHash) {
+    const isTest = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|\/__tests__\//.test(node.file) ? 1 : 0;
     this._stmts.upsertNode.run({
       file_path:  node.file,
       lang:       node.lang || '',
       risk_score: node.riskScore || 0,
       is_entry:   node.isEntryPoint ? 1 : 0,
       is_barrel:  node.isBarrel ? 1 : 0,
+      is_test:    isTest,
+      role:       node.role || '',
+      band:       node.band || '',
+      summary:    node.summary || '',
       exports:    JSON.stringify(node.exports || []),
       gaps:       JSON.stringify(node.gaps || []),
       meta:       JSON.stringify(node.meta || {}),
@@ -335,6 +398,32 @@ class GraphStore {
       error:      node.error ? 1 : 0,
       updated_at: Date.now(),
     });
+  }
+
+  /**
+   * Bulk-update summary strings after LLM summarization.
+   * @param {Object} summaries  — { filePath: summaryString }
+   */
+  updateSummaries(summaries) {
+    const tx = this._db.transaction((entries) => {
+      for (const [file, summary] of entries) {
+        this._stmts.updateSummary.run(summary || '', file);
+      }
+    });
+    tx(Object.entries(summaries));
+  }
+
+  /**
+   * Bulk-update band + risk_score after safety scoring.
+   * @param {Object} scoreMap  — { filePath: { band, score } }
+   */
+  updateScores(scoreMap) {
+    const tx = this._db.transaction((entries) => {
+      for (const [file, s] of entries) {
+        this._stmts.updateBand.run(s.band || '', s.score || 0, file);
+      }
+    });
+    tx(Object.entries(scoreMap));
   }
 
   /**
@@ -624,6 +713,32 @@ class GraphStore {
     }));
   }
 
+  // ── Query methods — role / band / summary ────────────────────────────────────
+
+  /** Files matching a role (e.g. 'service', 'controller', 'React hook') */
+  getByRole(role) {
+    return this._stmts.getByRole.all(role).map(r => ({
+      file: r.file_path, summary: r.summary, score: r.risk_score, band: r.band,
+    }));
+  }
+
+  /** Files in a risk band: 'critical' | 'risky' | 'moderate' | 'safe' */
+  getByBand(band) {
+    return this._stmts.getByBand.all(band).map(r => ({
+      file: r.file_path, role: r.role, summary: r.summary, score: r.risk_score,
+    }));
+  }
+
+  /**
+   * Full-text search over summaries.
+   * @param {string} term  — plain word or phrase (wrapped with % wildcards)
+   */
+  searchByTopic(term) {
+    return this._stmts.searchSummary.all(`%${term}%`).map(r => ({
+      file: r.file_path, role: r.role, summary: r.summary, score: r.risk_score, band: r.band,
+    }));
+  }
+
   // ── Daemon methods ───────────────────────────────────────────────────────────
 
   /**
@@ -770,6 +885,10 @@ class GraphStore {
       riskScore:    row.risk_score,
       isEntryPoint: row.is_entry === 1,
       isBarrel:     row.is_barrel === 1,
+      isTest:       row.is_test === 1,
+      role:         row.role || '',
+      band:         row.band || '',
+      summary:      row.summary || '',
       exports:      this._parseJson(row.exports, []),
       gaps:         this._parseJson(row.gaps, []),
       meta:         this._parseJson(row.meta, {}),

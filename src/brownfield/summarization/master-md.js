@@ -11,8 +11,9 @@ const path = require('path');
 const { callLLM } = require('../core/llm-client');
 const { detectFeatureModules } = require('../analysis/feature-modules');
 const { scoreAll } = require('../analysis/safety-scorer');
-const { findDeadCode } = require('../analysis/dead-code');
+const { findDeadCode, findCircularDeps } = require('../analysis/dead-code');
 const { blastRadius } = require('../analysis/blast-radius');
+const { extractIosMetadata } = require('../analysis/ios-metadata');
 
 // ── Shared grouping helper ─────────────────────────────────────────────────
 function groupByDir(allNodes) {
@@ -36,7 +37,7 @@ function readPackageJson(rootDir) {
 const DOMAIN_PATTERNS = [
   { domain: 'Authentication',     patterns: /auth|login|logout|signin|signup|register|password|token|otp|biometric/i },
   { domain: 'User / Profile',     patterns: /user|profile|account|avatar|settings|preference/i },
-  { domain: 'Home / Dashboard',   patterns: /home|dashboard|feed|landing|main|root/i },
+  { domain: 'Home / Dashboard',   patterns: /home|dashboard|feed|landing|main|root|sqwid|post|details|list|tabbar|tab|scene|screen|controller|ar|arkit|camera/i },
   { domain: 'Payments / Billing', patterns: /payment|billing|checkout|cart|order|invoice|subscription|stripe|razorpay|purchase/i },
   { domain: 'Notifications',      patterns: /notif|alert|push|apns|fcm|badge/i },
   { domain: 'Onboarding',         patterns: /onboard|walkthrough|splash|intro|tutorial/i },
@@ -47,7 +48,6 @@ const DOMAIN_PATTERNS = [
   { domain: 'Analytics',          patterns: /analytics|tracking|event|segment|mixpanel|amplitude/i },
   { domain: 'API / Networking',   patterns: /api|network|http|request|response|endpoint|graphql/i },
   { domain: 'Storage / Database', patterns: /storage|database|db|cache|persist|realm|coredata|sqlite/i },
-  { domain: 'Admin',              patterns: /admin|cms|backoffice|manage/i },
 ];
 
 function inferFeatures(allNodes) {
@@ -68,11 +68,26 @@ function inferFeatures(allNodes) {
 function buildTechStack(allNodes, pkgJson, stats, frameworks, graphPackages) {
   const stack = { languages: [], frameworks: [], libraries: [], platform: null };
 
-  // Languages
+  const KEY_LIBS = [
+    'react', 'react-native', 'next', 'express', 'fastify', 'koa', 'nestjs',
+    'graphql', 'apollo', 'prisma', 'typeorm', 'sequelize', 'mongoose',
+    'redux', 'zustand', 'mobx', 'recoil', 'jotai',
+    'axios', 'swr', 'react-query', '@tanstack/query',
+    'jest', 'vitest', 'mocha', 'cypress', 'playwright',
+    'tailwindcss', 'styled-components', '@emotion',
+    'stripe', 'twilio', 'sendgrid', 'firebase', 'supabase',
+    'aws-sdk', '@aws-sdk', 'socket.io', 'ws',
+    'lottie', 'kingfisher', 'cloudinary', 'iqkeyboardmanagerswift',
+    'googlesignin', 'facebooksdk', 'cluster', 'mapkit', 'arkit', 'siren', 'alamofire', 'stepfun',
+    'coredata', 'linkpresentation', 'firebaseanalytics', 'firebasecrashlytics', 'firebasemessaging',
+    'corelocation', 'arkit', 'mapkit', 'swiftui', 'uikit', 'appkit', 'combine'
+  ];
+
+  // Languages...
   const langs = Object.entries(stats.byLang || {}).sort((a, b) => b[1] - a[1]);
   for (const [l] of langs) stack.languages.push(l.charAt(0).toUpperCase() + l.slice(1));
 
-  // Platform
+  // Platform...
   if (frameworks.has('SwiftUI') || frameworks.has('UIKit')) {
     stack.platform = 'iOS';
   } else if (stats.byLang?.kotlin) {
@@ -89,42 +104,35 @@ function buildTechStack(allNodes, pkgJson, stats, frameworks, graphPackages) {
     stack.platform = 'Backend (NestJS)';
   }
 
-  // Frameworks from meta
+  // Aggregate frameworks from meta
   for (const f of frameworks) stack.frameworks.push(f);
 
-  // Key libraries from package.json dependencies
-  if (pkgJson) {
-    const KEY_LIBS = [
-      'react', 'react-native', 'next', 'express', 'fastify', 'koa', 'nestjs',
-      'graphql', 'apollo', 'prisma', 'typeorm', 'sequelize', 'mongoose',
-      'redux', 'zustand', 'mobx', 'recoil', 'jotai',
-      'axios', 'swr', 'react-query', '@tanstack/query',
-      'jest', 'vitest', 'mocha', 'cypress', 'playwright',
-      'tailwindcss', 'styled-components', '@emotion',
-      'stripe', 'twilio', 'sendgrid', 'firebase', 'supabase',
-      'aws-sdk', '@aws-sdk', 'socket.io', 'ws',
-      'lottie', 'kingfisher', 'cloudinary', 'iqkeyboardmanagerswift',
-      'googlesignin', 'facebooksdk', 'cluster', 'mapkit', 'arkit',
-      'coredata', 'linkpresentation', 'firebaseanalytics', 'firebasecrashlytics', 'firebasemessaging',
-    ];
-    const allDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
-    
-    // Add pods and spm packages to potential libraries
-    if (graphPackages?.ios) {
-      if (graphPackages.ios.cocoapods?.pods) graphPackages.ios.cocoapods.pods.forEach(p => allDeps[p.toLowerCase()] = 'latest');
-      if (graphPackages.ios.cocoapods?.lockPods) graphPackages.ios.cocoapods.lockPods.forEach(p => allDeps[p.toLowerCase()] = 'latest');
-      if (graphPackages.ios.spm?.packages) graphPackages.ios.spm.packages.forEach(p => allDeps[p.name.toLowerCase()] = 'latest');
-    }
+  // Deep scan imports for key libraries if not in pkgJson
+  const allDeps = pkgJson ? { ...pkgJson.dependencies, ...pkgJson.devDependencies } : {};
+  if (graphPackages?.ios) {
+    if (graphPackages.ios.cocoapods?.pods) graphPackages.ios.cocoapods.pods.forEach(p => allDeps[p.toLowerCase()] = 'latest');
+    if (graphPackages.ios.spm?.packages) graphPackages.ios.spm.packages.forEach(p => allDeps[p.name.toLowerCase()] = 'latest');
+  }
 
-    for (const lib of KEY_LIBS) {
-      if (Object.keys(allDeps).some(d => d.toLowerCase() === lib || d.toLowerCase().startsWith(`${lib}/`) || d.toLowerCase().startsWith(`@${lib}/`))) {
-        const display = lib.startsWith('@') ? lib : lib.charAt(0).toUpperCase() + lib.slice(1);
-        if (!stack.libraries.includes(display)) stack.libraries.push(display);
-      }
+  // Scan every node's imports for key frameworks
+  const importedFrameworks = new Set();
+  for (const [, n] of allNodes) {
+    if (!n.imports) continue;
+    for (const imp of n.imports) {
+      const lower = imp.toLowerCase();
+      // Check if import starts with a key lib name (common in Node and iOS)
+      const found = KEY_LIBS.find(lib => lower === lib || lower.startsWith(`${lib}/`));
+      if (found) importedFrameworks.add(found);
     }
   }
 
-  // Deduplicate and sort
+  for (const lib of KEY_LIBS) {
+    if (allDeps[lib] || importedFrameworks.has(lib)) {
+      const display = lib.charAt(0).toUpperCase() + lib.slice(1);
+      if (!stack.libraries.includes(display)) stack.libraries.push(display);
+    }
+  }
+
   stack.languages = [...new Set(stack.languages)].sort();
   stack.frameworks = [...new Set(stack.frameworks)].sort();
   stack.libraries = [...new Set(stack.libraries)].sort();
@@ -188,7 +196,7 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   // ── Product orientation (AI-generated from features/signatures) ────────────
   if (apiKey) {
     const features = inferFeatures(allNodes);
-    const productOrientation = await callHaikuProductOrientation(features, sampleRepresentativeNodes(nodes, 15));
+    const productOrientation = await callHaikuProductOrientation(features, sampleRepresentativeNodes(nodes, 30));
     if (productOrientation) {
       lines.push('## Product orientation');
       lines.push('');
@@ -206,8 +214,9 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   }
 
   // ── Quick stats ────────────────────────────────────────────────────────────
-  lines.push('## Quick stats');
-  lines.push('');
+  const logicCycles = (legacyReport?.circularDeps || []).filter(c => c.type === 'Logic').length;
+  const structuralCycles = (legacyReport?.circularDeps || []).filter(c => c.type === 'Structural').length;
+
   lines.push('| Metric | Value |');
   lines.push('|--------|-------|');
   lines.push(`| Files mapped | ${allNodes.length} |`);
@@ -215,7 +224,7 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push(`| Summaries | ${Object.keys(summaries).length} |`);
   lines.push(`| High-risk files (>60) | ${graph.stats.highRiskFiles} |`);
   lines.push(`| Dead files | ${deadFiles.length} |`);
-  lines.push(`| Circular dependencies | ${legacyReport?.circularDeps?.length || 0} |`);
+  lines.push(`| Circular dependencies | ${logicCycles} Logic, ${structuralCycles} Structural |`);
   lines.push(`| God files | ${legacyReport?.godFiles?.length || 0} |`);
   lines.push(`| Coverage gaps | ${totalGaps} |`);
   lines.push(`| Gaps filled (subagents) | ${gapsFilled} |`);
@@ -225,21 +234,28 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   // ── Table of contents ─────────────────────────────────────────────────────
   lines.push('## Table of contents');
   lines.push('');
-  lines.push('1. [Primary application flows](#primary-application-flows)');
-  lines.push('2. [Architecture overview](#architecture-overview)');
-  lines.push('3. [Entry points](#entry-points)');
-  lines.push('4. [Danger zones](#danger-zones)');
-  lines.push('5. [High-risk files](#high-risk-files)');
-  lines.push('6. [Dead code candidates](#dead-code-candidates)');
-  lines.push('7. [Coverage gaps](#coverage-gaps)');
-  lines.push('8. [Module map](#module-map)');
-  lines.push('9. [Tech stack](#tech-stack)');
-  lines.push('10. [Feature inventory](#feature-inventory)');
+  let tocItems = [
+    { title: 'Primary application flows', id: 'primary-application-flows' },
+    { title: 'Architecture overview', id: 'architecture-overview' },
+    { title: 'Entry points', id: 'entry-points' },
+    { title: 'Platform & Environment', id: 'platform--environment' },
+    { title: 'Danger zones', id: 'danger-zones' },
+    { title: 'High-risk files', id: 'high-risk-files' },
+    { title: 'Dead code candidates', id: 'dead-code-candidates' },
+    { title: 'Coverage gaps', id: 'coverage-gaps' },
+    { title: 'Module map', id: 'module-map' },
+    { title: 'Tech stack', id: 'tech-stack' },
+    { title: 'Feature inventory', id: 'feature-inventory' },
+  ];
   if (commentIntel?.modules?.some(m => m.purpose || m.techDebt)) {
-    lines.push('11. [Comment intelligence](#comment-intelligence)');
+    tocItems.push({ title: 'Comment intelligence', id: 'comment-intelligence' });
   }
-  lines.push('12. [Legacy health report](#legacy-health-report)');
-  lines.push('13. [Output files](#output-files)');
+  tocItems.push({ title: 'Legacy health report', id: 'legacy-health-report' });
+  tocItems.push({ title: 'Output files', id: 'output-files' });
+
+  tocItems.forEach((item, i) => {
+    lines.push(`${i + 1}. [${item.title}](#${item.id})`);
+  });
   lines.push('');
 
   // ── Primary application flows ──────────────────────────────────────────────
@@ -290,6 +306,50 @@ graph LR
         }
       }
     } catch { /* ignore invalid journeys.json */ }
+  }
+
+  // ── Platform & Environment ────────────────────────────────────────────────
+  const iosMeta = extractIosMetadata(graph.rootDir, nodes);
+  lines.push('## Platform & Environment');
+  lines.push('');
+  lines.push('| Category | Details |');
+  lines.push('|----------|---------|');
+  lines.push(`| **Deployment Target** | iOS ${iosMeta.deploymentTarget || 'N/A'} |`);
+  lines.push(`| **Firebase Features** | ${Object.entries(iosMeta.firebase).filter(([k,v]) => v).map(([k]) => k).join(', ') || 'None detected'} |`);
+  lines.push(`| **Environments** | ${iosMeta.environments.join(', ') || 'Default only'} |`);
+  lines.push(`| **TabBar Structure** | ${iosMeta.tabBar.items.length} items detected (${iosMeta.tabBar.items.join(' → ') || 'Root only'}) |`);
+  lines.push('');
+
+  // ── Vendored Code Analysis (Typo / Duplicate Detection) ────────────────────
+  const thirdPartyNodes = allNodes.filter(([f]) => f.toLowerCase().includes('thirdparty/') || f.toLowerCase().includes('vendor/'));
+  if (thirdPartyNodes.length > 0) {
+    const basenames = thirdPartyNodes.map(([f]) => path.basename(f));
+    const duplicates = [];
+    for (let i = 0; i < basenames.length; i++) {
+      for (let j = i + 1; j < basenames.length; j++) {
+        const a = basenames[i].toLowerCase();
+        const b = basenames[j].toLowerCase();
+        if (a !== b && (a.includes(b) || b.includes(a) || distance(a, b) < 2)) {
+          duplicates.push(`- Potential Duplicate: \`${basenames[i]}\` and \`${basenames[j]}\``);
+        }
+      }
+    }
+    if (duplicates.length > 0) {
+      lines.push('### 📦 Vendored Code Analysis');
+      lines.push('> Detected potential duplicates or typos in third-party libraries:');
+      lines.push('');
+      lines.push(...new Set(duplicates));
+      lines.push('');
+    }
+  }
+
+  function distance(s1, s2) {
+    if (Math.abs(s1.length - s2.length) > 2) return 99;
+    let dist = 0;
+    for (let i = 0; i < Math.min(s1.length, s2.length); i++) {
+        if (s1[i] !== s2[i]) dist++;
+    }
+    return dist + Math.abs(s1.length - s2.length);
   }
 
   // ── Architecture overview ─────────────────────────────────────────────────
@@ -472,14 +532,24 @@ graph LR
     const intel        = commentByDir.get(dir);
     const avgRisk      = Math.round(dirNodes.reduce((s, [, n]) => s + n.riskScore, 0) / dirNodes.length);
     const riskIcon     = avgRisk >= 61 ? '🔴' : avgRisk >= 31 ? '🟡' : '🟢';
-    const debt         = intel?.techDebt && intel.techDebt !== 'none' ? `**${intel.techDebt.toUpperCase()}**` : '—';
-    const type         = intel?.isBizFeature === true ? '`biz`' : intel?.isBizFeature === false ? '`infra`' : '—';
+    let debt         = intel?.techDebt && intel.techDebt !== 'none' ? `**${intel.techDebt.toUpperCase()}**` : '—';
+    let type         = intel?.isBizFeature === true ? '`biz`' : intel?.isBizFeature === false ? '`infra`' : '—';
     
+    // Heuristics for empty columns
+    if (type === '—') {
+      const roles = dirNodes.map(([, n]) => classifyRole(n.file, n));
+      if (roles.some(r => r === 'ios-viewcontroller' || r === 'ui-component' || r === 'react-hook')) {
+        type = '`biz`';
+      } else if (roles.every(r => r === 'utility' || r === 'data-model' || r === 'config')) {
+        type = '`infra`';
+      }
+    }
+
     // Fallback purpose: structural summary if no semantic purpose
     let purpose = intel?.purpose ? intel.purpose.split('.')[0] : null;
     if (!purpose) {
       const roles = dirNodes.reduce((acc, [, n]) => {
-        const r = n.isEntryPoint ? 'entry' : (n.isBarrel ? 'barrel' : (n.lang === 'swift' ? 'module' : 'util'));
+        const r = classifyRole(n.file, n);
         acc[r] = (acc[r] || 0) + 1;
         return acc;
       }, {});
@@ -531,7 +601,7 @@ graph LR
   // ── Legacy health report ──────────────────────────────────────────────────
   lines.push('## Legacy health report');
   lines.push('');
-  appendLegacySection(lines, legacyReport);
+  appendLegacySection(lines, legacyReport, scoreMap);
 
   // ── Annotation coverage ───────────────────────────────────────────────────
   lines.push('## Annotation coverage');
@@ -695,7 +765,7 @@ function appendCommentIntelSection(lines, intel) {
   }
 }
 
-function appendLegacySection(lines, report) {
+function appendLegacySection(lines, report, scoreMap) {
   if (!report) { lines.push('*No legacy analysis available.*\n'); return; }
 
   if (report.godFiles?.length > 0) {
@@ -722,7 +792,8 @@ function appendLegacySection(lines, report) {
     lines.push('> ℹ️ **Note for Swift developers**: Swift allows "circular" type references (where two classes refer to each other). The graph tracks these as dependency edges. In many cases, these are not runtime issues but rather a side effect of object modeling.');
     lines.push('');
     for (const c of report.circularDeps.slice(0, 20)) {
-      lines.push(`- **${c.risk}:** \`${c.files.join('\` → \`')}\``);
+      const typeLabel = c.type === 'Logic' ? '⚠️ **Logic Cycle**' : 'ℹ️ Structural';
+      lines.push(`- **${c.risk}:** ${typeLabel} (\`${c.files.join('\` → \`')}\`)`);
     }
     if (report.circularDeps.length > 20) {
       lines.push(`- ... and ${report.circularDeps.length - 20} more`);
@@ -735,6 +806,11 @@ function appendLegacySection(lines, report) {
   if (report.techDebt?.length > 0) {
     lines.push('### Tech debt (ranked)');
     lines.push('');
+    const hasTests = Object.values(scoreMap).some(s => s.coverage > 0);
+    if (!hasTests) {
+      lines.push('> ⚠️ **No unit tests detected in the project.** All coverage scores below are estimated at 0%.');
+      lines.push('');
+    }
     lines.push('| File | Bug fixes | Age | Coverage | Priority |');
     lines.push('|------|-----------|-----|----------|----------|');
     for (const td of report.techDebt.slice(0, 20)) {
@@ -776,7 +852,10 @@ function appendAnnotationCoverage(lines, allNodes) {
     }
     if (node.meta?.annotations) {
       for (const ann of node.meta.annotations) {
-        if (ann.type === 'connects-to') annotatedDynamic++;
+        if (ann.type === 'connects-to') {
+          if (ann.raw?.includes('event')) annotatedEmitters++;
+          else annotatedDynamic++;
+        }
         if (ann.type === 'global') annotatedGlobals++;
       }
     }
@@ -784,15 +863,18 @@ function appendAnnotationCoverage(lines, allNodes) {
 
   lines.push('| Category | Found | Annotated | Coverage |');
   lines.push('|----------|-------|-----------|---------|');
-  lines.push(`| Dynamic requires | ${dynamicRequires} | ${annotatedDynamic} | ${pct(annotatedDynamic, dynamicRequires)}% |`);
-  lines.push(`| Global injections | ${globals} | ${annotatedGlobals} | ${pct(annotatedGlobals, globals)}% |`);
-  lines.push(`| Event emitters | ${emitters} | 0 | 0% |`);
+  lines.push(`| Dynamic requires | ${dynamicRequires} | ${annotatedDynamic} | ${pct(annotatedDynamic, dynamicRequires)} |`);
+  lines.push(`| Global injections | ${globals} | ${annotatedGlobals} | ${pct(annotatedGlobals, globals)} |`);
+  lines.push(`| Event emitters | ${emitters} | ${annotatedEmitters} | ${pct(annotatedEmitters, emitters)} |`);
   lines.push('');
   lines.push('> Boy scout rule: whoever touches a file adds annotations for that file.');
   lines.push('');
 }
 
-function pct(a, b) { return b === 0 ? 100 : Math.round(a / b * 100); }
+function pct(a, b) {
+  if (b === 0) return 'N/A';
+  return Math.round(a / b * 100) + '%';
+}
 
 function riskLabel(score) {
   if (score >= 81) return 'Critical';
@@ -821,6 +903,8 @@ function sampleRepresentativeNodes(nodes, maxCount = 10) {
     { name: 'Repository', re: /Repository/ },
     { name: 'Controller', re: /\.controller\./ },
     { name: 'Middleware', re: /middleware/i },
+    { name: 'AR', re: /ar|arkit/i },
+    { name: 'Social', re: /sqwid|post|feed/i },
   ];
 
   const samples = [];

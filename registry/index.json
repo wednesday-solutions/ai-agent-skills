@@ -1,8 +1,21 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-03-27T06:05:04.867Z",
-  "count": 17,
+  "updatedAt": "2026-03-27T14:00:00.000Z",
+  "count": 18,
   "skills": [
+    {
+      "name": "brownfield-e2e-gen",
+      "version": "1.0.0",
+      "description": "Agentic E2E test generation. Queries the brownfield graph for code structure, ideates test flows in 3 confidence tiers, auto-tests and fixes failures, and produces a verified report attached to the PR. Triggered by pr-create or directly.",
+      "tags": [],
+      "requires": ["brownfield-chat"],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 0,
+      "downloads": 0,
+      "path": "skills/brownfield-e2e-gen"
+    },
     {
       "name": "brownfield-chat",
       "version": "1.0.0",

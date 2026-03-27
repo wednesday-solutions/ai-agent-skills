@@ -39,13 +39,14 @@ Read `.wednesday/skills/git-os/SKILL.md` before doing anything.
 ```
 1. Validate branch name
 2. Run pre-push checklist
-3. Run coverage/Sonar (only if project has them configured)
-4. Extract ticket ID
-5. Generate PR title from commit history
-6. Detect stacked branch
-7. Build PR body → show to dev → wait for approval
-8. git push + gh pr create
-9. Return PR URL
+3. Ask: Generate E2E tests? → if yes, run brownfield-e2e-gen skill
+4. Run coverage/Sonar (only if project has them configured)
+5. Extract ticket ID
+6. Generate PR title from commit history
+7. Detect stacked branch
+8. Build PR body → show to dev → wait for approval
+9. git push + gh pr create
+10. Return PR URL
 ```
 
 ---
@@ -79,7 +80,25 @@ If a project does not have one of these scripts, skip it and note it was skipped
 
 ---
 
-## Step 3 — Coverage and Sonar (Conditional)
+## Step 3 — E2E Test Generation (Optional)
+
+Ask the user upfront:
+
+> "Do you want to generate E2E tests for this PR? (yes/no)"
+
+**If yes:**
+1. Read and follow `brownfield-e2e-gen` skill (`skills/brownfield-e2e-gen/SKILL.md`)
+2. The skill returns: `{ approved, testFiles, reportPath, summary }`
+3. If `approved: true`:
+   - Stage test files: `git add test/e2e/...`
+   - Store `e2eResult` for use in PR body (Step 8)
+4. If `approved: false` or user said no: continue without tests
+
+**If no:** skip this step entirely.
+
+---
+
+## Step 4 — Coverage and Sonar (Conditional)
 
 **Only run this step if the project opted in during `ws-skills install`.** Check `.wednesday/config.json`:
 
@@ -170,6 +189,25 @@ Build the PR body using the GIT-OS template. Fill what you can from context, lea
 <If stacked>
 > **Stacked PR** — base branch is `<base>`. Merge `<base>` first, then merge this.
 </If stacked>
+
+---
+
+<If e2eResult.approved>
+### E2E Tests
+<e2eResult.summary>
+
+📋 Report: `<e2eResult.reportPath>`
+</If>
+
+<If coverage output exists>
+### Coverage
+<coverage summary output>
+</If>
+
+<If sonar output exists>
+### Sonar Analysis
+<sonar quality gate + key metrics>
+</If>
 
 ---
 

@@ -1265,6 +1265,10 @@ const SKILL_META = {
     label: 'Brownfield Enrich', desc: 'Agent-driven comment enrichment — no API key needed, uses the running agent', recommended: false,
     requires: 'brownfield', bundle: ['brownfield-enrich']
   },
+  'brownfield-e2e-gen': {
+    label: 'E2E Test Generator', desc: 'Agentic E2E test generation — queries graph, ideates flows, auto-tests and fixes, attaches report to PR', recommended: false,
+    requires: 'brownfield', bundle: ['brownfield-e2e-gen']
+  },
 };
 
 // PR scripts that can be auto-triggered on `ws-skills pr`

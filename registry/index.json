@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-03-27T06:05:04.867Z",
+  "updatedAt": "2026-03-27T08:56:40.931Z",
   "count": 17,
   "skills": [
     {
@@ -12,7 +12,7 @@
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 426,
+      "wordCount": 529,
       "downloads": 0,
       "path": "skills/brownfield-chat"
     },
@@ -161,7 +161,7 @@
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 899,
+      "wordCount": 938,
       "downloads": 0,
       "path": "skills/pr-create"
     },

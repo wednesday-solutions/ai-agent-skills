@@ -22,7 +22,11 @@
    /SceneDelegate\.swift$/,
    /Generated\//,
    /\+Extensions/,
-   /Models?\.swift$/,
+   /UserDefaults/,
+   /Config\.swift$/,
+   /Resource\.swift$/,
+   /Mock\.swift$/,
+   /Tests?\.swift$/,
  ];
 
  /**
@@ -32,10 +36,10 @@
   * @param {number} maxDepth - depth of each flow
   * @returns {Array<{ path: string, depth: number, description: string }>}
   */
- function discoverPrimaryFlows(store, maxPaths = 5, maxDepth = 6) {
+ function discoverPrimaryFlows(store, maxPaths = 10, maxDepth = 8) {
    if (!store || typeof store.getPrimaryFlows !== 'function') return [];
 
-   let flows = store.getPrimaryFlows(maxDepth, maxPaths * 3); // Get more to filter down
+   let flows = store.getPrimaryFlows(maxDepth, maxPaths * 2); // Get more to filter down
 
    // Filter out paths that are too noisy (mostly boilerplate/extensions)
    flows = flows.filter(f => {

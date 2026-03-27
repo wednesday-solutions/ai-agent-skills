@@ -10,7 +10,7 @@ This project uses Wednesday Solutions agent skills for consistent code quality a
 <available_skills>
   <skill>
     <name>brownfield-chat</name>
-    <description>Natural-language Q&A across the full codebase. Use for multi-module questions, "what breaks if", git history, cross-cutting queries, and anything spanning more than one file. For a single-file lookup use brownfield-query instead.</description>
+    <description>Unified codebase Q&A — handles ALL codebase questions. Single file lookups, blast radius, daemons, adapters, git history, architecture overview, and anything spanning multiple modules. Use this for any codebase question. Do NOT use brownfield-query — it is merged here.</description>
     <location>.wednesday/skills/brownfield-chat/SKILL.md</location>
   </skill>
   <skill>
@@ -32,11 +32,6 @@ This project uses Wednesday Solutions agent skills for consistent code quality a
     <name>brownfield-gaps</name>
     <description>Improves graph coverage for a specific file with dynamic/unannotated patterns (event emitters, dynamic require, global injection). Use when dep-graph shows gaps on a file or when chat/query returns "not mapped". Not for querying — only for improving coverage.</description>
     <location>.wednesday/skills/brownfield-gaps/SKILL.md</location>
-  </skill>
-  <skill>
-    <name>brownfield-query</name>
-    <description>Deterministic lookups from dep-graph.json. Use for direct structural questions about a specific file or module — what it imports, what imports it, its risk score, its exports. For multi-module or natural-language questions use brownfield-chat instead.</description>
-    <location>.wednesday/skills/brownfield-query/SKILL.md</location>
   </skill>
   <skill>
     <name>deploy-checklist</name>

@@ -5,8 +5,8 @@
   "skills": [
     {
       "name": "brownfield-chat",
-      "version": "1.0.0",
-      "description": "Natural-language Q&A across the full codebase. Use for multi-module questions, \"what breaks if\", git history, cross-cutting queries, and anything spanning more than one file. For a single-file lookup use brownfield-query instead.",
+      "version": "2.0.0",
+      "description": "Unified codebase Q&A — handles all structural, historical, and natural-language questions. Single file lookups, blast radius, daemons, adapters, git history, architecture overview, and anything spanning multiple modules. Use this for any codebase question.",
       "tags": [],
       "requires": [],
       "conflicts": [],
@@ -70,8 +70,8 @@
     },
     {
       "name": "brownfield-query",
-      "version": "1.0.0",
-      "description": "Deterministic lookups from dep-graph.json. Use for direct structural questions about a specific file or module — what it imports, what imports it, its risk score, its exports. For multi-module or natural-language questions use brownfield-chat instead.",
+      "version": "2.0.0",
+      "description": "Merged into brownfield-chat. Use brownfield-chat for all codebase questions.",
       "tags": [],
       "requires": [],
       "conflicts": [],

@@ -31,8 +31,8 @@ try {
   console.warn('[wednesday-skills] Native better-sqlite3 failed (missing bindings or version mismatch). Falling back to in-memory store.');
   // Mock Database for in-memory operations if native load fails
   Database = class MockDatabase {
-    constructor() { 
-      this._data = { nodes: {}, edges: [], symbols: [], metadata: {} }; 
+    constructor() {
+      this._data = { nodes: {}, edges: [], symbols: [], metadata: {}, daemons: [], adapters: [] };
     }
     pragma() {}
     exec(schema) {}
@@ -40,13 +40,24 @@ try {
       const db = this;
       return {
         run: (args) => {
-          // crude simulation of inserts/upserts for common patterns
           if (sql.includes('INSERT INTO nodes')) {
             db._data.nodes[args.file_path] = args;
           } else if (sql.includes('INSERT INTO edges')) {
             db._data.edges.push(args);
           } else if (sql.includes('INSERT INTO metadata')) {
             db._data.metadata[args.key || args[0]] = args.value || args[1];
+          } else if (sql.includes('INSERT INTO daemons')) {
+            db._data.daemons.push(args);
+          } else if (sql.includes('INSERT INTO adapters')) {
+            db._data.adapters.push(args);
+          } else if (sql.includes('DELETE FROM daemons')) {
+            const fp = typeof args === 'string' ? args : args.file_path;
+            db._data.daemons = db._data.daemons.filter(d => d.file_path !== fp);
+          } else if (sql.includes('DELETE FROM adapters')) {
+            const fp = typeof args === 'string' ? args : args.file_path;
+            db._data.adapters = db._data.adapters.filter(a => a.file_path !== fp);
+          } else if (sql.includes('DELETE FROM edges')) {
+            // deleteEdgesByFileAndKind — args is (file_path, kind) positional
           }
           return { changes: 1 };
         },
@@ -60,8 +71,20 @@ try {
           if (sql.includes('FROM edges')) {
             if (sql.includes('source = ?')) return db._data.edges.filter(e => e.source === arg1);
             if (sql.includes('target = ?')) return db._data.edges.filter(e => e.target === arg1);
+            if (sql.includes('kind = ?')) return db._data.edges.filter(e => e.target === arg1 && e.kind === arg2);
+            return db._data.edges;
           }
           if (sql.includes('FROM nodes')) return Object.values(db._data.nodes);
+          if (sql.includes('FROM daemons')) {
+            if (sql.includes('file_path = ?')) return db._data.daemons.filter(d => d.file_path === arg1);
+            if (sql.includes('kind = ?')) return db._data.daemons.filter(d => d.kind === arg1);
+            return db._data.daemons;
+          }
+          if (sql.includes('FROM adapters')) {
+            if (sql.includes('file_path = ?')) return db._data.adapters.filter(a => a.file_path === arg1);
+            if (sql.includes('kind = ?')) return db._data.adapters.filter(a => a.kind === arg1);
+            return db._data.adapters;
+          }
           return [];
         },
         transaction: (fn) => (args) => fn(args)

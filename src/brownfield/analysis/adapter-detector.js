@@ -131,6 +131,10 @@ function lineAt(src, offset) {
 /**
  * Detect adapter patterns in a source file.
  *
+ * Runs patterns on the ORIGINAL source so identifiers are intact,
+ * then validates each match position against the stripped source to reject
+ * matches that are inside string literals or comments.
+ *
  * @param {string} filePath
  * @param {string} source  - raw source code
  * @returns {Array<{kind: string, library: string, external: boolean, line: number}>}
@@ -143,7 +147,9 @@ function detectAdapters(filePath, source) {
   for (const { re, kind, library } of ADAPTER_PATTERNS) {
     const pattern = new RegExp(re.source, 'g');
     let match;
-    while ((match = pattern.exec(stripped)) !== null) {
+    while ((match = pattern.exec(source)) !== null) {
+      // Reject if the match start was inside a stripped region
+      if (stripped[match.index] === ' ' && source[match.index] !== ' ') continue;
       const line = lineAt(source, match.index);
       const key  = `${kind}|${library}|${line}`;
       if (!seen.has(key)) {

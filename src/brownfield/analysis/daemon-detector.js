@@ -74,6 +74,10 @@ function stripStrings(src) {
 /**
  * Detect daemon patterns in a source file.
  *
+ * Runs patterns on the ORIGINAL source (to capture event names inside strings),
+ * then validates each match position against the stripped source to reject
+ * matches that are themselves inside string literals or comments.
+ *
  * @param {string} filePath
  * @param {string} source  - raw source code
  * @returns {Array<{kind: string, event: string|null, line: number}>}
@@ -81,12 +85,18 @@ function stripStrings(src) {
 function detectDaemons(filePath, source) {
   const stripped = stripStrings(source);
   const results  = [];
-  const seen     = new Set(); // deduplicate identical kind+event+line
+  const seen     = new Set();
 
   for (const { re, kind, event: fixedEvent } of DAEMON_PATTERNS) {
-    const pattern = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    const pattern = new RegExp(re.source, 'g');
     let match;
-    while ((match = pattern.exec(stripped)) !== null) {
+    // Search original source so event names are readable
+    while ((match = pattern.exec(source)) !== null) {
+      // Reject if the match start was inside a stripped region
+      // (stripStrings replaces string/comment content with spaces,
+      //  so if stripped[idx] is ' ' but source[idx] isn't, it was inside a string)
+      if (stripped[match.index] === ' ' && source[match.index] !== ' ') continue;
+
       const event = fixedEvent !== undefined ? fixedEvent : (match[1] || null);
       const line  = lineAt(source, match.index);
       const key   = `${kind}|${event}|${line}`;

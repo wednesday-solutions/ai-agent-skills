@@ -363,7 +363,7 @@ function buildGraph(rootDir, opts = {}) {
  * Risk score: 0–100
  * score = min(100, (min(dependents,50)*1.2) + (isPublicContract?25:0) + ((100-testCoverage)*0.15))
  */
-function computeRiskScore(node, testCoverage = 50) {
+function computeRiskScore(node, testCoverage = 0) {
   const dependents = node.importedBy.length;
   const isPublicContract = node.exports.length > 0 && dependents > 0;
   return Math.min(100, Math.round(

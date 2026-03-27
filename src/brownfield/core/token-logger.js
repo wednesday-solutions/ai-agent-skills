@@ -18,6 +18,37 @@
 const fs   = require('fs');
 const path = require('path');
 
+// Pricing per 1M tokens { in, out } in USD.
+// Baseline cost is computed using Claude Sonnet (what Claude Code itself uses).
+const PRICES = {
+  'google/gemini-2.5-flash-lite':                  { in: 0.10,  out: 0.40  },
+  'google/gemini-2.5-flash':                        { in: 0.15,  out: 0.60  },
+  'google/gemma-3-27b-it:free':                     { in: 0,     out: 0     },
+  'meta-llama/llama-3.3-70b-instruct:free':         { in: 0,     out: 0     },
+  'nousresearch/hermes-3-llama-3.1-405b:free':      { in: 0,     out: 0     },
+  'minimax/minimax-m2.5':                           { in: 0.10,  out: 0.40  },
+  'stepfun/step-3.5-flash:free':                    { in: 0,     out: 0     },
+  'claude-haiku-4-5-20251001':                      { in: 0.80,  out: 4.00  },
+  'claude-haiku-4-5':                               { in: 0.80,  out: 4.00  },
+  'claude-sonnet-4-6':                              { in: 3.00,  out: 15.00 },
+  'cache':                                          { in: 0,     out: 0     },
+};
+
+// Baseline cost reference: Claude Sonnet input price (what Claude Code itself uses).
+const BASELINE_PRICE_PER_M = 3.00; // $/1M tokens
+
+function priceFor(model) {
+  if (!model) return { in: 0, out: 0 };
+  // Exact match first, then substring match
+  const key = Object.keys(PRICES).find(k => model === k || model.includes(k) || k.includes(model));
+  return key ? PRICES[key] : { in: 0, out: 0 };
+}
+
+function tokenCost(inputTokens, outputTokens, model) {
+  const p = priceFor(model);
+  return (inputTokens * p.in + outputTokens * p.out) / 1_000_000;
+}
+
 // Baseline token cost per operation — conservative estimates.
 // Represents what Claude Code would spend reading raw files without our graph.
 const BASELINE = {
@@ -101,6 +132,10 @@ class TokenLogger {
       ? Math.round((tokensSaved / totalBaseline) * 100)
       : 0;
 
+    const actualCost   = llmCalls.reduce((s, c) => s + tokenCost(c.inputTokens, c.outputTokens, c.model), 0);
+    const baselineCost = (totalBaseline / 1_000_000) * BASELINE_PRICE_PER_M;
+    const costSaved    = baselineCost - actualCost;
+
     // Per-operation breakdown
     const byOp = {};
     for (const c of this._calls) {
@@ -127,6 +162,9 @@ class TokenLogger {
       totalBaselineTokens: totalBaseline,
       tokensSaved,
       savingsPct,
+      actualCost,
+      baselineCost,
+      costSaved,
       llmCalls:            llmCalls.length,
       cacheHits:           cacheHits.length,
       breakdown:           Object.entries(byOp).map(([operation, stats]) => ({ operation, ...stats })),
@@ -172,7 +210,8 @@ class TokenLogger {
     const arrow   = saving ? '▼' : '▲';
     const verb    = saving ? 'saved' : 'extra';
 
-    const fmt = n => n.toLocaleString();
+    const fmt    = n => n.toLocaleString();
+    const fmtUSD = n => `$${n < 0.001 ? n.toFixed(5) : n.toFixed(4)}`;
 
     console.log('');
     console.log(`${BOLD}${color}━━━ Token Usage Report ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}`);
@@ -181,6 +220,8 @@ class TokenLogger {
     console.log(`  Tokens used:   ${fmt(s.totalTokensUsed)}  ${DIM}(in: ${fmt(s.totalInputTokens)} / out: ${fmt(s.totalOutputTokens)})${RESET}`);
     console.log(`  Baseline est:  ${fmt(s.totalBaselineTokens)}  ${DIM}(cost of reading raw files)${RESET}`);
     console.log(`  ${color}${BOLD}${arrow} ${fmt(Math.abs(s.tokensSaved))} tokens ${verb}  (${s.savingsPct}%)${RESET}`);
+    console.log(`  Cost:          ${fmtUSD(s.actualCost)}  ${DIM}(baseline: ${fmtUSD(s.baselineCost)} vs Claude Sonnet)${RESET}`);
+    console.log(`  ${color}${BOLD}${arrow} ${fmtUSD(Math.abs(s.costSaved))} ${verb} by using this model${RESET}`);
 
     if (s.breakdown.length > 0) {
       console.log(`  ${DIM}──────────────────────────────────────────────────${RESET}`);

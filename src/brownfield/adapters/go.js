@@ -75,6 +75,9 @@ function parse(filePath, rootDir, _aliases, modulePathCache) {
   }
   if (annotations.length) meta.annotations = annotations;
 
+  const symbols = extractSymbols(src);
+  meta.signatures = symbols.map(s => s.signature).join('\n');
+
   return {
     file: filePath,
     lang: 'go',
@@ -82,7 +85,7 @@ function parse(filePath, rootDir, _aliases, modulePathCache) {
     exports: [...exports],
     gaps,
     meta: { ...meta, modulePath },
-    symbols: extractSymbols(src),
+    symbols: symbols,
     error: false,
   };
 }

@@ -26,11 +26,12 @@ function getOpenRouterModels() {
 function getFreeModelChain() {
   const primary = process.env.OPENROUTER_MODEL_HAIKU || 'google/gemini-2.5-flash-lite';
   const defaults = [
-    'google/gemini-2.5-flash-lite',      // cheap paid, reliable
-    'google/gemma-3-27b-it:free',        // free, 27B
-    'meta-llama/llama-3.3-70b-instruct:free', // free, 70B
-    'nousresearch/hermes-3-llama-3.1-405b:free', // free, 405B
-    'stepfun/step-3.5-flash:free',       // free, last resort
+    'google/gemini-2.5-flash-lite',           // cheap paid, reliable
+    'google/gemma-3-27b-it:free',             // free, 27B
+    'meta-llama/llama-3.3-70b-instruct:free',      // free, 70B
+    'nousresearch/hermes-3-llama-3.1-405b:free',   // free, 405B
+    'minimax/minimax-m2.5',                   // reliable fallback (not always free)
+    'stepfun/step-3.5-flash:free',            // free, last resort
   ];
   return [primary, ...defaults.filter(m => m !== primary)];
 }
@@ -77,34 +78,48 @@ async function callLLM(opts) {
     ? { provider: opts.provider || 'openrouter', key: opts.apiKey }
     : detectProvider();
 
-  try {
-    const result = await (provider === 'anthropic' ? callAnthropic : callOpenRouter)({
-      model, messages, system, maxTokens, temperature, key
-    });
+  const maxRetries = 2;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-    if (!result || typeof result !== 'object') {
-      throw new Error(`Provider (${provider}) returned invalid response type: ${typeof result}`);
-    }
-
-    if (result.error && operation === 'validate-connection') {
-      return result;
-    }
-
-    if (result.text) {
-      const modelMap = provider === 'anthropic' ? getAnthropicModels() : getOpenRouterModels();
-      tokenLogger.record({
-        operation,
-        model: modelMap[model] || model,
-        inputTokens:  result.usage?.input || 0,
-        outputTokens: result.usage?.output || 0,
-        baselineTokens,
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    try {
+      const result = await (provider === 'anthropic' ? callAnthropic : callOpenRouter)({
+        model, messages, system, maxTokens, temperature, key
       });
-    }
 
-    return result.text || null;
-  } catch (e) {
-    if (operation === 'validate-connection') return { text: null, error: e.message || 'Unknown error' };
-    return null;
+      if (!result || typeof result !== 'object') {
+        throw new Error(`Provider (${provider}) returned invalid response type: ${typeof result}`);
+      }
+
+      if (result.error && operation === 'validate-connection') {
+        return result;
+      }
+
+      if (result.text) {
+        const modelMap = provider === 'anthropic' ? getAnthropicModels() : getOpenRouterModels();
+        tokenLogger.record({
+          operation,
+          model: modelMap[model] || model,
+          inputTokens:  result.usage?.input || 0,
+          outputTokens: result.usage?.output || 0,
+          baselineTokens,
+        });
+      }
+
+      return result.text || null;
+    } catch (e) {
+      const isRetryable = e.message.includes('429') || e.message.includes('timeout') || e.message.includes('rate');
+      if (isRetryable && attempt <= maxRetries) {
+        const delay = attempt * 1000;
+        console.warn(`[llm-client] ${operation} failed (attempt ${attempt}): ${e.message}. Retrying in ${delay}ms...`);
+        await sleep(delay);
+        continue;
+      }
+
+      if (operation === 'validate-connection') return { text: null, error: e.message || 'Unknown error' };
+      console.error(`[llm-client] ${operation} failed permanently after ${attempt} attempts: ${e.message}`);
+      return null;
+    }
   }
 }
 
@@ -208,7 +223,7 @@ function callAnthropic({ model, messages, system, maxTokens, temperature, key })
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
-function makeRequest({ hostname, path, headers, body, extractResult, timeoutMs = 60000 }) {
+function makeRequest({ hostname, path, headers, body, extractResult, timeoutMs = 120000 }) {
   return new Promise((resolve, reject) => {
     const options = {
       hostname,

@@ -673,9 +673,41 @@ async function runMap(targetDir, opts = {}) {
       }
     }
 
+    // Export to JSON so brownfield-chat can read them without querying SQLite
+    const analysisDir4 = require('path').join(targetDir, '.wednesday', 'codebase', 'analysis');
+    fs4.mkdirSync(analysisDir4, { recursive: true });
+
+    const allDaemons  = daemonStore.getAllDaemons();
+    const allAdapters = daemonStore.getAllAdapters();
+
+    // Group daemons by kind for easy querying
+    const daemonsByKind = allDaemons.reduce((acc, d) => {
+      acc[d.kind] = acc[d.kind] || [];
+      acc[d.kind].push({ file: d.file, event: d.event, line: d.line });
+      return acc;
+    }, {});
+
+    // Group adapters by kind and library
+    const adaptersByKind = allAdapters.reduce((acc, a) => {
+      acc[a.kind] = acc[a.kind] || {};
+      acc[a.kind][a.library] = acc[a.kind][a.library] || [];
+      acc[a.kind][a.library].push({ file: a.file, line: a.line });
+      return acc;
+    }, {});
+
+    fs4.writeFileSync(
+      require('path').join(analysisDir4, 'daemons.json'),
+      JSON.stringify({ total: daemonCount, byKind: daemonsByKind }, null, 2)
+    );
+    fs4.writeFileSync(
+      require('path').join(analysisDir4, 'adapters.json'),
+      JSON.stringify({ total: adapterCount, byKind: adaptersByKind }, null, 2)
+    );
+
     daemonStore.close();
     log('green', `   ✓ ${daemonCount} daemon patterns detected`);
     log('green', `   ✓ ${adapterCount} adapter patterns detected`);
+    log('green', `   ✓ daemons.json + adapters.json written`);
     console.log('');
   }
 
@@ -713,9 +745,17 @@ async function runMap(targetDir, opts = {}) {
   const codebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
   const { GraphStore } = require('../src/brownfield/engine/store');
   const store = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
+
+  // Load daemon/adapter JSON for MASTER.md summary sections
+  const _analysisDir = require('path').join(codebaseDir, 'analysis');
+  let _daemonData = null, _adapterData = null;
+  try { _daemonData  = JSON.parse(require('fs').readFileSync(require('path').join(_analysisDir, 'daemons.json'), 'utf8')); } catch {}
+  try { _adapterData = JSON.parse(require('fs').readFileSync(require('path').join(_analysisDir, 'adapters.json'), 'utf8')); } catch {}
+
   const masterOutPath = await generateMasterMd(
     graph, summaries, legacyReport, codebaseDir, apiKey,
-    commentIntel, gapsFilled, Date.now() - mapStart, insights, store
+    commentIntel, gapsFilled, Date.now() - mapStart, insights, store,
+    _daemonData, _adapterData
   );
   store.close();
   log('green', `   ✓ ${masterOutPath}`);

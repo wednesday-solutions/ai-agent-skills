@@ -162,7 +162,7 @@ function isHighValue(node) {
 /**
  * Generate full MASTER.md — every file documented in detail
  */
-async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null, gapsFilled = 0, elapsed = 0, insights = {}, store = null) {
+async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null, gapsFilled = 0, elapsed = 0, insights = {}, store = null, daemonData = null, adapterData = null) {
   const nodes = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
 
@@ -229,7 +229,46 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push(`| Coverage gaps | ${totalGaps} |`);
   lines.push(`| Gaps filled (subagents) | ${gapsFilled} |`);
   lines.push(`| Danger zones | ${legacyReport?.dangerZones?.length || 0} |`);
+  if (daemonData)  lines.push(`| Daemon patterns | ${daemonData.total} (${Object.keys(daemonData.byKind || {}).length} kinds) |`);
+  if (adapterData) lines.push(`| External adapters | ${adapterData.total} (${Object.keys(adapterData.byKind || {}).length} categories) |`);
   lines.push('');
+
+  // ── Daemons summary ────────────────────────────────────────────────────────
+  if (daemonData && daemonData.total > 0) {
+    lines.push('## Background processes (daemons)');
+    lines.push('');
+    lines.push('> Async patterns invisible to import analysis — event listeners, timers, queues, WebSockets, cron jobs.');
+    lines.push('');
+    for (const [kind, entries] of Object.entries(daemonData.byKind)) {
+      lines.push(`**${kind}** (${entries.length})`);
+      entries.slice(0, 5).forEach(e => {
+        const loc = e.event ? `\`${e.event}\`` : `line ${e.line}`;
+        lines.push(`  - \`${path.relative(graph.rootDir || '', e.file)}\` → ${loc}`);
+      });
+      if (entries.length > 5) lines.push(`  - _…and ${entries.length - 5} more_`);
+    }
+    lines.push('');
+  }
+
+  // ── Adapters summary ───────────────────────────────────────────────────────
+  if (adapterData && adapterData.total > 0) {
+    lines.push('## External adapters');
+    lines.push('');
+    lines.push('> External service boundaries — mocking points for tests, failure points for blast-radius.');
+    lines.push('');
+    for (const [kind, libraries] of Object.entries(adapterData.byKind)) {
+      const libNames = Object.keys(libraries).join(', ');
+      const fileCount = Object.values(libraries).reduce((s, arr) => s + arr.length, 0);
+      lines.push(`**${kind}**: ${libNames} _(${fileCount} file${fileCount !== 1 ? 's' : ''})_`);
+      for (const [lib, files] of Object.entries(libraries)) {
+        files.slice(0, 3).forEach(f => {
+          lines.push(`  - \`${path.relative(graph.rootDir || '', f.file)}\` ← \`${lib}\``);
+        });
+        if (files.length > 3) lines.push(`  - _…and ${files.length - 3} more_`);
+      }
+    }
+    lines.push('');
+  }
 
   // ── Table of contents ─────────────────────────────────────────────────────
   lines.push('## Table of contents');
@@ -239,6 +278,8 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
     { title: 'Architecture overview', id: 'architecture-overview' },
     { title: 'Entry points', id: 'entry-points' },
     { title: 'Platform & Environment', id: 'platform--environment' },
+    { title: 'Background processes (daemons)', id: 'background-processes-daemons' },
+    { title: 'External adapters', id: 'external-adapters' },
     { title: 'Danger zones', id: 'danger-zones' },
     { title: 'High-risk files', id: 'high-risk-files' },
     { title: 'Dead code candidates', id: 'dead-code-candidates' },

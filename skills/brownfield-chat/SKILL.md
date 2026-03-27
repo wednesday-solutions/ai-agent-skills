@@ -1,6 +1,6 @@
 ---
 name: brownfield-chat
-description: Natural-language Q&A across the full codebase. Use for multi-module questions, "what breaks if", git history, cross-cutting queries, and anything spanning more than one file. For a single-file lookup use brownfield-query instead.
+description: Natural-language Q&A across the full codebase. Use for multi-module questions, "what breaks if", git history, cross-cutting queries, daemons (event emitters, timers, queues, WebSockets, cron jobs), adapters (database, HTTP clients, cache, storage, email, payment, auth), and anything spanning more than one file. For a single-file lookup use brownfield-query instead.
 permissions:
   allow:
     - Read(.wednesday/codebase/dep-graph.json)
@@ -18,6 +18,11 @@ permissions:
 - "Which files have no tests and high risk?" (graph filter)
 - "What does tokenService do?" (summary lookup)
 - "What does X import / who imports X?" (structural lookup)
+- "What daemons exist in this codebase?" (background processes)
+- "What event listeners / queues / cron jobs are there?" (daemons)
+- "What external services does this project use?" (adapters)
+- "What database / cache / payment adapters are used?" (adapters)
+- "What needs to be mocked in tests?" (adapters + daemons)
 - Any question spanning multiple modules or layers
 
 ## When NOT to use
@@ -62,13 +67,27 @@ Answer ALL questions by reading pre-built files with the Read tool.
 1. `Read .wednesday/codebase/MASTER.md` — entry points, primary flows, danger zones
 2. `Read .wednesday/codebase/analysis/legacy-report.json` — god files, circular deps
 
+### Daemons / "what background processes exist?" / "what event listeners are there?"
+1. `Read .wednesday/codebase/analysis/daemons.json`
+2. Report `total` count and `byKind` breakdown
+3. Example kinds: `event-listener`, `interval`, `queue-consumer`, `websocket-handler`, `cron-job`, `process-signal`
+4. Show file + event name + line number for each
+
+### Adapters / "what external services are used?" / "what needs mocking?"
+1. `Read .wednesday/codebase/analysis/adapters.json`
+2. Report `total` count and `byKind` breakdown
+3. Example kinds: `database`, `http-client`, `cache`, `storage`, `email`, `payment`, `auth`, `message-queue`
+4. Group by kind → library → files for a clean summary
+
 ## Source citation
 Always end your answer with the source used:
 - `dep-graph.json` — structural answer
 - `summaries.json` — cached summary
 - `MASTER.md` — architecture / danger zone
+- `daemons.json` — background processes, event listeners, timers
+- `adapters.json` — external service boundaries
 - `git log` — history / authorship
-- `not-mapped` — data missing, tell dev to run `wednesday-skills fill-gaps --file <file>`
+- `not-mapped` — data missing, tell dev to run `wednesday-skills map`
 
 ## Never
 - Call `wednesday-skills chat` via Bash — read the files directly instead

@@ -155,6 +155,9 @@ function parse(filePath, rootDir, aliases) {
   if (src.includes('@nestjs/')) meta.framework = 'nestjs';
   if (src.includes('getStaticProps') || src.includes('getServerSideProps')) meta.isNextPage = true;
 
+  const symbols = extractSymbols(src);
+  meta.signatures = symbols.map(s => s.signature).join('\n');
+
   return {
     file: filePath,
     lang: 'typescript',
@@ -162,7 +165,7 @@ function parse(filePath, rootDir, aliases) {
     exports: [...exports],
     gaps,
     meta,
-    symbols: extractSymbols(src),
+    symbols: symbols,
     error: false,
   };
 }

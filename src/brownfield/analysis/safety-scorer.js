@@ -50,7 +50,7 @@ function score(file, nodes, testCoverageMap = {}, moduleIntelMap = null) {
   if (!node) return { score: 0, band: 'Low', action: 'Proceed', details: {} };
 
   const dependents = node.importedBy.length;
-  const testCoverage = testCoverageMap[file] ?? 50; // default 50% if unknown
+  const testCoverage = testCoverageMap[file] ?? 0; // default 0% if unknown — unknown = uncovered
   const isPublicContract = node.exports.length > 0 && dependents > 0;
 
   // 3A: git bug-fix history — files with more past bugs are higher risk

@@ -13,23 +13,33 @@
  *   list                      List available skills
  *   help                      Show help
  */
+'use strict';
 
 const fs = require('fs');
 const path = require('path');
 const { execSync, spawn } = require('child_process');
 
-// Load .env / .env.local from cwd if present (no dotenv dependency needed).
-// .env.local takes precedence over .env (loaded second, won't overwrite existing vars).
-for (const envFile of ['.env', '.env.local']) {
-  const envPath = path.join(process.cwd(), envFile);
-  if (fs.existsSync(envPath)) {
-    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+// Load .env / .env.local from cwd, then fallback to the friday-skills install dir.
+// This ensures the OpenRouter API key and model config are always available
+// even when running `wednesday-skills map` from a different project directory.
+function loadEnvFile(envPath) {
+  if (!fs.existsSync(envPath)) return;
+  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (m && !process.env[m[1]]) {
+      process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
     }
   }
 }
+// 1. Load from CWD (highest priority — project-specific config)
+for (const f of ['.env.local', '.env']) loadEnvFile(path.join(process.cwd(), f));
+// 2. Fallback to the wednesday-skills install directory (global config)
+const skillsDir = path.resolve(__dirname, '..');
+if (skillsDir !== process.cwd()) {
+  for (const f of ['.env.local', '.env']) loadEnvFile(path.join(skillsDir, f));
+}
 const { syncAdapters, ensureToolsConfig } = require('../src/adapters/index.js');
+const { validateConnection, getApiKey } = require('../src/brownfield/core/llm-client');
 const brownfield = require('../src/brownfield/index.js');
 
 // Colors for terminal output
@@ -502,11 +512,21 @@ function getIDEEquivalent(command, args) {
  */
 async function runMap(targetDir, opts = {}) {
   targetDir = path.resolve(targetDir);
-  const apiKey = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || null;
-  const mapStart = Date.now();
+  const apiKey = getApiKey();
 
-  const { GraphStore } = require('../src/brownfield/engine/store');
-  const store = GraphStore.open(path.join(targetDir, '.wednesday', 'graph.db'));
+  if (apiKey) {
+    log('blue', `\n  Checking ${apiKey.startsWith('sk-or') ? 'OpenRouter' : 'Anthropic'} connection...`);
+    const validation = await validateConnection();
+    if (validation.success) {
+      const modelInfo = validation.model ? ` → ${validation.model}` : '';
+      log('green', `  ✓ Connection valid (${validation.provider}${modelInfo})`);
+    } else {
+      log('red',    `  ✗ Connection failed: ${validation.error}`);
+      log('yellow', '    (Mapping will proceed without AI enrichment)\n');
+    }
+  }
+
+  const mapStart = Date.now();
 
   // --report-only: skip re-parse, just regenerate output MD files from existing graph + comments
   if (opts.reportOnly) {
@@ -555,6 +575,8 @@ async function runMap(targetDir, opts = {}) {
       });
 
       const rfCodebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
+      const { GraphStore } = require('../src/brownfield/engine/store');
+      const store = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
       const rfMasterPath = await generateMasterMd(
         graph, summaries, legacyReport, rfCodebaseDir, null,
         commentIntel, 0, 0, rfInsights, store
@@ -594,7 +616,8 @@ async function runMap(targetDir, opts = {}) {
   log('green', `   ✓ ${Object.keys(summaries).length} module summaries written`);
   log('green', `   ✓ MASTER.md generated`);
   if (qaReport.flagged.length > 0) {
-    log('yellow', `   ⚠ ${qaReport.flagged.length} generic summaries (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for better summaries)`);
+    const hint = apiKey ? '' : ' (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for even better summaries)';
+    log('yellow', `   ⚠ ${qaReport.flagged.length} generic summaries flagged${hint}`);
   }
   console.log('');
 
@@ -606,14 +629,8 @@ async function runMap(targetDir, opts = {}) {
     log('green', `   ✓ ${gapsFilled} dynamic edges resolved`);
     console.log('');
 
-    // ── Step 4: Re-generate MASTER.md with filled edges ───────────────────
-    log('cyan', '④ Regenerating MASTER.md with resolved edges...');
-    await brownfield.summarize(targetDir);
-    // Reload graph so regenerated MASTER.md uses the post-gap-fill edges
-    const updatedGraph = brownfield.loadGraph(targetDir);
-    if (updatedGraph) Object.assign(graph, updatedGraph);
-    log('green', '   ✓ MASTER.md updated');
-    console.log('');
+      log('green', '   ✓ graph coverage updated');
+      console.log('');
   } else if (highRiskWithGaps > 0) {
     log('yellow', `③ Skipping gap fill — set OPENROUTER_API_KEY or ANTHROPIC_API_KEY to resolve ${highRiskWithGaps} dynamic patterns`);
     console.log('');
@@ -654,6 +671,8 @@ async function runMap(targetDir, opts = {}) {
   if (insights.healthNarrative) log('green', '   ✓ Health narrative generated');
 
   const codebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
+  const { GraphStore } = require('../src/brownfield/engine/store');
+  const store = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
   const masterOutPath = await generateMasterMd(
     graph, summaries, legacyReport, codebaseDir, apiKey,
     commentIntel, gapsFilled, Date.now() - mapStart, insights, store
@@ -1192,7 +1211,7 @@ async function runConfig(targetDir) {
     if (!found) envLines.push(`${key}="${val}"`);
   }
 
-  fs.writeFileSync(envPath, envLines.join('\n').replace(/\\n{2,}/g, '\\n') + '\\n');
+  fs.writeFileSync(envPath, envLines.join('\n') + '\n');
 
   console.log('');
   log('green', `  ✓ Configuration saved to .env`);
@@ -1249,9 +1268,21 @@ const SKILL_META = {
 };
 
 // PR scripts that can be auto-triggered on `ws-skills pr`
-const PR_SCRIPTS = [
-  { id: 'coverage', label: 'Coverage', desc: 'Run test coverage after PR creation and post report', recommended: true },
-  { id: 'sonar', label: 'SonarQube', desc: 'Run SonarQube analysis after PR creation and post report', recommended: false },
+// CI/CD workflows that can be optionally installed as GitHub Actions
+const CICD_OPTIONS = [
+  {
+    id: 'coverage',
+    label: 'PR Coverage',
+    desc: 'Post test coverage report as a PR comment',
+    workflow: 'pr-coverage.yml',
+    recommended: true,
+  },
+  {
+    id: 'sonar',
+    label: 'SonarQube Code Quality',
+    desc: 'Run SonarQube analysis and post quality gate result',
+    workflow: 'pr-sonar.yml',
+  },
 ];
 
 // AI agents that can be configured with skill instructions
@@ -1298,94 +1329,101 @@ function promptChecklist(rawSkills) {
   const checklistItems = buildChecklistItems(rawSkills);
   const readline = require('readline');
 
-  // ── Prompt 1: Skills + PR Scripts ──────────────────────────────────────────
-  console.log('');
-  log('cyan', '  Select skills and scripts to install:');
-  console.log('  (Enter numbers separated by commas, or "all" for everything)\n');
-
-  console.log(`  ${colors.yellow}── Skills ──${colors.reset}`);
-  checklistItems.forEach((skill, i) => {
-    const meta = SKILL_META[skill] || { label: skill, desc: '', recommended: false };
-    const tag = meta.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
-    const req = meta.requires ? `${colors.yellow} [requires Brownfield]${colors.reset}` : '';
-    const num = `${colors.cyan}${String(i + 1).padStart(2)}${colors.reset}`;
-    console.log(`  ${num}. ${meta.label.padEnd(22)}${meta.desc}${tag}${req}`);
-  });
-
-  console.log('');
-  console.log(`  ${colors.yellow}── PR Scripts (auto-run on ws-skills pr) ──${colors.reset}`);
-  const scriptOffset = checklistItems.length;
-  PR_SCRIPTS.forEach((script, i) => {
-    const tag = script.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
-    const num = `${colors.cyan}${String(scriptOffset + i + 1).padStart(2)}${colors.reset}`;
-    console.log(`  ${num}. ${script.label.padEnd(22)}${script.desc}${tag}`);
-  });
-
-  console.log('');
-
-  const totalSkillItems = checklistItems.length + PR_SCRIPTS.length;
-
-  return new Promise(resolve => {
-    const rl1 = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl1.question('  Your selection: ', answer1 => {
-      rl1.close();
-      const input1 = answer1.trim().toLowerCase();
-
-      let selectedItems, selectedScripts;
-
-      if (!input1 || input1 === 'all') {
-        selectedItems = [...checklistItems];
-        selectedScripts = PR_SCRIPTS.map(s => s.id);
-      } else {
-        const indices = input1.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= totalSkillItems);
-        selectedItems = [...new Set(indices.filter(n => n <= checklistItems.length))].map(n => checklistItems[n - 1]);
-        selectedScripts = [...new Set(
-          indices.filter(n => n > checklistItems.length)
-        )].map(n => PR_SCRIPTS[n - checklistItems.length - 1].id);
-      }
-
-      // If brownfield-ai selected without brownfield, auto-add brownfield
-      if (selectedItems.includes('brownfield-ai') && !selectedItems.includes('brownfield')) {
-        selectedItems.unshift('brownfield');
-      }
-
-      // ── Prompt 2: AI Agents ───────────────────────────────────────────────
-      console.log('');
-      log('cyan', '  Which AI agents should be configured with your skills?');
-      console.log('  (Enter numbers separated by commas, or "all", or press Enter to skip)\n');
-
-      AGENT_OPTIONS.forEach((agent, i) => {
-        const tag = agent.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
-        const num = `${colors.cyan}${String(i + 1).padStart(2)}${colors.reset}`;
-        console.log(`  ${num}. ${agent.label.padEnd(22)}→ ${agent.file}${tag}`);
-      });
-
-      console.log('');
-
-      const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-      rl2.question('  Your selection: ', answer2 => {
-        rl2.close();
-        const input2 = answer2.trim().toLowerCase();
-
-        let selectedAgents;
-        if (input2 === 'all') {
-          selectedAgents = AGENT_OPTIONS.map(a => a.id);
-        } else if (!input2) {
-          selectedAgents = [];
-        } else {
-          const agentIndices = input2.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= AGENT_OPTIONS.length);
-          selectedAgents = [...new Set(agentIndices)].map(n => AGENT_OPTIONS[n - 1].id);
-        }
-
-        resolve({
-          skills: expandSkills(selectedItems),
-          scripts: selectedScripts,
-          selectedBundles: selectedItems,
-          selectedAgents,
-        });
-      });
+  function ask(prompt) {
+    return new Promise(resolve => {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(prompt, answer => { rl.close(); resolve(answer.trim().toLowerCase()); });
     });
-  });
+  }
+
+  async function run() {
+    // ── Prompt 1: Skills ───────────────────────────────────────────────────
+    console.log('');
+    log('cyan', '  Select skills to install:');
+    console.log('  (Enter numbers separated by commas, or "all" for everything)\n');
+
+    checklistItems.forEach((skill, i) => {
+      const meta = SKILL_META[skill] || { label: skill, desc: '', recommended: false };
+      const tag = meta.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
+      const req = meta.requires ? `${colors.yellow} [requires Brownfield]${colors.reset}` : '';
+      const num = `${colors.cyan}${String(i + 1).padStart(2)}${colors.reset}`;
+      console.log(`  ${num}. ${meta.label.padEnd(22)}${meta.desc}${tag}${req}`);
+    });
+
+    console.log('');
+    const input1 = await ask('  Your selection: ');
+
+    let selectedItems;
+    if (!input1 || input1 === 'all') {
+      selectedItems = [...checklistItems];
+    } else {
+      const indices = input1.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= checklistItems.length);
+      selectedItems = [...new Set(indices)].map(n => checklistItems[n - 1]);
+    }
+
+    // If brownfield-ai selected without brownfield, auto-add brownfield
+    if (selectedItems.includes('brownfield-ai') && !selectedItems.includes('brownfield')) {
+      selectedItems.unshift('brownfield');
+    }
+
+    // ── Prompt 2: AI Agents ───────────────────────────────────────────────
+    console.log('');
+    log('cyan', '  Which AI agents should be configured with your skills?');
+    console.log('  (Enter numbers separated by commas, or "all", or press Enter to skip)\n');
+
+    AGENT_OPTIONS.forEach((agent, i) => {
+      const tag = agent.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
+      const num = `${colors.cyan}${String(i + 1).padStart(2)}${colors.reset}`;
+      console.log(`  ${num}. ${agent.label.padEnd(22)}→ ${agent.file}${tag}`);
+    });
+
+    console.log('');
+    const input2 = await ask('  Your selection: ');
+
+    let selectedAgents;
+    if (input2 === 'all') {
+      selectedAgents = AGENT_OPTIONS.map(a => a.id);
+    } else if (!input2) {
+      selectedAgents = [];
+    } else {
+      const agentIndices = input2.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= AGENT_OPTIONS.length);
+      selectedAgents = [...new Set(agentIndices)].map(n => AGENT_OPTIONS[n - 1].id);
+    }
+
+    // ── Prompt 3: CI/CD ───────────────────────────────────────────────────
+    console.log('');
+    log('cyan', '  GitHub Actions to install:');
+    console.log(`  ${colors.dim}commit-lint.yml is always included — validates every PR's commit messages${colors.reset}`);
+    console.log('  (Enter numbers separated by commas, or "all", or press Enter to skip)\n');
+
+    CICD_OPTIONS.forEach((opt, i) => {
+      const tag = opt.recommended ? `${colors.green} [recommended]${colors.reset}` : '';
+      const num = `${colors.cyan}${String(i + 1).padStart(2)}${colors.reset}`;
+      console.log(`  ${num}. ${opt.label.padEnd(22)}${opt.desc}${tag}`);
+    });
+
+    console.log('');
+    const input3 = await ask('  Your selection: ');
+
+    let selectedCicd;
+    if (input3 === 'all') {
+      selectedCicd = CICD_OPTIONS.map(o => o.id);
+    } else if (!input3) {
+      selectedCicd = [];
+    } else {
+      const cicdIndices = input3.split(/[\s,]+/).map(Number).filter(n => n >= 1 && n <= CICD_OPTIONS.length);
+      selectedCicd = [...new Set(cicdIndices)].map(n => CICD_OPTIONS[n - 1].id);
+    }
+
+    return {
+      skills:          expandSkills(selectedItems),
+      selectedBundles: selectedItems,
+      selectedAgents,
+      selectedCicd,
+    };
+  }
+
+  return run();
 }
 
 // ─── Conflict detection ───────────────────────────────────────────────────────
@@ -1554,18 +1592,71 @@ function requireLib(name) {
   return require(libPath);
 }
 
-function saveWednesdayConfig(targetDir, scripts) {
+function saveWednesdayConfig(targetDir, selectedCicd) {
   const configPath = path.join(targetDir, '.wednesday', 'config.json');
   let existing = {};
   if (fs.existsSync(configPath)) {
     try { existing = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { }
   }
-  existing.pr_scripts = {
-    coverage: scripts.includes('coverage'),
-    sonar: scripts.includes('sonar'),
-  };
+  existing.cicd = CICD_OPTIONS.reduce((acc, o) => {
+    acc[o.id] = selectedCicd.includes(o.id);
+    return acc;
+  }, {});
   fs.writeFileSync(configPath, JSON.stringify(existing, null, 2));
   log('green', '  ✓ .wednesday/config.json saved');
+}
+
+function ensureCicdTools(targetDir, selectedCicd) {
+  if (selectedCicd.length === 0) return;
+
+  const pkgPath = path.join(targetDir, 'package.json');
+  if (!fs.existsSync(pkgPath)) return; // No package.json, skip
+
+  let pkg = {};
+  try {
+    pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  } catch {
+    return; // Invalid package.json, skip
+  }
+
+  pkg.scripts = pkg.scripts || {};
+  let updated = false;
+
+  // Ensure coverage tool and script
+  if (selectedCicd.includes('coverage')) {
+    if (!pkg.scripts.coverage) {
+      // Use Node's built-in coverage if available, otherwise c8
+      pkg.scripts.coverage = 'node --test --code-coverage 2>&1 | head -20';
+      updated = true;
+      log('blue', '  Adding coverage script to package.json');
+    }
+    // Ensure c8 is in devDependencies for better coverage reporting
+    pkg.devDependencies = pkg.devDependencies || {};
+    if (!pkg.devDependencies.c8) {
+      pkg.devDependencies.c8 = '^18.0.0';
+      updated = true;
+    }
+  }
+
+  // Ensure sonar script
+  if (selectedCicd.includes('sonar')) {
+    if (!pkg.scripts.sonar) {
+      pkg.scripts.sonar = 'sonar-scanner';
+      updated = true;
+      log('blue', '  Adding sonar script to package.json');
+    }
+    // Ensure sonar-scanner is in devDependencies
+    pkg.devDependencies = pkg.devDependencies || {};
+    if (!pkg.devDependencies['sonar-scanner']) {
+      pkg.devDependencies['sonar-scanner'] = '^5.0.0';
+      updated = true;
+    }
+  }
+
+  if (updated) {
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    log('green', '  ✓ package.json updated with CI/CD scripts');
+  }
 }
 
 function install(targetDir, skipConfig = false, skipChecklist = false) {
@@ -1596,7 +1687,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     .filter(s => fs.statSync(path.join(skillsSource, s)).isDirectory());
 
   // Show checklist unless --all or --skip-config passed
-  const doInstall = async ({ skills: selectedSkills, scripts: selectedScripts = [], selectedBundles = [], selectedAgents = [] }) => {
+  const doInstall = async ({ skills: selectedSkills, selectedCicd = [], selectedBundles = [], selectedAgents = [] }) => {
     // Create .wednesday/skills directory
     const skillsDir = path.join(targetDir, '.wednesday', 'skills');
     log('blue', `\nCreating skills directory: ${skillsDir}`);
@@ -1626,7 +1717,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     });
 
     // Copy GitHub Action workflows and scripts based on selection
-    copyGitHubAssets(packageRoot, targetDir, selectedScripts);
+    copyGitHubAssets(packageRoot, targetDir, selectedCicd);
 
     // Copy commitlint config
     const commitlintSrc = path.join(packageRoot, '.commitlintrc.json');
@@ -1637,7 +1728,13 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     }
 
     // Save PR script preferences to .wednesday/config.json
-    saveWednesdayConfig(targetDir, selectedScripts);
+    saveWednesdayConfig(targetDir, selectedCicd);
+
+    // Ensure CI/CD tools and scripts are installed
+    if (selectedCicd.length > 0) {
+      log('blue', '\nSetting up CI/CD tools...');
+      ensureCicdTools(targetDir, selectedCicd);
+    }
 
     // Write default tools.json
     ensureToolsConfig(targetDir);
@@ -1703,10 +1800,12 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
       }
       console.log('');
     }
-    if (selectedScripts.length > 0) {
-      log('blue', `PR scripts: .wednesday/scripts/`);
-      log('cyan', 'Auto-run after ws-skills pr:');
-      selectedScripts.forEach(s => console.log(`  • ${s}`));
+    if (selectedCicd.length > 0) {
+      log('cyan', 'CI/CD workflows installed:');
+      selectedCicd.forEach(id => {
+        const opt = CICD_OPTIONS.find(o => o.id === id);
+        if (opt) console.log(`  • ${opt.label}`);
+      });
       console.log('');
     }
   };
@@ -1715,7 +1814,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     const allItems = buildChecklistItems(availableSkills);
     doInstall({
       skills: expandSkills(allItems),
-      scripts: PR_SCRIPTS.map(s => s.id),
+      selectedCicd: CICD_OPTIONS.map(o => o.id),
       selectedBundles: allItems,
       selectedAgents: AGENT_OPTIONS.map(a => a.id),
     }).catch(e => { console.error(e.message); process.exit(1); });
@@ -1819,24 +1918,23 @@ function configureGemini(targetDir, instructions) {
   log('green', '  ✓ Gemini CLI configured (GEMINI.md)');
 }
 
-function copyGitHubAssets(packageRoot, targetDir, selectedScripts = []) {
+function copyGitHubAssets(packageRoot, targetDir, selectedCicd = []) {
   const assetsDir = path.join(packageRoot, 'assets', 'workflows');
   if (!fs.existsSync(assetsDir)) return;
 
   const githubWorkflowsDir = path.join(targetDir, '.github', 'workflows');
   fs.mkdirSync(githubWorkflowsDir, { recursive: true });
 
-  // Core workflows always installed; script workflows only if selected
-  const scriptWorkflows = { coverage: 'pr-coverage.yml', sonar: 'pr-sonar.yml' };
-  const skipWorkflows = new Set(
-    Object.entries(scriptWorkflows)
-      .filter(([id]) => !selectedScripts.includes(id))
-      .map(([, file]) => file)
+  // Build set of optional workflow files that were NOT selected (skip them)
+  const optionalWorkflows = new Set(CICD_OPTIONS.map(o => o.workflow));
+  const selectedWorkflows = new Set(
+    CICD_OPTIONS.filter(o => selectedCicd.includes(o.id)).map(o => o.workflow)
   );
 
   const files = fs.readdirSync(assetsDir);
   files.forEach(file => {
-    if (skipWorkflows.has(file)) return;
+    // Skip optional workflows that weren't selected
+    if (optionalWorkflows.has(file) && !selectedWorkflows.has(file)) return;
     const src = path.join(assetsDir, file);
     const dest = path.join(githubWorkflowsDir, file);
     if (!fs.existsSync(dest)) {
@@ -1844,24 +1942,6 @@ function copyGitHubAssets(packageRoot, targetDir, selectedScripts = []) {
       log('green', `  ✓ .github/workflows/${file} copied`);
     }
   });
-
-  // Copy selected PR scripts to .wednesday/scripts/ so CI workflows can find them
-  const scriptsSource = path.join(packageRoot, 'assets', 'scripts');
-  if (selectedScripts.length && fs.existsSync(scriptsSource)) {
-    const wednesdayScriptsDir = path.join(targetDir, '.wednesday', 'scripts');
-    fs.mkdirSync(wednesdayScriptsDir, { recursive: true });
-
-    selectedScripts.forEach(id => {
-      const file = `pr-${id}.sh`;
-      const src = path.join(scriptsSource, file);
-      const dest = path.join(wednesdayScriptsDir, file);
-      if (fs.existsSync(src) && !fs.existsSync(dest)) {
-        fs.copyFileSync(src, dest);
-        fs.chmodSync(dest, 0o755);
-        log('green', `  ✓ .wednesday/scripts/${file} copied`);
-      }
-    });
-  }
 }
 
 function configureCursor(targetDir, instructions) {

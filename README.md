@@ -90,6 +90,30 @@ Or manually add to `.env`:
 #### 🧠 Terminal Dashboard (`wednesday-skills dashboard`)
 Provides an interactive CLI interface for tracking open PRs, unassigned semantic fix queues, installed skills status, and detailed LLM token cost breakdowns.
 
+#### 💰 Token Cost & Savings Report
+Every LLM-backed command (`map`, `summarize`, `gen-tests`, etc.) automatically prints a cost report after it runs:
+
+```
+━━━ Token Usage Report ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Command:       map
+  LLM calls:     18   (6 cache hits → 0 tokens)
+  Tokens used:   9,240  (in: 6,800 / out: 2,440)
+  Baseline est:  54,000  (cost of reading raw files)
+  ▼ 44,760 tokens saved  (82%)
+  Cost:          $0.0013  (baseline: $0.1620 vs Claude Sonnet)
+  ▼ $0.1607 saved by using this model
+  ──────────────────────────────────────────────────
+  Operation          Used  Baseline   Saved%  Calls
+  arch-overview     1,320     6,000    78%  1
+  summarize         5,480    15,000    63%  12 +6cached
+  gap-fill          2,440     9,000    72%  5
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**Baseline** is computed as what Claude Sonnet ($3/M tokens) would spend reading the equivalent raw source files directly. **Actual cost** reflects the real model used (e.g. `gemini-2.5-flash-lite` at $0.10/M). The difference is your savings from both the pre-computed graph *and* the cheaper model selection.
+
+→ Full details: [docs/token-cost-report.md](docs/token-cost-report.md)
+
 #### 🛡 Architecture Drift Detection (`wednesday-skills drift`)
 Validates that the actual code structure safely adheres to the constraints in `PLAN.md` (e.g. `frontend-never-imports-db`, `no-circular-deps`). Designed to plug into CI/CD pipelines to block architectural decay during PRs.
 
@@ -198,7 +222,22 @@ your-project/
 
 ---
 
-## 7. Roadmap & License
+## 7. Documentation
+
+Full documentation is in the [`docs/`](docs/) folder:
+
+| Guide | What it covers |
+|-------|---------------|
+| [Getting Started](docs/getting-started.md) | Install, configure, first map, recommended workflow |
+| [Architecture](docs/architecture.md) | How the system works — engine, adapters, graph, data flows |
+| [CLI Reference](docs/cli-reference.md) | Every command with flags, outputs, and examples |
+| [Skills Reference](docs/skills-reference.md) | Every skill — when to use it and how it works |
+| [Best Practices](docs/best-practices.md) | When to run each command, token efficiency, CI setup |
+| [Token Cost Report](docs/token-cost-report.md) | How cost tracking works, pricing table, model selection |
+
+---
+
+## 8. Roadmap & License
 
 - Phase 1: Install, configure, git hooks, greenfield planner ✓
 - Phase 2: Brownfield intelligence — dep graph, risk scores, summaries, MASTER.md ✓

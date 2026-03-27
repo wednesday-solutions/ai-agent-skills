@@ -57,5 +57,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "test": "node --test test/accuracy.test.js"
   }
 }

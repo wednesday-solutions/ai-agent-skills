@@ -57,6 +57,13 @@ function mineFile(filePath, rootDir) {
       if (c.email) authorMap[c.email] = (authorMap[c.email] || 0) + 1;
     });
     const authors = Object.entries(authorMap)
+      .filter(([email]) => {
+        const lower = email.toLowerCase();
+        return !lower.includes('.local') && 
+               !lower.includes('apple@') && 
+               !lower.includes('admin@') && 
+               !lower.includes('macbook');
+      })
       .sort((a, b) => b[1] - a[1])
       .map(([email, count]) => ({ email, commits: count }));
 

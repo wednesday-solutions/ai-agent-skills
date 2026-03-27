@@ -11,6 +11,18 @@ const { isDangerZone } = require('../parsers/git-history');
 const GOD_FILE_EXPORT_THRESHOLD = 15;
 
 /**
+ * Check if a file is third-party, vendored, or a boilerplate demo
+ */
+function isThirdParty(file) {
+  const f = file.toLowerCase();
+  const thirdPartyDirs = [
+    'thirdparty/', 'vendor/', 'pods/', 'carthage/', 'node_modules/', 
+    'bower_components/', 'external/', 'generated/', 'demo/', 'example/'
+  ];
+  return thirdPartyDirs.some(dir => f.includes(dir)) || f.includes('/demo/') || f.includes('/example/');
+}
+
+/**
  * Build a full legacy health report
  */
 function buildLegacyReport(nodes, testCoverageMap = {}) {
@@ -24,6 +36,7 @@ function buildLegacyReport(nodes, testCoverageMap = {}) {
 
   // ── God files ─────────────────────────────────────────────────────────────
   for (const [file, node] of Object.entries(nodes)) {
+    if (isThirdParty(file)) continue;
     if (node.exports.length > GOD_FILE_EXPORT_THRESHOLD) {
       const concerns = inferConcerns(node.exports);
       report.godFiles.push({
@@ -40,6 +53,7 @@ function buildLegacyReport(nodes, testCoverageMap = {}) {
 
   // ── Unannotated dynamic patterns ──────────────────────────────────────────
   for (const [file, node] of Object.entries(nodes)) {
+    if (isThirdParty(file)) continue;
     for (const gap of node.gaps) {
       if (['dynamic-require', 'dynamic-import', 'event-emit', 'global-inject'].includes(gap.type)) {
         report.unannotatedDynamic.push({
@@ -54,6 +68,7 @@ function buildLegacyReport(nodes, testCoverageMap = {}) {
 
   // ── Tech debt map (ranked by priority) ───────────────────────────────────
   for (const [file, node] of Object.entries(nodes)) {
+    if (isThirdParty(file)) continue;
     const coverage = testCoverageMap[file] ?? null;
     const gitData = node.meta?.gitHistory;
     const riskScore = node.riskScore;
@@ -69,11 +84,12 @@ function buildLegacyReport(nodes, testCoverageMap = {}) {
       });
     }
 
-    // Danger zones
-    if (isDangerZone(gitData, riskScore, coverage ?? 0)) {
+    // Danger zones: tighter threshold (must have risk >60 OR high bug count)
+    const reason = dangerReason(gitData, riskScore, coverage);
+    if (reason && isDangerZone(gitData, riskScore, coverage ?? 0)) {
       report.dangerZones.push({
         file,
-        reason: dangerReason(gitData, riskScore, coverage),
+        reason,
         contact: gitData?.authors?.[0]?.email || 'unknown',
       });
     }
@@ -126,10 +142,10 @@ function computeDebtPriority(gitData, riskScore, coverage) {
 
 function dangerReason(gitData, riskScore, coverage) {
   const reasons = [];
-  if (gitData?.bugFixCommits >= 3) reasons.push(`${gitData.bugFixCommits} bug fixes`);
+  if (gitData?.bugFixCommits >= 4) reasons.push(`${gitData.bugFixCommits} bug fixes`);
   if (gitData?.hackCommits >= 1) reasons.push(`${gitData.hackCommits} known workarounds`);
-  if (riskScore >= 70) reasons.push(`risk score ${riskScore}`);
-  if (coverage === 0 && gitData?.ageInDays > 365) reasons.push('old + untested');
+  if (riskScore >= 75) reasons.push(`high risk score [${riskScore}]`);
+  if (coverage === 0 && gitData?.ageInDays > 365 && riskScore > 50) reasons.push('old + untested');
   return reasons.join(', ');
 }
 

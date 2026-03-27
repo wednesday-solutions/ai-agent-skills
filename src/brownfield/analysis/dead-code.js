@@ -14,7 +14,17 @@ const path = require('path');
  * - Test setup files (setup.ts, jest.setup.js, setupTests.js)
  * - Files with dynamic import gaps (they may be loaded at runtime)
  * - Test files — they import everything but nothing imports them
+ * - Third-party / Vendor / Library code (they are out of scope for dead code)
  */
+function isThirdParty(file) {
+  const f = file.toLowerCase();
+  const thirdPartyDirs = [
+    'thirdparty/', 'vendor/', 'pods/', 'carthage/', 'node_modules/', 
+    'bower_components/', 'external/', 'generated/', 'demo/', 'example/'
+  ];
+  return thirdPartyDirs.some(dir => f.includes(dir)) || f.includes('/demo/') || f.includes('/example/');
+}
+
 function isSafelyUnimported(file, node) {
   const f = file.toLowerCase();
   const base = path.basename(f);
@@ -43,6 +53,9 @@ function isSafelyUnimported(file, node) {
 
   // Files with unresolved dynamic import gaps — may be loaded at runtime
   if (node.gaps.some(g => g.type === 'dynamic-require' || g.type === 'dynamic-import')) return true;
+
+  // Third-party / Vendor code
+  if (isThirdParty(file)) return true;
 
   return false;
 }
@@ -117,7 +130,16 @@ function findCircularDeps(nodes) {
         const sorted = [...cycle].sort();
         const key = sorted.join('|');
         if (!cycles.find(c => c.files.join('|') === key)) {
-          cycles.push({ files: cycle, risk: cycle.length > 3 ? 'High' : 'Medium' });
+          // Categorization: Business Logic vs Structural (Extensions, Constants)
+          const isStructural = cycle.some(f => 
+            /Extensions?\.swift$|Constants?\.swift$|Resource\.swift$|Generated\/|Mock\.swift$|Tests?\.swift$/.test(f)
+          );
+          let risk = cycle.length > 5 ? 'High' : 'Medium';
+          let type = isStructural ? 'Structural' : 'Logic';
+          
+          if (isStructural) risk = 'Low'; // De-panic structural cycles
+
+          cycles.push({ files: cycle, risk, type });
         }
       }
       return;
@@ -146,7 +168,12 @@ function findCircularDeps(nodes) {
     }
   }
 
-  return cycles;
+  // Sort: High risk logic first, then structural last
+  return cycles.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'Logic' ? -1 : 1;
+    const riskMap = { High: 0, Medium: 1, Low: 2 };
+    return riskMap[a.risk] - riskMap[b.risk];
+  });
 }
 
 module.exports = { findDeadCode, findCircularDeps };

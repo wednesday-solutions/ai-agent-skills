@@ -256,13 +256,33 @@ function buildGraph(rootDir, opts = {}) {
   }
 
   // ── Detect entry points ───────────────────────────────────────────────────
-  // Entry points: files that are not imported by anyone, AND not barrel files
+  // Entry points: files that are not imported by anyone, OR follow entry patterns
   for (const node of Object.values(nodes)) {
-    if (node.importedBy.length === 0 && !node.isBarrel) {
-      // Heuristic: check filename patterns and directory
-      const basename = path.basename(node.file, path.extname(node.file));
+    if (!node.isBarrel) {
+      const ext = path.extname(node.file).toLowerCase();
+      const basename = path.basename(node.file, ext);
+      const isHeader = ext === '.h';
+      
+      const isDemoOrTest = /(?:^|[/\\])(demo|test|example|sample|mocks?|fixtures?)(?:[/\\]|$)/i.test(node.file);
+
+      const looksLikeEntry = ['index', 'main', 'app', 'server', 'handler', 'bootstrap', 'cli'].includes(basename.toLowerCase());
       const isBin = node.file.startsWith('bin/') || node.file.startsWith('scripts/');
-      if (isBin || ['index', 'main', 'app', 'server', 'handler', 'bootstrap', 'cli'].includes(basename.toLowerCase())) {
+
+      // Swift specific: trust @main/@UIApplicationMain (adapter.isEntryPoint) OR AppDelegate/SceneDelegate naming
+      // But reject everything else that looks like a Model/View/Cell/Header
+      if (node.lang === 'swift') {
+        const isAppLifecycle = ['appdelegate', 'scenedelegate'].includes(basename.toLowerCase());
+        const isHelper = /View$|Cell$|Model$|Header$|Component$/.test(basename);
+        
+        if (!isDemoOrTest && !isHelper && (node.isEntryPoint || isAppLifecycle)) {
+          node.isEntryPoint = true;
+        } else {
+          node.isEntryPoint = false; // Override any other detection for Swift helpers
+        }
+        continue;
+      }
+
+      if (!isDemoOrTest && !isHeader && (node.importedBy.length === 0 || isBin || looksLikeEntry)) {
         node.isEntryPoint = true;
       }
     }
@@ -343,7 +363,7 @@ function buildGraph(rootDir, opts = {}) {
  * Risk score: 0–100
  * score = min(100, (min(dependents,50)*1.2) + (isPublicContract?25:0) + ((100-testCoverage)*0.15))
  */
-function computeRiskScore(node, testCoverage = 50) {
+function computeRiskScore(node, testCoverage = 0) {
   const dependents = node.importedBy.length;
   const isPublicContract = node.exports.length > 0 && dependents > 0;
   return Math.min(100, Math.round(

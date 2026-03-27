@@ -17,14 +17,59 @@
 const fs   = require('fs');
 const path = require('path');
 
+const { computeRiskScore } = require('./graph');
+
 let Database;
+let isNative = false;
 try {
-  Database = require('better-sqlite3');
-} catch {
-  throw new Error(
-    '[wednesday-skills] better-sqlite3 is not installed.\n' +
-    'Run: npm install  (or npm install better-sqlite3)\n'
-  );
+  const BetterSqlite3 = require('better-sqlite3');
+  // Probe: Ensure bindings are actually working
+  new BetterSqlite3(':memory:').close();
+  Database = BetterSqlite3;
+  isNative = true;
+} catch (e) {
+  console.warn('[wednesday-skills] Native better-sqlite3 failed (missing bindings or version mismatch). Falling back to in-memory store.');
+  // Mock Database for in-memory operations if native load fails
+  Database = class MockDatabase {
+    constructor() { 
+      this._data = { nodes: {}, edges: [], symbols: [], metadata: {} }; 
+    }
+    pragma() {}
+    exec(schema) {}
+    prepare(sql) {
+      const db = this;
+      return {
+        run: (args) => {
+          // crude simulation of inserts/upserts for common patterns
+          if (sql.includes('INSERT INTO nodes')) {
+            db._data.nodes[args.file_path] = args;
+          } else if (sql.includes('INSERT INTO edges')) {
+            db._data.edges.push(args);
+          } else if (sql.includes('INSERT INTO metadata')) {
+            db._data.metadata[args.key || args[0]] = args.value || args[1];
+          }
+          return { changes: 1 };
+        },
+        get: (key) => {
+          if (sql.includes('FROM nodes')) return db._data.nodes[key] || null;
+          if (sql.includes('FROM metadata')) return { value: db._data.metadata[key] } || null;
+          if (sql.includes('COUNT(*)')) return { c: Object.keys(db._data.nodes).length };
+          return null;
+        },
+        all: (arg1, arg2) => {
+          if (sql.includes('FROM edges')) {
+            if (sql.includes('source = ?')) return db._data.edges.filter(e => e.source === arg1);
+            if (sql.includes('target = ?')) return db._data.edges.filter(e => e.target === arg1);
+          }
+          if (sql.includes('FROM nodes')) return Object.values(db._data.nodes);
+          return [];
+        },
+        transaction: (fn) => (args) => fn(args)
+      };
+    }
+    transaction(fn) { return (args) => fn(args); }
+    close() {}
+  };
 }
 
 // ── Schema ────────────────────────────────────────────────────────────────────
@@ -424,30 +469,59 @@ class GraphStore {
    * Uses a recursive CTE to trace paths from entry points (depth up to 4).
    * @returns {Array<{ path: string, depth: number }>}
    */
-  getPrimaryFlows(maxDepth = 4, limit = 5) {
+  getPrimaryFlows(maxDepth = 8, limit = 10) {
     const query = `
       WITH RECURSIVE
-        path_trace(source, target, depth, path) AS (
-          -- Anchor: start from entry points (only 'imports' kind)
-          SELECT source, target, 1, source || ' -> ' || target
+        path_trace(source, target, depth, path, has_call) AS (
+          -- Anchor: start from entry points OR logical scene roots (ViewControllers with low in-degree)
+          SELECT source, target, 1, source || ' -> ' || target, (kind = 'calls')
           FROM edges
           JOIN nodes ON edges.source = nodes.file_path
-          WHERE nodes.is_entry = 1 AND edges.kind = 'imports'
+          WHERE (nodes.is_entry = 1 OR (nodes.file_path LIKE '%ViewController%' AND nodes.imported_by_count < 2))
+            AND target NOT LIKE '%Extensions%'
+            AND target NOT LIKE '%Constants%'
+            AND target NOT LIKE '%Generated%'
+            AND target NOT LIKE '%Mock%'
+            AND target NOT LIKE '%Tests%'
           
           UNION ALL
           
           -- Recursive step: find next hop
-          SELECT pt.target, e.target, pt.depth + 1, pt.path || ' -> ' || e.target
+          SELECT pt.target, e.target, pt.depth + 1, pt.path || ' -> ' || e.target, 
+                 pt.has_call OR (e.kind = 'calls')
           FROM path_trace pt
           JOIN edges e ON pt.target = e.source
-          WHERE pt.depth < ? AND e.kind = 'imports' AND pt.path NOT LIKE '%' || e.target || '%'
+          -- Filter out structural nodes from intermediates EXCEPT VIP layers
+          WHERE pt.depth < ? 
+            AND pt.path NOT LIKE '%' || e.target || '%'
+            -- Hard structural filters
+            AND e.target NOT LIKE '%Extensions%'
+            AND e.target NOT LIKE '%Constants%'
+            AND e.target NOT LIKE '%Generated%'
+            AND e.target NOT LIKE '%UserDefaults%'
+            AND e.target NOT LIKE '%Config%'
+            AND e.target NOT LIKE '%Resource%'
+            -- Allow Interactor, Presenter, Router specifically
+            AND (
+              e.target LIKE '%Interactor%' OR 
+              e.target LIKE '%Presenter%' OR 
+              e.target LIKE '%Router%' OR 
+              e.target LIKE '%Controller%' OR
+              e.target LIKE '%Service%' OR
+              (e.target NOT LIKE '%Manager%' AND e.target NOT LIKE '%Helper%' AND e.target NOT LIKE '%Util%')
+            )
         )
-      SELECT path, depth
+      SELECT path, depth, has_call, target
       FROM path_trace
-      ORDER BY depth DESC
+      WHERE depth >= 2
+        -- Focus on paths ending in core business logic or display
+        AND (target LIKE '%Controller%' OR target LIKE '%Interactor%' OR target LIKE '%Presenter%' OR target LIKE '%Service%')
+      GROUP BY path -- Deduplicate same-path traces
+      ORDER BY has_call DESC, depth DESC
       LIMIT ?;
     `;
-    return this._db.prepare(query).all(maxDepth, limit);
+    // We get more and let the JS layer (flow-discovery.js) do the final "interestingness" filtering
+    return this._db.prepare(query).all(maxDepth, limit * 2);
   }
 
   /**
@@ -497,11 +571,16 @@ class GraphStore {
     // Assemble nodes object — identical shape to what buildGraph() returned
     const nodes = {};
     for (const node of allNodes) {
-      nodes[node.file] = {
+      const assembled = {
         ...node,
         imports:    importsMap[node.file]    || [],
         importedBy: importedBy[node.file]    || [],
       };
+      // Recompute risk score using the actual current importedBy from edges.
+      // The stored risk_score column can be stale after incremental writes where
+      // new files imported this node but only their own row was updated.
+      assembled.riskScore = computeRiskScore(assembled);
+      nodes[node.file] = assembled;
     }
 
     return {

@@ -111,6 +111,23 @@ CREATE TABLE IF NOT EXISTS symbols (
   signature  TEXT    NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS daemons (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path TEXT    NOT NULL,
+  kind      TEXT    NOT NULL,
+  event     TEXT,
+  line      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS adapters (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path TEXT    NOT NULL,
+  kind      TEXT    NOT NULL,
+  library   TEXT    NOT NULL,
+  external  INTEGER NOT NULL DEFAULT 1,
+  line      INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_edges_source   ON edges(source);
 CREATE INDEX IF NOT EXISTS idx_edges_target   ON edges(target);
 CREATE INDEX IF NOT EXISTS idx_edges_file     ON edges(file_path);
@@ -119,6 +136,10 @@ CREATE INDEX IF NOT EXISTS idx_nodes_risk     ON nodes(risk_score);
 CREATE INDEX IF NOT EXISTS idx_nodes_entry    ON nodes(is_entry);
 CREATE INDEX IF NOT EXISTS idx_symbols_file   ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name   ON symbols(name);
+CREATE INDEX IF NOT EXISTS idx_daemons_file   ON daemons(file_path);
+CREATE INDEX IF NOT EXISTS idx_daemons_kind   ON daemons(kind);
+CREATE INDEX IF NOT EXISTS idx_adapters_file  ON adapters(file_path);
+CREATE INDEX IF NOT EXISTS idx_adapters_kind  ON adapters(kind);
 `;
 
 // ── GraphStore ────────────────────────────────────────────────────────────────
@@ -221,6 +242,48 @@ class GraphStore {
 
       findSymbolByName: this._db.prepare(
         'SELECT file_path, name, kind, line_start, signature FROM symbols WHERE name = ? COLLATE NOCASE'
+      ),
+
+      deleteDaemonsByFile: this._db.prepare(
+        'DELETE FROM daemons WHERE file_path = ?'
+      ),
+
+      insertDaemon: this._db.prepare(`
+        INSERT INTO daemons (file_path, kind, event, line)
+        VALUES (@file_path, @kind, @event, @line)
+      `),
+
+      getDaemonsByFile: this._db.prepare(
+        'SELECT kind, event, line FROM daemons WHERE file_path = ?'
+      ),
+
+      getDaemonsByKind: this._db.prepare(
+        'SELECT file_path, event, line FROM daemons WHERE kind = ?'
+      ),
+
+      getAllDaemons: this._db.prepare(
+        'SELECT file_path, kind, event, line FROM daemons ORDER BY file_path'
+      ),
+
+      deleteAdaptersByFile: this._db.prepare(
+        'DELETE FROM adapters WHERE file_path = ?'
+      ),
+
+      insertAdapter: this._db.prepare(`
+        INSERT INTO adapters (file_path, kind, library, external, line)
+        VALUES (@file_path, @kind, @library, @external, @line)
+      `),
+
+      getAdaptersByFile: this._db.prepare(
+        'SELECT kind, library, external, line FROM adapters WHERE file_path = ?'
+      ),
+
+      getAdaptersByKind: this._db.prepare(
+        'SELECT file_path, library, line FROM adapters WHERE kind = ?'
+      ),
+
+      getAllAdapters: this._db.prepare(
+        'SELECT file_path, kind, library, external, line FROM adapters ORDER BY kind, library'
       ),
     };
   }
@@ -535,6 +598,80 @@ class GraphStore {
       kind:      r.kind,
       lineStart: r.line_start,
       signature: r.signature,
+    }));
+  }
+
+  // ── Daemon methods ───────────────────────────────────────────────────────────
+
+  /**
+   * Replace all daemon entries for a file.
+   * @param {string} filePath
+   * @param {Array<{kind: string, event: string|null, line: number}>} daemons
+   */
+  saveDaemons(filePath, daemons) {
+    this._stmts.deleteDaemonsByFile.run(filePath);
+    for (const d of daemons) {
+      this._stmts.insertDaemon.run({
+        file_path: filePath,
+        kind:      d.kind,
+        event:     d.event ?? null,
+        line:      d.line,
+      });
+    }
+  }
+
+  getDaemons(filePath) {
+    return this._stmts.getDaemonsByFile.all(filePath);
+  }
+
+  getDaemonsByKind(kind) {
+    return this._stmts.getDaemonsByKind.all(kind).map(r => ({
+      file: r.file_path, event: r.event, line: r.line,
+    }));
+  }
+
+  getAllDaemons() {
+    return this._stmts.getAllDaemons.all().map(r => ({
+      file: r.file_path, kind: r.kind, event: r.event, line: r.line,
+    }));
+  }
+
+  // ── Adapter methods ──────────────────────────────────────────────────────────
+
+  /**
+   * Replace all adapter entries for a file.
+   * @param {string} filePath
+   * @param {Array<{kind: string, library: string, external: boolean, line: number}>} adapters
+   */
+  saveAdapters(filePath, adapters) {
+    this._stmts.deleteAdaptersByFile.run(filePath);
+    for (const a of adapters) {
+      this._stmts.insertAdapter.run({
+        file_path: filePath,
+        kind:      a.kind,
+        library:   a.library,
+        external:  a.external ? 1 : 0,
+        line:      a.line,
+      });
+    }
+  }
+
+  getAdapters(filePath) {
+    return this._stmts.getAdaptersByFile.all(filePath).map(r => ({
+      kind: r.kind, library: r.library, external: !!r.external, line: r.line,
+    }));
+  }
+
+  getAdaptersByKind(kind) {
+    return this._stmts.getAdaptersByKind.all(kind).map(r => ({
+      file: r.file_path, library: r.library, line: r.line,
+    }));
+  }
+
+  getAllAdapters() {
+    return this._stmts.getAllAdapters.all().map(r => ({
+      file: r.file_path, kind: r.kind, library: r.library,
+      external: !!r.external, line: r.line,
     }));
   }
 

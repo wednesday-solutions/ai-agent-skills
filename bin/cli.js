@@ -639,6 +639,46 @@ async function runMap(targetDir, opts = {}) {
     console.log('');
   }
 
+  // ── Step 4: Detect daemons and adapters ──────────────────────────────────
+  log('cyan', '④ Detecting daemons and adapters...');
+  {
+    const { detectDaemons }  = require('../src/brownfield/analysis/daemon-detector');
+    const { detectAdapters } = require('../src/brownfield/analysis/adapter-detector');
+    const { GraphStore }     = require('../src/brownfield/engine/store');
+    const daemonStore = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
+
+    const fs4   = require('fs');
+    let daemonCount  = 0;
+    let adapterCount = 0;
+
+    for (const [filePath, node] of Object.entries(graph.nodes)) {
+      if (node.error) continue;
+      let source;
+      try {
+        source = fs4.readFileSync(filePath, 'utf8');
+      } catch {
+        continue;
+      }
+
+      const daemons  = detectDaemons(filePath, source);
+      const adapters = detectAdapters(filePath, source);
+
+      if (daemons.length > 0)  {
+        daemonStore.saveDaemons(filePath, daemons);
+        daemonCount += daemons.length;
+      }
+      if (adapters.length > 0) {
+        daemonStore.saveAdapters(filePath, adapters);
+        adapterCount += adapters.length;
+      }
+    }
+
+    daemonStore.close();
+    log('green', `   ✓ ${daemonCount} daemon patterns detected`);
+    log('green', `   ✓ ${adapterCount} adapter patterns detected`);
+    console.log('');
+  }
+
   // ── Step 5: Generate MASTER.md (comprehensive report) ────────────────────
   log('cyan', '⑤ Writing MASTER.md...');
   const { buildLegacyReport } = require('../src/brownfield/analysis/legacy-health');
@@ -686,9 +726,16 @@ async function runMap(targetDir, opts = {}) {
   log('blue', '│  Mapping complete                           │');
   log('blue', '└─────────────────────────────────────────────┘');
   console.log('');
+  const _daemonSummaryStore = require('../src/brownfield/engine/store').GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
+  const _daemonTotal  = _daemonSummaryStore.getAllDaemons().length;
+  const _adapterTotal = _daemonSummaryStore.getAllAdapters().length;
+  _daemonSummaryStore.close();
+
   console.log(`  Files mapped:     ${nodeCount}`);
   console.log(`  Summaries:        ${Object.keys(summaries).length}`);
   console.log(`  Gaps resolved:    ${gapsFilled}`);
+  console.log(`  Daemons found:    ${_daemonTotal}`);
+  console.log(`  Adapters found:   ${_adapterTotal}`);
   console.log(`  Danger zones:     ${legacyReport.dangerZones?.length || 0}`);
   console.log(`  Dead files:       ${deadFilesForInsights.length}`);
   console.log('');
@@ -1264,10 +1311,6 @@ const SKILL_META = {
   'brownfield-enrich': {
     label: 'Brownfield Enrich', desc: 'Agent-driven comment enrichment — no API key needed, uses the running agent', recommended: false,
     requires: 'brownfield', bundle: ['brownfield-enrich']
-  },
-  'brownfield-e2e-gen': {
-    label: 'E2E Test Generator', desc: 'Agentic E2E test generation — queries graph, ideates flows, auto-tests and fixes, attaches report to PR', recommended: false,
-    requires: 'brownfield', bundle: ['brownfield-e2e-gen']
   },
 };
 

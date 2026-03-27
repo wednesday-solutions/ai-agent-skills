@@ -1746,7 +1746,47 @@ function ensureCicdTools(targetDir, selectedCicd) {
   }
 }
 
+function isRunningViaNpx() {
+  const argv1 = process.argv[1] || '';
+  return (
+    argv1.includes('/_npx/')           ||  // Linux/macOS npx cache
+    argv1.includes('\\_npx\\')         ||  // Windows npx cache
+    argv1.includes('/.npm/_npx')       ||  // alternative npx cache path
+    (process.env.npm_config_user_agent || '').includes('npx')
+  );
+}
+
+function ensureGlobalInstall() {
+  if (!isRunningViaNpx()) return; // already global, nothing to do
+
+  console.log('');
+  log('blue', '─────────────────────────────────────────────────────────────');
+  log('cyan', '  Running via npx — installing ws-skills globally...');
+  log('blue', '─────────────────────────────────────────────────────────────');
+  console.log('');
+
+  const pkg = 'github:wednesday-solutions/ai-agent-skills';
+  try {
+    execSync(`npm install -g ${pkg}`, { stdio: 'inherit' });
+    console.log('');
+    log('green', '  ✓ ws-skills installed globally');
+    log('green', '  You can now run: ws-skills install');
+    log('green', '  in any project directory without npx.');
+    console.log('');
+  } catch {
+    console.log('');
+    log('yellow', '  ⚠ Global install failed (permissions?). Run manually:');
+    log('blue',   `    npm install -g ${pkg}`);
+    log('yellow', '  Or with sudo:');
+    log('blue',   `    sudo npm install -g ${pkg}`);
+    console.log('');
+  }
+}
+
 function install(targetDir, skipConfig = false, skipChecklist = false) {
+  // If running via npx, make ws-skills a permanent global command first
+  ensureGlobalInstall();
+
   // Resolve to absolute path
   targetDir = path.resolve(targetDir);
 
@@ -2149,9 +2189,13 @@ function showHelp() {
   console.log('');
   console.log('  help                         Show this help message');
   console.log('');
-  console.log('Examples:');
-  console.log('  npx @wednesday-solutions-eng/ai-agent-skills install');
-  console.log('  wednesday-skills install ./my-project');
+  console.log('First-time setup (installs ws-skills globally + sets up project):');
+  console.log('  npx github:wednesday-solutions/ai-agent-skills install');
+  console.log('  → auto-installs ws-skills as a permanent global command');
+  console.log('');
+  console.log('After first install (use directly):');
+  console.log('  ws-skills install');
+  console.log('  ws-skills install ./my-project');
   console.log('  wednesday-skills configure . gemini');
   console.log('  wednesday-skills sync --tool antigravity');
   console.log('  wednesday-skills dashboard');

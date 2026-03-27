@@ -1,33 +1,46 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-03-24T12:00:00.000Z",
-  "count": 14,
+  "updatedAt": "2026-03-27T06:05:04.867Z",
+  "count": 17,
   "skills": [
     {
       "name": "brownfield-chat",
       "version": "1.0.0",
-      "description": "Use when the dev asks any open-ended question about the codebase — who wrote something, what depends on what, what changed recently, what a module does, or any structural question in plain English.",
+      "description": "Natural-language Q&A across the full codebase. Use for multi-module questions, \"what breaks if\", git history, cross-cutting queries, and anything spanning more than one file. For a single-file lookup use brownfield-query instead.",
       "tags": [],
       "requires": [],
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 378,
+      "wordCount": 426,
       "downloads": 0,
       "path": "skills/brownfield-chat"
     },
     {
       "name": "brownfield-drift",
       "version": "1.0.0",
-      "description": "Use when the dev asks if the codebase follows the original architecture plan, or before merging any PR that modifies module boundaries, service communication patterns, or ownership of key concerns.",
+      "description": "Enforces architecture boundaries defined in PLAN.md. Use when a PR crosses module/service boundaries, when the dev asks \"are we following the architecture?\", or as a scheduled architecture health check. Not for querying what a module does — use brownfield-chat for that.",
       "tags": [],
       "requires": [],
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 328,
+      "wordCount": 390,
       "downloads": 0,
       "path": "skills/brownfield-drift"
+    },
+    {
+      "name": "brownfield-enrich",
+      "version": "1.0.0",
+      "description": "Schema reference for comment enrichment. The enrichment workflow is printed by `wednesday-skills map` in the `[ENRICH]` block — follow those instructions.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 437,
+      "downloads": 0,
+      "path": "skills/brownfield-enrich"
     },
     {
       "name": "brownfield-fix",
@@ -38,9 +51,35 @@
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 263,
+      "wordCount": 306,
       "downloads": 0,
       "path": "skills/brownfield-fix"
+    },
+    {
+      "name": "brownfield-gaps",
+      "version": "1.0.0",
+      "description": "Improves graph coverage for a specific file with dynamic/unannotated patterns (event emitters, dynamic require, global injection). Use when dep-graph shows gaps on a file or when chat/query returns \"not mapped\". Not for querying — only for improving coverage.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 367,
+      "downloads": 0,
+      "path": "skills/brownfield-gaps"
+    },
+    {
+      "name": "brownfield-query",
+      "version": "1.0.0",
+      "description": "Deterministic lookups from dep-graph.json. Use for direct structural questions about a specific file or module — what it imports, what imports it, its risk score, its exports. For multi-module or natural-language questions use brownfield-chat instead.",
+      "tags": [],
+      "requires": [],
+      "conflicts": [],
+      "author": "wednesday-solutions",
+      "license": "MIT",
+      "wordCount": 308,
+      "downloads": 0,
+      "path": "skills/brownfield-query"
     },
     {
       "name": "deploy-checklist",
@@ -129,20 +168,20 @@
     {
       "name": "pr-review",
       "version": "1.0.0",
-      "description": "Gemini PR review skill. Fetches Gemini bot comments on the PR, categorizes by impact, posts a fix queue, and applies fixes on dev approval in priority order.",
+      "description": "Fix engine for PR review comments. Fetches review comments (Gemini bot or human), categorizes by impact, posts a prioritized fix queue, and applies fixes on dev approval. Called directly for quick fixes, or internally by pr-review-agent as part of full PR review.",
       "tags": [],
       "requires": [],
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 460,
+      "wordCount": 475,
       "downloads": 0,
       "path": "skills/pr-review"
     },
     {
       "name": "pr-review-agent",
       "version": "1.0.0",
-      "description": "Use when asked to review a PR, check a PR for issues, or when a PR is ready for review. Runs triage, blast radius, and drift check automatically.",
+      "description": "Full PR review orchestrator. Use when asked to review a PR or check if it is ready to merge. Runs blast radius + drift check on changed files, then hands off to pr-review for comment triage and fixes. Do NOT use pr-review directly for full reviews — use this.",
       "tags": [],
       "requires": [
         "brownfield-fix",
@@ -152,7 +191,7 @@
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 284,
+      "wordCount": 303,
       "downloads": 0,
       "path": "skills/agents/pr-review-agent"
     },
@@ -191,7 +230,7 @@
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 1539,
+      "wordCount": 2160,
       "downloads": 0,
       "path": "skills/wednesday-dev"
     }

@@ -84,12 +84,28 @@ If a project does not have one of these scripts, skip it and note it was skipped
 **Only run this step if the project opted in during `ws-skills install`.** Check `.wednesday/config.json`:
 
 ```bash
-node -e "const c=require('./.wednesday/config.json'); const s=c.pr_scripts||{}; console.log(JSON.stringify({coverage:!!s.coverage,sonar:!!s.sonar}))"
+node -e "const c=require('./.wednesday/config.json'); const cicd=c.cicd||{}; console.log(JSON.stringify({coverage:!!cicd.coverage,sonar:!!cicd.sonar}))"
 ```
 
-**If `coverage: true`** → run `npm run coverage` and show the summary. Do not fail the PR for coverage drops unless the project has a threshold configured.
+### If coverage enabled
 
-**If `sonar: true`** → run `npm run sonar` or `npx sonar-scanner`. Show the quality gate result. A **failed quality gate blocks the PR** — stop and show the reason.
+Run `npm run coverage` (if it exists). Capture first 20 lines of output as summary. If script fails, note it but do not block the PR.
+
+### If sonar enabled
+
+Run `npm run sonar`. Capture output and look for quality gate result. A **failed quality gate blocks the PR** — stop and show the reason. Otherwise, show summary.
+
+### Append to PR Body
+
+If either ran successfully, add to the PR body:
+
+```markdown
+### Coverage
+<summary output from coverage script>
+
+### Sonar Analysis
+<quality gate + key metrics from sonar>
+```
 
 **If `.wednesday/config.json` does not exist or both are false** → skip this step entirely. Do not mention it.
 

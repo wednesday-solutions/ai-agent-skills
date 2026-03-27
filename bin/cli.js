@@ -1606,6 +1606,59 @@ function saveWednesdayConfig(targetDir, selectedCicd) {
   log('green', '  ✓ .wednesday/config.json saved');
 }
 
+function ensureCicdTools(targetDir, selectedCicd) {
+  if (selectedCicd.length === 0) return;
+
+  const pkgPath = path.join(targetDir, 'package.json');
+  if (!fs.existsSync(pkgPath)) return; // No package.json, skip
+
+  let pkg = {};
+  try {
+    pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  } catch {
+    return; // Invalid package.json, skip
+  }
+
+  pkg.scripts = pkg.scripts || {};
+  let updated = false;
+
+  // Ensure coverage tool and script
+  if (selectedCicd.includes('coverage')) {
+    if (!pkg.scripts.coverage) {
+      // Use Node's built-in coverage if available, otherwise c8
+      pkg.scripts.coverage = 'node --test --code-coverage 2>&1 | head -20';
+      updated = true;
+      log('blue', '  Adding coverage script to package.json');
+    }
+    // Ensure c8 is in devDependencies for better coverage reporting
+    pkg.devDependencies = pkg.devDependencies || {};
+    if (!pkg.devDependencies.c8) {
+      pkg.devDependencies.c8 = '^18.0.0';
+      updated = true;
+    }
+  }
+
+  // Ensure sonar script
+  if (selectedCicd.includes('sonar')) {
+    if (!pkg.scripts.sonar) {
+      pkg.scripts.sonar = 'sonar-scanner';
+      updated = true;
+      log('blue', '  Adding sonar script to package.json');
+    }
+    // Ensure sonar-scanner is in devDependencies
+    pkg.devDependencies = pkg.devDependencies || {};
+    if (!pkg.devDependencies['sonar-scanner']) {
+      pkg.devDependencies['sonar-scanner'] = '^5.0.0';
+      updated = true;
+    }
+  }
+
+  if (updated) {
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    log('green', '  ✓ package.json updated with CI/CD scripts');
+  }
+}
+
 function install(targetDir, skipConfig = false, skipChecklist = false) {
   // Resolve to absolute path
   targetDir = path.resolve(targetDir);
@@ -1676,6 +1729,12 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
 
     // Save PR script preferences to .wednesday/config.json
     saveWednesdayConfig(targetDir, selectedCicd);
+
+    // Ensure CI/CD tools and scripts are installed
+    if (selectedCicd.length > 0) {
+      log('blue', '\nSetting up CI/CD tools...');
+      ensureCicdTools(targetDir, selectedCicd);
+    }
 
     // Write default tools.json
     ensureToolsConfig(targetDir);

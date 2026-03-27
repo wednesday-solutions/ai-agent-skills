@@ -607,12 +607,35 @@ async function runMap(targetDir, opts = {}) {
   log('cyan', `   Gaps found: ${gapCount} total, ${highRiskWithGaps} on high-risk files`);
   console.log('');
 
+  // ── Step 1b: Detect daemons and adapters (before summarize so prompts are enriched) ──
+  log('cyan', '① Detecting daemons and adapters...');
+  const { detectDaemons: _detectD }  = require('../src/brownfield/analysis/daemon-detector');
+  const { detectAdapters: _detectA } = require('../src/brownfield/analysis/adapter-detector');
+  const _daemonsByFile  = {};
+  const _adaptersByFile = {};
+  let _daemonCount = 0, _adapterCount = 0;
+
+  for (const [filePath, node] of Object.entries(graph.nodes)) {
+    if (node.error) continue;
+    let _src;
+    try { _src = require('fs').readFileSync(filePath, 'utf8'); } catch { continue; }
+    const _d = _detectD(filePath, _src);
+    const _a = _detectA(filePath, _src);
+    if (_d.length > 0) { _daemonsByFile[filePath]  = _d; _daemonCount  += _d.length; }
+    if (_a.length > 0) { _adaptersByFile[filePath] = _a; _adapterCount += _a.length; }
+  }
+  log('green', `   ✓ ${_daemonCount} daemon patterns · ${_adapterCount} adapter patterns detected`);
+  console.log('');
+
   // ── Step 2: Summarize ─────────────────────────────────────────────────────
   log('cyan', '② Generating summaries and MASTER.md...');
   if (!apiKey) {
     log('yellow', '   No API key — structural summaries only. Comment collection still runs (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for LLM enrichment)');
   }
-  const { summaries, masterPath, qaReport } = await brownfield.summarize(targetDir);
+  const { summaries, masterPath, qaReport } = await brownfield.summarize(targetDir, {
+    daemonsByFile: _daemonsByFile,
+    adaptersByFile: _adaptersByFile,
+  });
   log('green', `   ✓ ${Object.keys(summaries).length} module summaries written`);
   log('green', `   ✓ MASTER.md generated`);
   if (qaReport.flagged.length > 0) {
@@ -639,43 +662,23 @@ async function runMap(targetDir, opts = {}) {
     console.log('');
   }
 
-  // ── Step 4: Detect daemons and adapters ──────────────────────────────────
-  log('cyan', '④ Detecting daemons and adapters...');
+  // ── Step 4: Persist daemons/adapters to DB and export JSON ──────────────
+  log('cyan', '④ Persisting daemons and adapters...');
   {
-    const { detectDaemons }  = require('../src/brownfield/analysis/daemon-detector');
-    const { detectAdapters } = require('../src/brownfield/analysis/adapter-detector');
-    const { GraphStore }     = require('../src/brownfield/engine/store');
+    const { GraphStore } = require('../src/brownfield/engine/store');
     const daemonStore = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
 
-    const fs4   = require('fs');
-    let daemonCount  = 0;
-    let adapterCount = 0;
-
-    for (const [filePath, node] of Object.entries(graph.nodes)) {
-      if (node.error) continue;
-      let source;
-      try {
-        source = fs4.readFileSync(filePath, 'utf8');
-      } catch {
-        continue;
-      }
-
-      const daemons  = detectDaemons(filePath, source);
-      const adapters = detectAdapters(filePath, source);
-
-      if (daemons.length > 0)  {
-        daemonStore.saveDaemons(filePath, daemons);
-        daemonCount += daemons.length;
-      }
-      if (adapters.length > 0) {
-        daemonStore.saveAdapters(filePath, adapters);
-        adapterCount += adapters.length;
-      }
+    // Reuse data already detected in Step 1b — no re-reading files
+    for (const [filePath, daemons] of Object.entries(_daemonsByFile)) {
+      daemonStore.saveDaemons(filePath, daemons);
+    }
+    for (const [filePath, adapters] of Object.entries(_adaptersByFile)) {
+      daemonStore.saveAdapters(filePath, adapters);
     }
 
     // Export to JSON so brownfield-chat can read them without querying SQLite
     const analysisDir4 = require('path').join(targetDir, '.wednesday', 'codebase', 'analysis');
-    fs4.mkdirSync(analysisDir4, { recursive: true });
+    require('fs').mkdirSync(analysisDir4, { recursive: true });
 
     const allDaemons  = daemonStore.getAllDaemons();
     const allAdapters = daemonStore.getAllAdapters();
@@ -695,18 +698,16 @@ async function runMap(targetDir, opts = {}) {
       return acc;
     }, {});
 
-    fs4.writeFileSync(
+    require('fs').writeFileSync(
       require('path').join(analysisDir4, 'daemons.json'),
-      JSON.stringify({ total: daemonCount, byKind: daemonsByKind }, null, 2)
+      JSON.stringify({ total: _daemonCount, byKind: daemonsByKind }, null, 2)
     );
-    fs4.writeFileSync(
+    require('fs').writeFileSync(
       require('path').join(analysisDir4, 'adapters.json'),
-      JSON.stringify({ total: adapterCount, byKind: adaptersByKind }, null, 2)
+      JSON.stringify({ total: _adapterCount, byKind: adaptersByKind }, null, 2)
     );
 
     daemonStore.close();
-    log('green', `   ✓ ${daemonCount} daemon patterns detected`);
-    log('green', `   ✓ ${adapterCount} adapter patterns detected`);
     log('green', `   ✓ daemons.json + adapters.json written`);
     console.log('');
   }

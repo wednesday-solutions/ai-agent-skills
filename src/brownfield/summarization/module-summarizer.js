@@ -86,26 +86,41 @@ function topTaggedComments(file, commentIntel) {
 // ── Prompt builder ─────────────────────────────────────────────────────────────
 
 /**
- * Build a ~70 token prompt.
- * Uses role + tagged comments instead of importedBy paths — same budget, better signal.
+ * Build a ~80 token prompt.
+ * Uses role + exports + signatures + daemon/adapter context + tagged comments.
  */
-function buildPrompt(file, node, lastCommitMsg, taggedComments) {
+function buildPrompt(file, node, lastCommitMsg, taggedComments, daemons, adapters) {
   const role      = classifyRole(file, node);
   const exportStr = node.exports.slice(0, 8).join(', ') || 'none';
+
+  const signatureStr = node.meta?.signatures
+    ? `\nSignatures:\n${node.meta.signatures.slice(0, 1000)}`
+    : '';
+
+  // Compact daemon context: "event-listener(user:login), interval"
+  let daemonStr = '';
+  if (daemons && daemons.length > 0) {
+    const parts = daemons.slice(0, 4).map(d => d.event ? `${d.kind}(${d.event})` : d.kind);
+    daemonStr = `\nDaemons: ${parts.join(', ')}`;
+  }
+
+  // Compact adapter context: "redis, prisma, stripe"
+  let adapterStr = '';
+  if (adapters && adapters.length > 0) {
+    const libs = [...new Set(adapters.slice(0, 4).map(a => a.library))];
+    adapterStr = `\nAdapters: ${libs.join(', ')}`;
+  }
+
   const commentStr = taggedComments.length > 0
     ? `\nDev notes: ${taggedComments.join(' | ')}`
-    : '';
-  
-  const signatureStr = node.meta?.signatures 
-    ? `\nSignatures:\n${node.meta.signatures.slice(0, 1000)}` 
     : '';
 
   return `File: ${file}
 Role: ${role}
-Exports: ${exportStr}${signatureStr}${commentStr}
+Exports: ${exportStr}${signatureStr}${daemonStr}${adapterStr}${commentStr}
 Last change: ${lastCommitMsg || 'unknown'}
 
-Write 2 sentences. Start with what it DOES. Name at least one specific function, type, or export. Do not use generic phrases like "this module contains" or "this file handles".`;
+Write 2 sentences. Start with what it DOES. Name specific functions, exports, or external services. Mention background jobs or external adapters if present. Do not use generic phrases like "this module contains" or "this file handles".`;
 }
 
 // ── LLM call ─────────────────────────────────────────────────────────────────
@@ -131,14 +146,16 @@ function generateStructuralSummary(file, node) {
 /**
  * Summarize all nodes, using cache where possible.
  *
- * @param {Object}      nodes        - dep-graph nodes
- * @param {string}      _rootDir     - project root (unused, kept for API compat)
- * @param {string}      cacheDir     - .wednesday/cache
- * @param {string|null} _apiKey      - unused (reads from env via hasApiKey())
- * @param {Object|null} commentIntel - output of analyseComments (optional)
+ * @param {Object}      nodes          - dep-graph nodes
+ * @param {string}      _rootDir       - project root (unused, kept for API compat)
+ * @param {string}      cacheDir       - .wednesday/cache
+ * @param {string|null} _apiKey        - unused (reads from env via hasApiKey())
+ * @param {Object|null} commentIntel   - output of analyseComments (optional)
+ * @param {Object}      daemonsByFile  - { filePath: [{kind, event, line}] } (optional)
+ * @param {Object}      adaptersByFile - { filePath: [{kind, library, line}] } (optional)
  * @returns {{ summaries: Object, apiCalls: number }}
  */
-async function summarizeAll(nodes, _rootDir, cacheDir, _apiKey, commentIntel = null) {
+async function summarizeAll(nodes, _rootDir, cacheDir, _apiKey, commentIntel = null, daemonsByFile = {}, adaptersByFile = {}) {
   const cache        = loadSummaryCache(cacheDir);
   const commentByDir = buildCommentByDir(commentIntel);
   const summaries    = {};
@@ -210,9 +227,11 @@ async function summarizeAll(nodes, _rootDir, cacheDir, _apiKey, commentIntel = n
       const batch = needsLlm.slice(i, i + BATCH_SIZE);
 
       const results = await Promise.all(batch.map(async ({ file, node, key }) => {
-        const lastCommit   = node.meta?.gitHistory?.lastCommit;
+        const lastCommit     = node.meta?.gitHistory?.lastCommit;
         const taggedComments = topTaggedComments(file, commentIntel);
-        const prompt       = buildPrompt(file, node, lastCommit, taggedComments);
+        const daemons        = daemonsByFile[file] || [];
+        const adapters       = adaptersByFile[file] || [];
+        const prompt         = buildPrompt(file, node, lastCommit, taggedComments, daemons, adapters);
 
         let summary = null;
         try {

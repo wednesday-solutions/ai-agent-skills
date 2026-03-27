@@ -375,7 +375,10 @@ async function summarize(rootDir, opts = {}) {
   // Load commentIntel first — if enrichment has already run, module purposes
   // skip LLM calls entirely and produce better summaries (developer intent > inference)
   const commentIntel = loadCommentIntel(p);
-  const { summaries, apiCalls } = await summarizeAll(graph.nodes, rootDir, p.cacheDir, apiKey, commentIntel);
+  const { summaries, apiCalls } = await summarizeAll(
+    graph.nodes, rootDir, p.cacheDir, apiKey, commentIntel,
+    opts.daemonsByFile || {}, opts.adaptersByFile || {}
+  );
 
   fs.mkdirSync(p.codebaseDir, { recursive: true });
   fs.writeFileSync(p.summaries, JSON.stringify(summaries, null, 2));

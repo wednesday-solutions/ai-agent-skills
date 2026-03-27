@@ -1273,9 +1273,15 @@ const CICD_OPTIONS = [
   {
     id: 'coverage',
     label: 'PR Coverage',
-    desc: 'Post test coverage report as a PR comment (requires npm run coverage)',
+    desc: 'Post test coverage report as a PR comment',
     workflow: 'pr-coverage.yml',
     recommended: true,
+  },
+  {
+    id: 'sonar',
+    label: 'SonarQube Code Quality',
+    desc: 'Run SonarQube analysis and post quality gate result',
+    workflow: 'pr-sonar.yml',
   },
 ];
 

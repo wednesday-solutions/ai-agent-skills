@@ -395,8 +395,31 @@ async function summarize(rootDir, opts = {}) {
     Object.fromEntries(Object.keys(graph.nodes).map(f => [f, classifyRole(f, graph.nodes[f])]))
   );
 
+  // Convert flat daemonsByFile / adaptersByFile into byKind maps for generateMasterMd
+  const _daemonsByFile  = opts.daemonsByFile  || {};
+  const _adaptersByFile = opts.adaptersByFile || {};
+  const daemonData = Object.keys(_daemonsByFile).length > 0 ? {
+    byKind: Object.entries(_daemonsByFile).reduce((acc, [file, entries]) => {
+      for (const e of entries) {
+        acc[e.kind] = acc[e.kind] || [];
+        acc[e.kind].push({ ...e, file });
+      }
+      return acc;
+    }, {}),
+  } : null;
+  const adapterData = Object.keys(_adaptersByFile).length > 0 ? {
+    byKind: Object.entries(_adaptersByFile).reduce((acc, [file, entries]) => {
+      for (const e of entries) {
+        acc[e.kind] = acc[e.kind] || {};
+        acc[e.kind][e.library || e.kind] = (acc[e.kind][e.library || e.kind] || []);
+        acc[e.kind][e.library || e.kind].push({ ...e, file });
+      }
+      return acc;
+    }, {}),
+  } : null;
+
   const legacy = buildLegacyReport(graph.nodes);
-  const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel, 0, 0, {}, store);
+  const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel, 0, 0, {}, store, daemonData, adapterData);
   store.close();
 
   // QA the MASTER.md

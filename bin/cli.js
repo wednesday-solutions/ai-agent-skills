@@ -660,6 +660,29 @@ async function runMap(targetDir, opts = {}) {
     if (_a.length > 0) { _adaptersByFile[filePath] = _a; _adapterCount += _a.length; }
   }
 
+  // ── Extra: scan .plist files under LaunchDaemons/LaunchAgents (not in graph) ──
+  {
+    function _walkPlist(dir) {
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (['node_modules', '.git', 'build', 'DerivedData', 'Pods'].includes(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          _walkPlist(full);
+        } else if (entry.isFile() && entry.name.endsWith('.plist')) {
+          const rel = path.relative(targetDir, full);
+          if (!rel.includes('LaunchDaemons') && !rel.includes('LaunchAgents')) continue;
+          let _src;
+          try { _src = fs.readFileSync(full, 'utf8'); } catch { continue; }
+          const _d = _detectD(full, _src);
+          if (_d.length > 0) { _daemonsByFile[full] = _d; _daemonCount += _d.length; }
+        }
+      }
+    }
+    _walkPlist(targetDir);
+  }
+
   // Save updated cache (include version so old entries are invalidated on pattern changes)
   try {
     fs.mkdirSync(path.dirname(_daCacheFile), { recursive: true });

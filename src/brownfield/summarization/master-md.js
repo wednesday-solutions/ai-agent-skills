@@ -950,7 +950,7 @@ Rules:
 - Skip any section if the data for it is empty/zero.
 - Keep each section short — developers read this in under 2 minutes.`;
 
-  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 1400, operation: 'master-md' });
+  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 3000, operation: 'master-md' });
 }
 
 async function callHaikuArchitecture(sampleNodes, stats) {

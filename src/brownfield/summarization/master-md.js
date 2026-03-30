@@ -185,6 +185,33 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
     for (const mod of commentIntel.modules) commentByDir.set(mod.dir, mod);
   }
 
+  const pkgJson    = readPackageJson(graph.rootDir);
+  const frameworks = new Set(allNodes.map(([, n]) => n.meta?.framework).filter(Boolean));
+  const stack      = buildTechStack(allNodes, pkgJson, graph.stats, frameworks, graph.packages);
+
+  // ── LLM path — if API key available, generate the whole document in one call ──
+  if (apiKey) {
+    const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
+    const flows = store ? discoverPrimaryFlows(store, 5, 4) : [];
+    const ctx = buildCompactContext(
+      graph, summaries, scoreMap, deadFiles, unusedExports,
+      daemonData, adapterData, features, legacyReport, flows, insights, stack
+    );
+
+    let llmContent = null;
+    try {
+      llmContent = await generateWithLlm(ctx, new Date().toISOString());
+    } catch { /* fall through to template */ }
+
+    if (llmContent && llmContent.length > 200) {
+      const outPath = path.join(codebaseDir, 'MASTER.md');
+      fs.mkdirSync(codebaseDir, { recursive: true });
+      fs.writeFileSync(outPath, llmContent);
+      return outPath;
+    }
+  }
+
+  // ── Template fallback (no API key or LLM failed) ───────────────────────────
   const lines = [];
 
   // ── Header ────────────────────────────────────────────────────────────────
@@ -541,10 +568,7 @@ graph LR
   lines.push('');
 
   // ── Tech stack ─────────────────────────────────────────────────────────────
-  const pkgJson = readPackageJson(graph.rootDir);
-  const frameworks = new Set(allNodes.map(([, n]) => n.meta?.framework).filter(Boolean));
-  const stack = buildTechStack(allNodes, pkgJson, graph.stats, frameworks, graph.packages);
-
+  // stack/pkgJson/frameworks already computed above before the LLM path
   lines.push('## Tech stack');
   lines.push('');
   lines.push('| Dimension | Details |');
@@ -781,6 +805,152 @@ function sampleRepresentativeNodes(nodes, maxCount = 10) {
   }
 
   return samples.slice(0, maxCount);
+}
+
+// ── LLM-written MASTER.md ─────────────────────────────────────────────────────
+
+/**
+ * Build a compact context bundle (target: ~1000 tokens) from all collected data.
+ * This becomes the single input to the LLM that writes the full MASTER.md.
+ */
+function buildCompactContext(graph, summaries, scoreMap, deadFiles, unusedExports,
+  daemonData, adapterData, features, legacyReport, flows, insights, stack) {
+
+  const nodes    = graph.nodes;
+  const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
+
+  // Band distribution
+  const bands = { critical: 0, risky: 0, moderate: 0, safe: 0 };
+  for (const s of Object.values(scoreMap)) {
+    const b = s.band?.toLowerCase();
+    if (b && bands[b] !== undefined) bands[b]++;
+  }
+
+  // Top risk files — name, role, score, first sentence of summary
+  const topRisk = allNodes
+    .map(([file, node]) => ({
+      file: path.relative(graph.rootDir || '', file) || file,
+      role: node.role || classifyRole(file, node),
+      score: scoreMap[file]?.score || node.riskScore || 0,
+      summary: (summaries[file] || '').split('.')[0],
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
+
+  // Entry points
+  const entries = allNodes
+    .filter(([, n]) => n.isEntryPoint)
+    .map(([file]) => ({
+      file: path.relative(graph.rootDir || '', file) || file,
+      summary: (summaries[file] || '').split('.')[0],
+    }));
+
+  // Daemons — kind + count + top events
+  const daemonSummary = daemonData ? Object.entries(daemonData.byKind || {}).map(([kind, items]) => ({
+    kind,
+    count: items.length,
+    examples: items.slice(0, 3).map(e => e.event || path.basename(e.file || '')).filter(Boolean),
+  })) : [];
+
+  // Adapters — category + libraries
+  const adapterSummary = adapterData ? Object.entries(adapterData.byKind || {}).map(([kind, libs]) => ({
+    kind,
+    libraries: Object.keys(libs),
+  })) : [];
+
+  // Primary flows (abbreviated)
+  const flowSummary = (flows || []).slice(0, 4).map(f => {
+    const steps = f.path.split(' -> ').map(s => path.basename(s));
+    return steps.join(' → ');
+  });
+
+  // Top tech debt
+  const debtFiles = (legacyReport?.techDebt || []).slice(0, 4).map(td => td.file);
+
+  return {
+    project:    path.basename(graph.rootDir || 'unknown'),
+    platform:   stack?.platform || null,
+    languages:  Object.entries(graph.stats.byLang || {}).sort((a, b) => b[1] - a[1]).map(([l, c]) => `${l}(${c})`),
+    stats: {
+      files:    allNodes.length,
+      edges:    graph.stats.totalEdges,
+      bands,
+    },
+    entryPoints:    entries,
+    topRiskFiles:   topRisk,
+    daemons:        daemonSummary,
+    adapters:       adapterSummary,
+    features:       Object.keys(features),
+    deadCode: {
+      files:   deadFiles.length,
+      exports: Object.keys(unusedExports || {}).length,
+    },
+    circularDeps: {
+      logic:      (legacyReport?.circularDeps || []).filter(c => c.type === 'Logic').length,
+      structural: (legacyReport?.circularDeps || []).filter(c => c.type === 'Structural').length,
+    },
+    primaryFlows: flowSummary,
+    techDebtFiles: debtFiles,
+    healthNarrative: insights?.healthNarrative || null,
+  };
+}
+
+/**
+ * Call the LLM with the compact context and get back a full MASTER.md.
+ * Uses Haiku for cost efficiency (~1000 token input → ~1200 token output).
+ */
+async function generateWithLlm(ctx, generatedAt) {
+  const contextStr = JSON.stringify(ctx, null, 2);
+
+  const prompt = `You are a senior engineer writing codebase documentation. Given the analysis data below, write a concise MASTER.md for the \`${ctx.project}\` project.
+
+DATA:
+${contextStr}
+
+Write the MASTER.md in this exact structure:
+
+# Codebase Intelligence — MASTER.md
+> Generated: ${generatedAt}
+
+## What this does
+[2-3 sentences: what the product is, who uses it, core value. Name specific domains from features list.]
+
+## Platform & stack
+[1-2 sentences: platform, primary language, key frameworks/libraries from adapters.]
+
+## Architecture
+[2-3 sentences: pattern (Clean Swift/VIP, MVC, MVVM, etc.), how data flows, key structural observations.]
+
+## Entry points
+[bullet list: filename — one-line purpose each]
+
+## Watch zones
+| File | Score | Role | Risk reason |
+|------|-------|------|-------------|
+[top 8 from topRiskFiles — explain WHY each is risky in 3-5 words]
+
+## Background processes
+[compact table: Kind | Count | What it does — skip section if daemons array is empty]
+
+## External adapters
+[compact grouped list by category — skip section if adapters array is empty]
+
+## Feature domains
+[comma-separated list of feature names]
+
+## Dead code
+[one sentence summary. Skip if both files and exports are 0.]
+
+---
+*Generated by wednesday-skills map*
+
+Rules:
+- Be direct. No filler phrases like "this file contains" or "this module handles".
+- Name specific files from the data — don't invent file names.
+- Skip any section if the data for it is empty/zero.
+- Keep each section short — developers read this in under 2 minutes.`;
+
+  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 1400, operation: 'master-md' });
 }
 
 async function callHaikuArchitecture(sampleNodes, stats) {

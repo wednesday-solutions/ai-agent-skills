@@ -8,17 +8,24 @@
  * adapters. These are the mocking points for tests and failure points in
  * blast-radius analysis.
  *
+ * Patterns are language-scoped — JS patterns never run on Swift/Go files.
+ *
  * Stored as adapter nodes in the graph DB keyed by file_path + kind + library.
  */
+
+const path = require('path');
+
+const JS_EXTS    = new Set(['.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs']);
+const SWIFT_EXTS = new Set(['.swift', '.m', '.mm']);
+const GO_EXTS    = new Set(['.go']);
 
 /**
  * Each entry:
  *   re       — pattern to detect usage
  *   kind     — adapter category
  *   library  — specific library name
- *   external — does it call outside the process boundary?
  */
-const ADAPTER_PATTERNS = [
+const JS_ADAPTER_PATTERNS = [
   // ── Database ────────────────────────────────────────────────────────────────
   { re: /mongoose\.connect\s*\(/,                         kind: 'database',     library: 'mongoose' },
   { re: /mongoose\.model\s*\(/,                           kind: 'database',     library: 'mongoose' },
@@ -105,12 +112,64 @@ const ADAPTER_PATTERNS = [
   { re: /\bMixpanel\b|\bmixpanel\b/i,                    kind: 'analytics',    library: 'mixpanel' },
 ];
 
-/**
- * Strip string literals and comments to avoid false positives.
- * @param {string} src
- * @returns {string}
- */
-function stripStrings(src) {
+// ── Swift / Objective-C adapter patterns ──────────────────────────────────────
+const SWIFT_ADAPTER_PATTERNS = [
+  // HTTP
+  { re: /\bAF\.request\b|\bAF\.upload\b|\bAF\.download\b/,      kind: 'http-client',  library: 'alamofire' },
+  { re: /\bSession\.default\b|\bSession\s*\(\s*configuration:/,  kind: 'http-client',  library: 'alamofire' },
+  { re: /URLSession\.shared\.\w+Task\s*\(/,                      kind: 'http-client',  library: 'urlsession' },
+  { re: /URLSession\s*\(\s*configuration:/,                      kind: 'http-client',  library: 'urlsession' },
+  // Database
+  { re: /NSPersistentContainer\s*\(/,                            kind: 'database',     library: 'coredata' },
+  { re: /NSManagedObjectContext\b/,                              kind: 'database',     library: 'coredata' },
+  { re: /NSFetchRequest\s*</,                                    kind: 'database',     library: 'coredata' },
+  { re: /\btry\s+Realm\s*\(|\btry!\s+Realm\s*\(/,              kind: 'database',     library: 'realm' },
+  { re: /\bRealm\.Configuration\b/,                              kind: 'database',     library: 'realm' },
+  // Firebase
+  { re: /Firestore\.firestore\s*\(\)/,                           kind: 'database',     library: 'firebase-firestore' },
+  { re: /Auth\.auth\s*\(\)/,                                     kind: 'auth',         library: 'firebase-auth' },
+  { re: /Messaging\.messaging\s*\(\)/,                           kind: 'push',         library: 'firebase-messaging' },
+  { re: /Analytics\.logEvent\b|FirebaseAnalytics\b/,             kind: 'analytics',    library: 'firebase-analytics' },
+  { re: /Crashlytics\.crashlytics\s*\(\)/,                       kind: 'monitoring',   library: 'firebase-crashlytics' },
+  { re: /RemoteConfig\.remoteConfig\s*\(\)/,                     kind: 'config',       library: 'firebase-remote-config' },
+  // Storage
+  { re: /Storage\.storage\s*\(\)/,                               kind: 'storage',      library: 'firebase-storage' },
+  // Auth / Keychain
+  { re: /\bKeychain\b|\bKeychainSwift\b/,                        kind: 'auth',         library: 'keychain' },
+  { re: /\bSecItemAdd\b|\bSecItemCopyMatching\b/,                kind: 'auth',         library: 'security-framework' },
+  { re: /GIDSignIn\.sharedInstance\b/,                           kind: 'auth',         library: 'google-sign-in' },
+  // Payments
+  { re: /SKPaymentQueue\.default\(\)|SKProductsRequest\b/,       kind: 'payment',      library: 'storekit' },
+  { re: /Purchases\.configure\b/,                                kind: 'payment',      library: 'revenuecat' },
+  { re: /STPAPIClient\b|\bStripe\b/,                             kind: 'payment',      library: 'stripe-ios' },
+  // Analytics / Monitoring
+  { re: /SentrySDK\.start\b|\bSentrySDK\b/,                     kind: 'monitoring',   library: 'sentry' },
+  { re: /Amplitude\.instance\(\)|AmplitudeSDK\b/,                kind: 'analytics',    library: 'amplitude' },
+  { re: /Mixpanel\.initialize\b/,                                kind: 'analytics',    library: 'mixpanel' },
+  // Push
+  { re: /UNUserNotificationCenter\.current\(\)/,                 kind: 'push',         library: 'unnotifications' },
+];
+
+// ── Go adapter patterns ────────────────────────────────────────────────────────
+const GO_ADAPTER_PATTERNS = [
+  // Database
+  { re: /\bsql\.Open\s*\(/,                                      kind: 'database',     library: 'database/sql' },
+  { re: /\bgorm\.Open\s*\(/,                                     kind: 'database',     library: 'gorm' },
+  { re: /\bpgx\.Connect\b|\bpgxpool\.New\b/,                    kind: 'database',     library: 'pgx' },
+  // Cache
+  { re: /redis\.NewClient\s*\(/,                                 kind: 'cache',        library: 'go-redis' },
+  // HTTP
+  { re: /http\.NewRequest\b|\bhttp\.Get\b|\bhttp\.Post\b/,       kind: 'http-client',  library: 'net/http' },
+  // gRPC
+  { re: /grpc\.Dial\b|\bgrpc\.NewServer\b/,                      kind: 'rpc',          library: 'grpc' },
+  // Queue
+  { re: /sarama\.NewSyncProducer\b|\bsarama\.NewConsumer\b/,     kind: 'message-queue', library: 'sarama-kafka' },
+  { re: /amqp\.Dial\b/,                                          kind: 'message-queue', library: 'amqp' },
+  // Storage
+  { re: /s3\.New\b|\bs3\.NewFromConfig\b/,                       kind: 'storage',      library: 'aws-s3' },
+];
+
+function stripJs(src) {
   return src
     .replace(/"(?:[^"\\]|\\.)*"/g,  m => ' '.repeat(m.length))
     .replace(/'(?:[^'\\]|\\.)*'/g,  m => ' '.repeat(m.length))
@@ -119,36 +178,26 @@ function stripStrings(src) {
     .replace(/\/\*[\s\S]*?\*\//g,   m => ' '.repeat(m.length));
 }
 
-/**
- * @param {string} src
- * @param {number} offset
- * @returns {number}
- */
+function stripSwift(src) {
+  return src
+    .replace(/"(?:[^"\\]|\\.)*"/g,  m => ' '.repeat(m.length))
+    .replace(/\/\/[^\n]*/g,         m => ' '.repeat(m.length))
+    .replace(/\/\*[\s\S]*?\*\//g,   m => ' '.repeat(m.length));
+}
+
 function lineAt(src, offset) {
   return src.slice(0, offset).split('\n').length;
 }
 
-/**
- * Detect adapter patterns in a source file.
- *
- * Runs patterns on the ORIGINAL source so identifiers are intact,
- * then validates each match position against the stripped source to reject
- * matches that are inside string literals or comments.
- *
- * @param {string} filePath
- * @param {string} source  - raw source code
- * @returns {Array<{kind: string, library: string, external: boolean, line: number}>}
- */
-function detectAdapters(filePath, source) {
-  const stripped = stripStrings(source);
+function runPatterns(patterns, source, stripFn) {
+  const stripped = stripFn(source);
   const results  = [];
   const seen     = new Set();
 
-  for (const { re, kind, library } of ADAPTER_PATTERNS) {
+  for (const { re, kind, library } of patterns) {
     const pattern = new RegExp(re.source, 'g');
     let match;
     while ((match = pattern.exec(source)) !== null) {
-      // Reject if the match start was inside a stripped region
       if (stripped[match.index] === ' ' && source[match.index] !== ' ') continue;
       const line = lineAt(source, match.index);
       const key  = `${kind}|${library}|${line}`;
@@ -158,8 +207,27 @@ function detectAdapters(filePath, source) {
       }
     }
   }
-
   return results;
+}
+
+/**
+ * Detect adapter patterns in a source file.
+ *
+ * Routes to the correct pattern set based on file extension — JS patterns
+ * never fire on Swift/Go files and vice-versa.
+ *
+ * @param {string} filePath
+ * @param {string} source  - raw source code
+ * @returns {Array<{kind: string, library: string, external: boolean, line: number}>}
+ */
+function detectAdapters(filePath, source) {
+  const ext = path.extname(filePath).toLowerCase();
+
+  if (JS_EXTS.has(ext))    return runPatterns(JS_ADAPTER_PATTERNS,    source, stripJs);
+  if (SWIFT_EXTS.has(ext)) return runPatterns(SWIFT_ADAPTER_PATTERNS, source, stripSwift);
+  if (GO_EXTS.has(ext))    return runPatterns(GO_ADAPTER_PATTERNS,    source, stripJs);
+
+  return []; // unsupported language — no false positives
 }
 
 module.exports = { detectAdapters };

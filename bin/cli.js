@@ -611,20 +611,57 @@ async function runMap(targetDir, opts = {}) {
   log('cyan', '① Detecting daemons and adapters...');
   const { detectDaemons: _detectD }  = require('../src/brownfield/analysis/daemon-detector');
   const { detectAdapters: _detectA } = require('../src/brownfield/analysis/adapter-detector');
+  const { GraphStore } = require('../src/brownfield/engine/store');
   const _daemonsByFile  = {};
   const _adaptersByFile = {};
   let _daemonCount = 0, _adapterCount = 0;
 
+  // Open store once — reused in Step 4 for writes
+  const _daemonStore = GraphStore.open(path.join(targetDir, '.wednesday', 'graph.db'));
+
+  // Load daemon/adapter cache keyed by file hash — skips re-detection on unchanged files
+  const _daCacheFile = path.join(targetDir, '.wednesday', 'cache', 'daemon-adapter-cache.json');
+  let _daCache = {};
+  try { _daCache = JSON.parse(fs.readFileSync(_daCacheFile, 'utf8')); } catch {}
+  let _daCacheHits = 0;
+
   for (const [filePath, node] of Object.entries(graph.nodes)) {
     if (node.error) continue;
+
+    // DB hash lookup (fast SQLite read, no disk I/O on the source file)
+    const relPath = path.relative(targetDir, filePath);
+    const storedHash = _daemonStore.getFileHash(relPath);
+
+    if (storedHash && _daCache[storedHash]) {
+      // Cache hit — file unchanged, reuse previous detection results
+      const cached = _daCache[storedHash];
+      if (cached.daemons.length > 0) { _daemonsByFile[filePath] = cached.daemons; _daemonCount += cached.daemons.length; }
+      if (cached.adapters.length > 0) { _adaptersByFile[filePath] = cached.adapters; _adapterCount += cached.adapters.length; }
+      _daCacheHits++;
+      continue;
+    }
+
+    // Cache miss — read file and run detection
     let _src;
-    try { _src = require('fs').readFileSync(filePath, 'utf8'); } catch { continue; }
+    try { _src = fs.readFileSync(filePath, 'utf8'); } catch { continue; }
     const _d = _detectD(filePath, _src);
     const _a = _detectA(filePath, _src);
+
+    // Persist to cache (store even empty results to avoid re-reading next run)
+    if (storedHash) _daCache[storedHash] = { daemons: _d, adapters: _a };
+
     if (_d.length > 0) { _daemonsByFile[filePath]  = _d; _daemonCount  += _d.length; }
     if (_a.length > 0) { _adaptersByFile[filePath] = _a; _adapterCount += _a.length; }
   }
-  log('green', `   ✓ ${_daemonCount} daemon patterns · ${_adapterCount} adapter patterns detected`);
+
+  // Save updated cache
+  try {
+    fs.mkdirSync(path.dirname(_daCacheFile), { recursive: true });
+    fs.writeFileSync(_daCacheFile, JSON.stringify(_daCache));
+  } catch {}
+
+  const _cacheNote = _daCacheHits > 0 ? ` (${_daCacheHits} files from cache)` : '';
+  log('green', `   ✓ ${_daemonCount} daemon patterns · ${_adapterCount} adapter patterns detected${_cacheNote}`);
   console.log('');
 
   // ── Step 2: Summarize ─────────────────────────────────────────────────────
@@ -665,8 +702,8 @@ async function runMap(targetDir, opts = {}) {
   // ── Step 4: Persist daemons/adapters to DB and export JSON ──────────────
   log('cyan', '④ Persisting daemons and adapters...');
   {
-    const { GraphStore } = require('../src/brownfield/engine/store');
-    const daemonStore = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
+    // Reuse store opened in Step 1b — no new connection needed
+    const daemonStore = _daemonStore;
 
     // Reuse data already detected in Step 1b — no re-reading files
     for (const [filePath, daemons] of Object.entries(_daemonsByFile)) {
@@ -677,8 +714,8 @@ async function runMap(targetDir, opts = {}) {
     }
 
     // Export to JSON so brownfield-chat can read them without querying SQLite
-    const analysisDir4 = require('path').join(targetDir, '.wednesday', 'codebase', 'analysis');
-    require('fs').mkdirSync(analysisDir4, { recursive: true });
+    const analysisDir4 = path.join(targetDir, '.wednesday', 'codebase', 'analysis');
+    fs.mkdirSync(analysisDir4, { recursive: true });
 
     const allDaemons  = daemonStore.getAllDaemons();
     const allAdapters = daemonStore.getAllAdapters();
@@ -698,12 +735,12 @@ async function runMap(targetDir, opts = {}) {
       return acc;
     }, {});
 
-    require('fs').writeFileSync(
-      require('path').join(analysisDir4, 'daemons.json'),
+    fs.writeFileSync(
+      path.join(analysisDir4, 'daemons.json'),
       JSON.stringify({ total: _daemonCount, byKind: daemonsByKind }, null, 2)
     );
-    require('fs').writeFileSync(
-      require('path').join(analysisDir4, 'adapters.json'),
+    fs.writeFileSync(
+      path.join(analysisDir4, 'adapters.json'),
       JSON.stringify({ total: _adapterCount, byKind: adaptersByKind }, null, 2)
     );
 

@@ -10,13 +10,13 @@ permissions:
 > **Deprecated:** Gap filling is now part of `brownfield-fix`. When editing a file with coverage gaps, `brownfield-fix` automatically triggers gap resolution. Use `brownfield-fix` instead.
 
 ## When to use
-- dep-graph.json shows `gaps.eventEmitter`, `gaps.dynamic`, or `gaps.conditional` on a file
-- brownfield-chat or brownfield-query returns "not mapped" for an important file
+- DB query shows gaps: `sqlite3 .wednesday/graph.db "SELECT file_path, meta FROM nodes WHERE file_path LIKE '%<file>%'"` — if `meta` contains `gaps.eventEmitter`, `gaps.dynamic`, or `gaps.conditional`
+- brownfield-chat returns "not mapped" for an important file
 - Coverage below 80% on a high-risk file (risk > 50)
 - Dev says "this file is not mapped well" or "why doesn't the graph show this dependency"
 
 ## When NOT to use
-- Asking what a file does → use **brownfield-query** or **brownfield-chat**
+- Asking what a file does → use **brownfield-chat**
 - Architecture violations → use **brownfield-drift**
 - First-time codebase mapping → use **brownfield-map**
 
@@ -44,8 +44,8 @@ permissions:
 Use Bash tool to run:
 - `wednesday-skills fill-gaps --file <file> --min-risk 50`
 - `wednesday-skills analyze --incremental`
-Use Read tool for:
-- `.wednesday/codebase/dep-graph.json` — read `nodes["<file>"].gaps`
+Use Bash for gap check:
+- `sqlite3 .wednesday/graph.db "SELECT file_path, meta FROM nodes WHERE file_path LIKE '%<file>%'"` — check `gaps` field in returned JSON
 
 ## Do NOT use
 Do not read the full file source before running fill-gaps.

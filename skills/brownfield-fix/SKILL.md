@@ -25,7 +25,11 @@ permissions:
    - Cross-language dependents flagged separately
 3. Check .wednesday/codebase/MASTER.md danger zones section
    - If file listed there: read the warning before proceeding
-3a. If the file shows gaps in `.wednesday/codebase/dep-graph.json`, run `wednesday-skills fill-gaps --file <file> --min-risk 50` first — ensures blast radius is complete
+3a. Check if the file has coverage gaps — query the DB:
+   ```bash
+   sqlite3 .wednesday/graph.db "SELECT file_path, meta FROM nodes WHERE file_path LIKE '%<file>%'"
+   ```
+   If the returned `meta` JSON contains `gaps.eventEmitter`, `gaps.dynamic`, or `gaps.conditional` — run `wednesday-skills fill-gaps --file <file> --min-risk 50` first to ensure blast radius is complete.
 4. Make the change
 5. Read git-os skill before writing commit message
 6. After committing: post-commit hook updates graph automatically
@@ -40,6 +44,7 @@ permissions:
 Use Bash tool to run:
 - `wednesday-skills score <file>` — get risk score
 - `wednesday-skills blast <file>` — get blast radius
+- `sqlite3 .wednesday/graph.db "SELECT file_path, meta FROM nodes WHERE file_path LIKE '%<file>%'"` — check for coverage gaps
 Use Read tool for:
 - `.wednesday/codebase/MASTER.md` — check danger zones section
 

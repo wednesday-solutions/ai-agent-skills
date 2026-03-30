@@ -13,38 +13,38 @@
 
 const DAEMON_PATTERNS = [
   // ── Event emitters / listeners ──────────────────────────────────────────────
-  { re: /\.on\(\s*['"`](\w[^'"`]*?)['"`]/g,              kind: 'event-listener' },
-  { re: /\.once\(\s*['"`](\w[^'"`]*?)['"`]/g,            kind: 'event-listener-once' },
-  { re: /\.emit\(\s*['"`](\w[^'"`]*?)['"`]/g,            kind: 'event-emitter' },
+  { re: /\.on\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'event-listener' },
+  { re: /\.once\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'event-listener-once' },
+  { re: /\.emit\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'event-emitter' },
   { re: /\.addEventListener\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'dom-event' },
   { re: /\.removeEventListener\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'dom-event-remove' },
 
   // ── Background timers ───────────────────────────────────────────────────────
-  { re: /\bsetInterval\s*\(/g,                            kind: 'interval',         event: null },
-  { re: /\bsetTimeout\s*\(/g,                             kind: 'timeout',          event: null },
-  { re: /\bsetImmediate\s*\(/g,                           kind: 'immediate',        event: null },
-  { re: /\bqueueMicrotask\s*\(/g,                         kind: 'microtask',        event: null },
+  { re: /\bsetInterval\s*\(/g, kind: 'interval', event: null },
+  { re: /\bsetTimeout\s*\(/g, kind: 'timeout', event: null },
+  { re: /\bsetImmediate\s*\(/g, kind: 'immediate', event: null },
+  { re: /\bqueueMicrotask\s*\(/g, kind: 'microtask', event: null },
 
   // ── Process signals ─────────────────────────────────────────────────────────
-  { re: /process\.on\(\s*['"`](\w[^'"`]*?)['"`]/g,       kind: 'process-signal' },
-  { re: /process\.once\(\s*['"`](\w[^'"`]*?)['"`]/g,     kind: 'process-signal-once' },
+  { re: /process\.on\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'process-signal' },
+  { re: /process\.once\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'process-signal-once' },
 
   // ── Queue / Pub-Sub consumers ───────────────────────────────────────────────
-  { re: /\.consume\s*\(/g,                                kind: 'queue-consumer',   event: null },
-  { re: /\.subscribe\s*\(\s*['"`](\w[^'"`]*?)['"`]/g,    kind: 'subscriber' },
-  { re: /\.subscribe\s*\([^'"`]/g,                        kind: 'subscriber',       event: null },
-  { re: /\.listen\s*\(\s*['"`](\w[^'"`]*?)['"`]/g,       kind: 'listener' },
+  { re: /\.consume\s*\(/g, kind: 'queue-consumer', event: null },
+  { re: /\.subscribe\s*\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'subscriber' },
+  { re: /\.subscribe\s*\([^'"`]/g, kind: 'subscriber', event: null },
+  { re: /\.listen\s*\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'listener' },
 
   // ── WebSocket handlers ──────────────────────────────────────────────────────
   { re: /io\.on\(\s*['"`](connection|disconnect)[^'"`]*['"`]/g, kind: 'websocket-server' },
-  { re: /socket\.on\(\s*['"`](\w[^'"`]*?)['"`]/g,              kind: 'websocket-handler' },
-  { re: /wss?\.on\(\s*['"`](\w[^'"`]*?)['"`]/g,                kind: 'websocket-raw' },
+  { re: /socket\.on\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'websocket-handler' },
+  { re: /wss?\.on\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'websocket-raw' },
 
   // ── Cron jobs ───────────────────────────────────────────────────────────────
-  { re: /cron\.schedule\s*\(\s*['"`]([^'"`]+)['"`]/g,    kind: 'cron-job' },
-  { re: /schedule\s*\(\s*['"`]([\d*/,\- ]+)['"`]/g,      kind: 'cron-job' },
-  { re: /new\s+CronJob\s*\(/g,                            kind: 'cron-job',         event: null },
-  { re: /\.scheduleJob\s*\(/g,                            kind: 'cron-job',         event: null },
+  { re: /cron\.schedule\s*\(\s*['"`]([^'"`]+)['"`]/g, kind: 'cron-job' },
+  { re: /schedule\s*\(\s*['"`]([\d*/,\- ]+)['"`]/g, kind: 'cron-job' },
+  { re: /new\s+CronJob\s*\(/g, kind: 'cron-job', event: null },
+  { re: /\.scheduleJob\s*\(/g, kind: 'cron-job', event: null },
 ];
 
 /**
@@ -64,11 +64,11 @@ function lineAt(src, offset) {
  */
 function stripStrings(src) {
   return src
-    .replace(/"(?:[^"\\]|\\.)*"/g,  m => ' '.repeat(m.length))
-    .replace(/'(?:[^'\\]|\\.)*'/g,  m => ' '.repeat(m.length))
-    .replace(/`(?:[^`\\]|\\.)*`/g,  m => ' '.repeat(m.length))
-    .replace(/\/\/[^\n]*/g,         m => ' '.repeat(m.length))
-    .replace(/\/\*[\s\S]*?\*\//g,   m => ' '.repeat(m.length));
+    .replace(/"(?:[^"\\]|\\.)*"/g, m => ' '.repeat(m.length))
+    .replace(/'(?:[^'\\]|\\.)*'/g, m => ' '.repeat(m.length))
+    .replace(/`(?:[^`\\]|\\.)*`/g, m => ' '.repeat(m.length))
+    .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length))
+    .replace(/\/\*[\s\S]*?\*\//g, m => ' '.repeat(m.length));
 }
 
 /**
@@ -84,8 +84,8 @@ function stripStrings(src) {
  */
 function detectDaemons(filePath, source) {
   const stripped = stripStrings(source);
-  const results  = [];
-  const seen     = new Set();
+  const results = [];
+  const seen = new Set();
 
   for (const { re, kind, event: fixedEvent } of DAEMON_PATTERNS) {
     const pattern = new RegExp(re.source, 'g');
@@ -98,8 +98,8 @@ function detectDaemons(filePath, source) {
       if (stripped[match.index] === ' ' && source[match.index] !== ' ') continue;
 
       const event = fixedEvent !== undefined ? fixedEvent : (match[1] || null);
-      const line  = lineAt(source, match.index);
-      const key   = `${kind}|${event}|${line}`;
+      const line = lineAt(source, match.index);
+      const key = `${kind}|${event}|${line}`;
       if (!seen.has(key)) {
         seen.add(key);
         results.push({ kind, event, line });
@@ -111,3 +111,6 @@ function detectDaemons(filePath, source) {
 }
 
 module.exports = { detectDaemons };
+
+
+// .plist, bundle, /Library/LaunchDaemons

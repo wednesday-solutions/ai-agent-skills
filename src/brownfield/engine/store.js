@@ -652,7 +652,7 @@ class GraphStore {
           SELECT source, target, 1, source || ' -> ' || target, (kind = 'calls')
           FROM edges
           JOIN nodes ON edges.source = nodes.file_path
-          WHERE (nodes.is_entry = 1 OR (nodes.file_path LIKE '%ViewController%' AND nodes.imported_by_count < 2))
+          WHERE (nodes.is_entry = 1 OR (nodes.file_path LIKE '%ViewController%' AND (SELECT COUNT(*) FROM edges ie WHERE ie.target = nodes.file_path AND ie.kind = 'imports') < 2))
             AND target NOT LIKE '%Extensions%'
             AND target NOT LIKE '%Constants%'
             AND target NOT LIKE '%Generated%'

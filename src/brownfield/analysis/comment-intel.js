@@ -228,34 +228,35 @@ function buildModuleDigest(dir, mod, nodes = {}) {
 
   const fileInfos = mod.files.slice(0, 10).map(f => {
     const n = nodes[f];
-    if (!n) return `  ${f}`;
-    const sigs = n.meta?.signatures ? `\n    Signatures:\n    ${n.meta.signatures.slice(0, 300)}` : '';
-    return `  ${f} (exports: ${n.exports.slice(0, 5).join(', ') || 'none'})${sigs}`;
+    if (!n) return `  ${path.basename(f)}`;
+    const role = n.role || '';
+    const sigs = n.meta?.signatures ? ` | sigs: ${n.meta.signatures.slice(0, 200)}` : '';
+    const exp  = n.exports.slice(0, 5).join(', ');
+    return `  ${path.basename(f)} [${role}] exports: ${exp || 'none'}${sigs}`;
   });
   lines.push('Files:\n' + fileInfos.join('\n'));
 
-  const untaggedSample = mod.untagged.slice(0, 15);
-  if (untaggedSample.length > 0) {
-    lines.push('Dev Comments:');
-    untaggedSample.forEach(c => lines.push(`  ${c.file}:${c.line} — ${c.text}`));
+  if (mod.untagged.length > 0) {
+    lines.push('Dev comments:');
+    mod.untagged.slice(0, 10).forEach(c => lines.push(`  ${path.basename(c.file)}:${c.line} — ${c.text}`));
   }
 
   if (mod.tagged.length > 0) {
-    lines.push('Tagged:');
-    mod.tagged.slice(0, 20).forEach(c => lines.push(`  [${c.type}] ${c.file}:${c.line} — ${c.text}`));
+    lines.push('Tagged comments:');
+    mod.tagged.slice(0, 15).forEach(c => lines.push(`  [${c.type}] ${path.basename(c.file)}:${c.line} — ${c.text}`));
   }
 
   return lines.join('\n');
 }
 
-const MODULE_ENRICH_PROMPT = `You are analysing code comments grouped by module directory.
+const MODULE_ENRICH_PROMPT = `You are analysing source code modules. For each module, infer its purpose from file names, exported symbols, roles, and any developer comments present. Even when there are no comments, file names like "AuthViewController", "PaymentService", or "UserRepository" clearly indicate intent — use them.
 
 For each module below, respond with a JSON array. Each element must have exactly these fields:
-- "dir": the module directory path (copy from input)
-- "purpose": 1 sentence describing what this module does, inferred from its comments
-- "techDebt": "high" | "medium" | "low" | "none"
-- "isBizFeature": true if this looks like a business feature (auth, payments, users, orders...), false if infrastructure (utils, helpers, config, logging...)
-- "ideas": array of max 3 concrete improvement suggestions, or []
+- "dir": the module directory path (copy exactly from input)
+- "purpose": 1 sentence describing what this module does. Use file names and exports as primary signal. Never return null — always infer something from the file names.
+- "techDebt": "high" | "medium" | "low" | "none" — base on tagged comments (FIXME/HACK/TODO) if present, otherwise "none"
+- "isBizFeature": true if this is a business feature (auth, payments, users, orders, home, onboarding, search, chat, media...), false if infrastructure (utils, helpers, config, logging, extensions, base classes...)
+- "ideas": array of max 3 concrete improvement suggestions from TODO/FIXME comments, or []
 
 Respond with ONLY the JSON array. No preamble. No markdown fences.
 
@@ -267,12 +268,16 @@ MODULES:
  * Returns Map<dir, { purpose, techDebt, isBizFeature, ideas }>
  */
 async function enrichModules(moduleMap, nodes = {}) {
-  // Include ALL directories that have high risk or are entry points, even without comments
+  // Include all directories — file names alone are enough signal for purpose + isBizFeature.
+  // Skip only dirs with a single file that has no exports and no comments (truly empty modules).
   const dirs = [...moduleMap.keys()].filter(d => {
     const mod = moduleMap.get(d);
-    const hasHighRisk = mod.files.some(f => (nodes[f]?.riskScore || 0) > 40);
-    const hasEntry = mod.files.some(f => nodes[f]?.isEntryPoint);
-    return mod.tagged.length > 0 || mod.untagged.length > 0 || hasHighRisk || hasEntry;
+    if (mod.files.length === 0) return false;
+    if (mod.files.length === 1 && mod.tagged.length === 0 && mod.untagged.length === 0) {
+      const n = nodes[mod.files[0]];
+      if (!n || (n.exports.length === 0 && !n.isEntryPoint)) return false;
+    }
+    return true;
   });
 
   const enriched = new Map();
@@ -292,7 +297,7 @@ async function enrichModules(moduleMap, nodes = {}) {
     const raw = await callLLM({
       model: 'haiku',
       messages: [{ role: 'user', content: MODULE_ENRICH_PROMPT + digest }],
-      maxTokens: 800,
+      maxTokens: 1400,  // 10 modules × ~120 tokens/module + JSON overhead
       temperature: 0,
       operation: 'comment-intel',
       baselineTokens,

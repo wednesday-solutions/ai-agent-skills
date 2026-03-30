@@ -282,7 +282,17 @@ function buildGraph(rootDir, opts = {}) {
         continue;
       }
 
-      if (!isDemoOrTest && !isHeader && (node.importedBy.length === 0 || isBin || looksLikeEntry)) {
+      // C/C++ files use #include (not tracked as imports), so importedBy is always empty.
+      // Only mark C files as entry points if they actually define main() or match name/bin patterns.
+      const isC = ['c', 'cpp', 'cc', 'cxx', 'm', 'mm'].includes(ext.replace('.', ''));
+      if (isC) {
+        let src = '';
+        try { src = fs.readFileSync(path.join(rootDir, node.file), 'utf8'); } catch {}
+        const hasMain = /\bint\s+main\s*\(|\bvoid\s+main\s*\(/.test(src);
+        if (!isDemoOrTest && !isHeader && (hasMain || isBin || looksLikeEntry)) {
+          node.isEntryPoint = true;
+        }
+      } else if (!isDemoOrTest && !isHeader && (node.importedBy.length === 0 || isBin || looksLikeEntry)) {
         node.isEntryPoint = true;
       }
     }

@@ -250,6 +250,10 @@ class GraphStore {
         `UPDATE nodes SET band = ?, risk_score = ? WHERE file_path = ?`
       ),
 
+      updateRole: this._db.prepare(
+        `UPDATE nodes SET role = ? WHERE file_path = ?`
+      ),
+
       getByRole: this._db.prepare(
         `SELECT file_path, summary, risk_score, band FROM nodes WHERE role = ? AND is_test = 0 ORDER BY risk_score DESC`
       ),
@@ -380,7 +384,7 @@ class GraphStore {
    * @param {string} [fileHash]
    */
   upsertNode(node, fileHash) {
-    const isTest = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|\/__tests__\//.test(node.file) ? 1 : 0;
+    const isTest = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|\/__tests__\/|Tests\.swift$|Spec\.swift$|UITests\.swift$|\/Tests\/|_test\.go$|Test\.kt$|\/androidTest\//.test(node.file) ? 1 : 0;
     this._stmts.upsertNode.run({
       file_path:  node.file,
       lang:       node.lang || '',
@@ -424,6 +428,19 @@ class GraphStore {
       }
     });
     tx(Object.entries(scoreMap));
+  }
+
+  /**
+   * Bulk-update role classifications after role assignment.
+   * @param {Object} roleMap  — { filePath: roleString }
+   */
+  updateRoles(roleMap) {
+    const tx = this._db.transaction((entries) => {
+      for (const [file, role] of entries) {
+        this._stmts.updateRole.run(role || '', file);
+      }
+    });
+    tx(Object.entries(roleMap));
   }
 
   /**

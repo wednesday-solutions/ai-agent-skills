@@ -31,6 +31,7 @@ const { genTests, selectTargets } = require('./reasoning/test-generator');
 const { hasApiKey, getApiKey, tokenLogger } = require('./core/llm-client');
 const { analyseComments } = require('./analysis/comment-intel');
 const { detectFeatureModules } = require('./analysis/feature-modules');
+const { classifyRole } = require('./summarization/role-classifier');
 
 /**
  * Compute SHA-1 hashes for a list of absolute file paths.
@@ -389,6 +390,9 @@ async function summarize(rootDir, opts = {}) {
   store.updateSummaries(summaries);
   store.updateScores(
     Object.fromEntries(Object.entries(scoreMap).map(([f, s]) => [f, { band: s.band, score: s.score }]))
+  );
+  store.updateRoles(
+    Object.fromEntries(Object.keys(graph.nodes).map(f => [f, classifyRole(f, graph.nodes[f])]))
   );
 
   const legacy = buildLegacyReport(graph.nodes);

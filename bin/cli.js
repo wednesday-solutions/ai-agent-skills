@@ -780,15 +780,14 @@ async function runMap(targetDir, opts = {}) {
   });
   if (insights.healthNarrative) log('green', '   ✓ Health narrative generated');
 
-  const codebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
-  const { GraphStore } = require('../src/brownfield/engine/store');
-  const store = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
+  const codebaseDir = path.join(targetDir, '.wednesday', 'codebase');
+  const store = GraphStore.open(path.join(targetDir, '.wednesday', 'graph.db'));
 
   // Load daemon/adapter JSON for MASTER.md summary sections
-  const _analysisDir = require('path').join(codebaseDir, 'analysis');
+  const _analysisDir = path.join(codebaseDir, 'analysis');
   let _daemonData = null, _adapterData = null;
-  try { _daemonData  = JSON.parse(require('fs').readFileSync(require('path').join(_analysisDir, 'daemons.json'), 'utf8')); } catch {}
-  try { _adapterData = JSON.parse(require('fs').readFileSync(require('path').join(_analysisDir, 'adapters.json'), 'utf8')); } catch {}
+  try { _daemonData  = JSON.parse(fs.readFileSync(path.join(_analysisDir, 'daemons.json'), 'utf8')); } catch {}
+  try { _adapterData = JSON.parse(fs.readFileSync(path.join(_analysisDir, 'adapters.json'), 'utf8')); } catch {}
 
   const masterOutPath = await generateMasterMd(
     graph, summaries, legacyReport, codebaseDir, apiKey,

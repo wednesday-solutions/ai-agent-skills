@@ -619,10 +619,16 @@ async function runMap(targetDir, opts = {}) {
   // Open store once — reused in Step 4 for writes
   const _daemonStore = GraphStore.open(path.join(targetDir, '.wednesday', 'graph.db'));
 
-  // Load daemon/adapter cache keyed by file hash — skips re-detection on unchanged files
+  // Load daemon/adapter cache keyed by file hash — skips re-detection on unchanged files.
+  // Version key: bump when detection patterns change to force full re-detection.
+  const _DA_CACHE_VERSION = 2; // bumped: language-scoped patterns + Swift/Go support
   const _daCacheFile = path.join(targetDir, '.wednesday', 'cache', 'daemon-adapter-cache.json');
   let _daCache = {};
-  try { _daCache = JSON.parse(fs.readFileSync(_daCacheFile, 'utf8')); } catch {}
+  try {
+    const _loaded = JSON.parse(fs.readFileSync(_daCacheFile, 'utf8'));
+    // Discard cache if version mismatch — old entries used wrong patterns
+    if (_loaded._version === _DA_CACHE_VERSION) _daCache = _loaded;
+  } catch {}
   let _daCacheHits = 0;
 
   for (const [filePath, node] of Object.entries(graph.nodes)) {
@@ -654,10 +660,10 @@ async function runMap(targetDir, opts = {}) {
     if (_a.length > 0) { _adaptersByFile[filePath] = _a; _adapterCount += _a.length; }
   }
 
-  // Save updated cache
+  // Save updated cache (include version so old entries are invalidated on pattern changes)
   try {
     fs.mkdirSync(path.dirname(_daCacheFile), { recursive: true });
-    fs.writeFileSync(_daCacheFile, JSON.stringify(_daCache));
+    fs.writeFileSync(_daCacheFile, JSON.stringify({ ...(_daCache), _version: _DA_CACHE_VERSION }));
   } catch {}
 
   const _cacheNote = _daCacheHits > 0 ? ` (${_daCacheHits} files from cache)` : '';

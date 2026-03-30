@@ -56,7 +56,7 @@ function computeHashes(files, rootDir) {
  */
 function buildTestCoverageMap(nodes) {
   const coverageMap = {};
-  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/;
+  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__|Tests\.swift$|Spec\.swift$|UITests\.swift$|\/Tests\/|_test\.go$|Test\.kt$|\/androidTest\//;
 
   for (const file of Object.keys(nodes)) {
     if (!TEST_RE.test(file)) coverageMap[file] = 0;

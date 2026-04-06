@@ -14,6 +14,7 @@ const { scoreAll } = require('../analysis/safety-scorer');
 const { findDeadCode, findCircularDeps } = require('../analysis/dead-code');
 const { blastRadius } = require('../analysis/blast-radius');
 const { extractIosMetadata } = require('../analysis/ios-metadata');
+const { detectEntryPoints } = require('../analysis/entry-point-detector');
 
 // ── Shared grouping helper ─────────────────────────────────────────────────
 function groupByDir(allNodes) {
@@ -159,12 +160,132 @@ function isHighValue(node) {
   return node.isEntryPoint || node.importedBy.length > 10 || node.riskScore > 70;
 }
 
+// ── Mode 0: Skeleton for unmapped codebase ────────────────────────────────────
+function generateMode0Skeleton(rootDir, pkgJson) {
+  const projectName = pkgJson?.name || path.basename(rootDir) || 'Project';
+  const mainField = pkgJson?.main || '';
+  const desc = pkgJson?.description || '';
+
+  const lines = [];
+  lines.push(`# ${projectName} — Codebase Intelligence`);
+  lines.push('');
+  lines.push('> ⚠️ **Not yet analyzed.** This document is a skeleton template.');
+  lines.push('');
+  lines.push('To generate comprehensive intelligence about your codebase:');
+  lines.push('');
+  lines.push('```bash');
+  lines.push('wednesday-skills map --full');
+  lines.push('```');
+  lines.push('');
+  lines.push('(Takes 2-5 minutes on first run.)');
+  lines.push('');
+
+  if (desc) {
+    lines.push('## What This Does');
+    lines.push('');
+    lines.push(desc);
+    lines.push('');
+  }
+
+  if (mainField) {
+    lines.push('## Quick Start');
+    lines.push('');
+    lines.push(`Entry point (from package.json): \`${mainField}\``);
+    lines.push('');
+    lines.push(`Read this file first, then follow its imports to understand the codebase.`);
+    lines.push('');
+  }
+
+  lines.push('## Getting Help');
+  lines.push('');
+  lines.push('- **Understand a file:** Use `/brownfield-chat "what does X do?"`');
+  lines.push('- **Check edit risk:** Use `/brownfield-fix <filename>`');
+  lines.push('- **See change impact:** Use `/brownfield-blast <filename>`');
+  lines.push('- **Update this doc:** Run `wednesday-skills map --full`');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ── Generate reading order from entry point ────────────────────────────────────
+function generateReadingOrder(entryFile, nodes, flows, limit = 10) {
+  const visited = new Set();
+  const order = [];
+
+  // Start with entry point
+  if (entryFile && nodes[entryFile]) {
+    order.push(entryFile);
+    visited.add(entryFile);
+  }
+
+  // Add files from flows
+  if (flows && flows.length > 0) {
+    for (const flow of flows) {
+      const parts = flow.path?.split(' -> ') || [];
+      for (const part of parts) {
+        if (!visited.has(part) && order.length < limit) {
+          order.push(part);
+          visited.add(part);
+        }
+      }
+    }
+  }
+
+  // Fill remaining slots with high-fanin files not yet added
+  if (order.length < limit) {
+    const candidates = Object.entries(nodes)
+      .filter(([f]) => !visited.has(f) && nodes[f].importedBy?.length > 3)
+      .sort((a, b) => (b[1].importedBy?.length || 0) - (a[1].importedBy?.length || 0))
+      .slice(0, limit - order.length)
+      .map(([f]) => f);
+    order.push(...candidates);
+  }
+
+  return order.slice(0, limit);
+}
+
+// ── Confidence label helper ────────────────────────────────────────────────────
+function confidenceLabel(confidence) {
+  if (confidence >= 80) return 'HIGH';
+  if (confidence >= 50) return 'MODERATE';
+  return 'LOW';
+}
+
+// ── Deterministic product orientation fallback ────────────────────────────────
+function generateDeterministicOrientation(pkgJson, stack, stats) {
+  const lines = [];
+
+  if (pkgJson?.description) {
+    lines.push(pkgJson.description);
+  } else {
+    const langList = stack.languages.join(', ');
+    const platform = stack.platform || 'Unknown';
+    lines.push(`${platform} project written in ${langList}. Contains ${stats.totalFiles} files across ${Object.keys(stats.byLang || {}).length} language(s).`);
+  }
+
+  if (stack.frameworks?.length > 0) {
+    lines.push(``);
+    lines.push(`**Tech stack:** ${stack.frameworks.join(', ')}`);
+  }
+
+  return lines.join('\n') || 'A software project.';
+}
+
 /**
  * Generate full MASTER.md — every file documented in detail
  */
 async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null, gapsFilled = 0, elapsed = 0, insights = {}, store = null, daemonData = null, adapterData = null) {
   const nodes = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
+
+  // ── Mode 0: No graph / unmapped codebase ──────────────────────────────────
+  if (allNodes.length === 0) {
+    const skeleton = generateMode0Skeleton(graph.rootDir, readPackageJson(graph.rootDir));
+    const outPath = path.join(codebaseDir, 'MASTER.md');
+    fs.mkdirSync(codebaseDir, { recursive: true });
+    fs.writeFileSync(outPath, skeleton);
+    return outPath;
+  }
 
   // Pre-compute derived data used by multiple sections
   const scoreMap = scoreAll(nodes, buildTestCoverageMap(nodes), commentIntel);
@@ -193,9 +314,11 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   if (apiKey) {
     const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
     const flows = store ? discoverPrimaryFlows(store, 5, 4) : [];
+    const graphCoverage = graph.stats?.coverage || 0;
+    const entryPointsDetected = detectEntryPoints(nodes, pkgJson, graphCoverage);
     const ctx = buildCompactContext(
       graph, summaries, scoreMap, deadFiles, unusedExports,
-      daemonData, adapterData, features, legacyReport, flows, insights, stack
+      daemonData, adapterData, features, legacyReport, flows, insights, stack, entryPointsDetected
     );
 
     let llmContent = null;
@@ -220,15 +343,22 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push('');
 
   // ── Product orientation (AI-generated from features/signatures) ────────────
+  let productOrientation = null;
   if (apiKey) {
-    const productOrientation = await callHaikuProductOrientation(features, sampleRepresentativeNodes(nodes, 30));
-    if (productOrientation) {
-      lines.push('## Product orientation');
-      lines.push('');
-      lines.push(`${productOrientation}`);
-      lines.push('');
+    try {
+      productOrientation = await callHaikuProductOrientation(features, sampleRepresentativeNodes(nodes, 30));
+    } catch {
+      // LLM call failed, use fallback
     }
   }
+  if (!productOrientation) {
+    // Use deterministic fallback
+    productOrientation = generateDeterministicOrientation(pkgJson, stack, graph.stats);
+  }
+  lines.push('## Product orientation');
+  lines.push('');
+  lines.push(`${productOrientation}`);
+  lines.push('');
 
   // ── Codebase health (AI narrative) ────────────────────────────────────────
   if (insights.healthNarrative) {
@@ -264,8 +394,8 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push(`| Dead | ${deadFiles.length} files · ${unusedExportCount} unused exports |`);
   lines.push(`| Circular deps | ${logicCycles} logic · ${structuralCycles} structural |`);
   lines.push(`| God files | ${legacyReport?.godFiles?.length || 0} |`);
-  if (daemonData)  lines.push(`| Daemons | ${daemonData.total} patterns · ${Object.keys(daemonData.byKind || {}).length} kinds |`);
-  if (adapterData) lines.push(`| Adapters | ${adapterData.total} · ${Object.keys(adapterData.byKind || {}).length} categories |`);
+  if (daemonData)  lines.push(`| Background processes | ${daemonData.total} patterns · ${Object.keys(daemonData.byKind || {}).length} kinds |`);
+  if (adapterData) lines.push(`| External adapters | ${adapterData.total} · ${Object.keys(adapterData.byKind || {}).length} categories |`);
   if (totalGaps > 0) lines.push(`| Coverage gaps | ${totalGaps}${gapsFilled ? ` · ${gapsFilled} filled` : ''} |`);
   lines.push('');
 
@@ -273,11 +403,13 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push('## Table of contents');
   lines.push('');
   const tocItems = [
+    { title: 'Suggested reading order',   id: 'suggested-reading-order' },
     { title: 'Primary application flows', id: 'primary-application-flows' },
     { title: 'Architecture overview',     id: 'architecture-overview' },
     { title: 'Entry points',              id: 'entry-points' },
     { title: 'Watch zones',               id: 'watch-zones' },
-    { title: 'Daemons & adapters',        id: 'daemons--adapters' },
+    { title: 'Background processes',       id: 'background-processes' },
+    { title: 'External adapters',          id: 'external-adapters' },
     { title: 'Dead code',                 id: 'dead-code' },
     { title: 'Module map',                id: 'module-map' },
     { title: 'Tech stack',                id: 'tech-stack' },
@@ -288,14 +420,94 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   tocItems.forEach((item, i) => lines.push(`${i + 1}. [${item.title}](#${item.id})`));
   lines.push('');
 
+  // ── Suggested reading order ────────────────────────────────────────────────
+  lines.push('## Suggested reading order');
+  lines.push('');
+
+  // Detect entry points with confidence scores
+  const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
+  const flows = store ? discoverPrimaryFlows(store, 5, 4) : [];
+  const graphCoverage = graph.stats?.coverage || 0;
+  const entryPointsDetected = detectEntryPoints(nodes, readPackageJson(graph.rootDir), graphCoverage);
+  const sortedEntries = entryPointsDetected.sort((a, b) => b.confidence - a.confidence);
+
+  if (sortedEntries.length === 0) {
+    lines.push('*No entry points detected. Consider marking a file with `@main` comment or setting `main` field in package.json.*');
+  } else {
+    const topEntry = sortedEntries[0];
+    const confidence = topEntry.confidence;
+    const confLabel = confidenceLabel(confidence);
+
+    lines.push(`**Entry point confidence: ${confidence}% (${confLabel})**`);
+    lines.push('');
+
+    if (confidence >= 80) {
+      // High confidence: show single reading order
+      const readingOrder = generateReadingOrder(topEntry.filePath, nodes, flows, 12);
+      lines.push(`### Start here → \`${topEntry.filePath}\``);
+      lines.push(`Detected via: ${topEntry.detectionMethod} (${topEntry.reason})`);
+      lines.push('');
+      for (let i = 0; i < readingOrder.length; i++) {
+        const file = readingOrder[i];
+        const node = nodes[file];
+        const summary = summaries[file] || '(no summary)';
+        lines.push(`${i + 1}. **\`${file}\`** — ${summary.split('\n')[0]}`);
+      }
+      lines.push('');
+      lines.push('> Once you understand these files, trace imports to explore the rest of the codebase.');
+    } else if (confidence >= 50) {
+      // Moderate confidence: show primary + alternative
+      lines.push(`### Option A (${confidence}% confidence) → \`${topEntry.filePath}\``);
+      lines.push(`Detected via: ${topEntry.detectionMethod} (${topEntry.reason})`);
+      lines.push('');
+      const readingOrder1 = generateReadingOrder(topEntry.filePath, nodes, flows, 10);
+      for (let i = 0; i < readingOrder1.length; i++) {
+        const file = readingOrder1[i];
+        const summary = summaries[file] || '(no summary)';
+        lines.push(`${i + 1}. **\`${file}\`**`);
+      }
+      lines.push('');
+      if (sortedEntries.length > 1) {
+        const alt = sortedEntries[1];
+        lines.push(`### Option B (${alt.confidence}% confidence) → \`${alt.filePath}\``);
+        lines.push(`Detected via: ${alt.detectionMethod} (${alt.reason})`);
+        lines.push('');
+        const readingOrder2 = generateReadingOrder(alt.filePath, nodes, flows, 10);
+        for (let i = 0; i < readingOrder2.length; i++) {
+          const file = readingOrder2[i];
+          const summary = summaries[file] || '(no summary)';
+          lines.push(`${i + 1}. **\`${file}\`**`);
+        }
+        lines.push('');
+      }
+      lines.push('> **Tip:** If neither option matches your actual code flow, check the [Entry points](#entry-points) section for other detected entries.');
+    } else {
+      // Low confidence: show multiple options + manual selector
+      lines.push('**Multiple entry points detected. Choose the one that matches your deployment:**');
+      lines.push('');
+      for (let i = 0; i < Math.min(3, sortedEntries.length); i++) {
+        const entry = sortedEntries[i];
+        lines.push(`### Option ${String.fromCharCode(65 + i)} (${entry.confidence}% confidence) → \`${entry.filePath}\``);
+        lines.push(`Detected via: ${entry.detectionMethod} (${entry.reason})`);
+        lines.push('');
+        const order = generateReadingOrder(entry.filePath, nodes, flows, 8);
+        for (let j = 0; j < order.length; j++) {
+          const file = order[j];
+          const summary = summaries[file] || '(no summary)';
+          lines.push(`${j + 1}. **\`${file}\`**`);
+        }
+        lines.push('');
+      }
+      lines.push('> **Graph coverage is low.** Run `wednesday-skills map --full` to improve entry point detection accuracy.');
+    }
+  }
+  lines.push('');
+
   // ── Primary application flows ──────────────────────────────────────────────
   lines.push('## Primary application flows');
   lines.push('');
   lines.push('> Traced functional paths from entry points to core logic. Read these to understand the execution lifecycle.');
   lines.push('');
-
-  const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
-  const flows = store ? discoverPrimaryFlows(store, 5, 4) : [];
 
   if (flows.length > 0) {
     for (const flow of flows) {
@@ -409,15 +621,17 @@ graph LR
   // ── Entry points ──────────────────────────────────────────────────────────
   lines.push('## Entry points');
   lines.push('');
-  const entries = allNodes.filter(([, n]) => n.isEntryPoint);
-  if (entries.length === 0) {
-    lines.push('*No entry points detected*');
+  lines.push('> Detected starting points for reading/debugging this codebase. See [Suggested reading order](#suggested-reading-order) for recommended sequence.');
+  lines.push('');
+
+  if (sortedEntries.length === 0) {
+    lines.push('*No entry points detected. Consider marking a file with `@main` comment or setting `main` field in package.json.*');
   } else {
-    for (const [file, node] of entries) {
-      lines.push(`- **\`${file}\`** — ${summaries[file] || 'application entry point'}`);
-      if (node.imports.length > 0) {
-        lines.push(`  - Imports: ${node.imports.slice(0, 6).join(', ')}`);
-      }
+    lines.push('| File | Confidence | Method | Details |');
+    lines.push('|------|-----------|--------|---------|');
+    for (const entry of sortedEntries.slice(0, 8)) {
+      const confLabel = confidenceLabel(entry.confidence);
+      lines.push(`| \`${entry.filePath}\` | **${entry.confidence}%** (${confLabel}) | ${entry.detectionMethod} | ${entry.reason} |`);
     }
   }
   lines.push('');
@@ -457,38 +671,40 @@ graph LR
   }
   lines.push('');
 
-  // ── Daemons & Adapters ─────────────────────────────────────────────────────
+  // ── Background Processes ────────────────────────────────────────────────────
   const hasDaemons  = daemonData  && daemonData.total  > 0;
-  const hasAdapters = adapterData && adapterData.total > 0;
-  if (hasDaemons || hasAdapters) {
-    lines.push('## Daemons & adapters');
+  if (hasDaemons) {
+    lines.push('## Background processes');
     lines.push('');
-    if (hasDaemons) {
-      lines.push('**Background processes** — async patterns invisible to import analysis');
-      lines.push('');
-      lines.push('| Kind | Count | Examples |');
-      lines.push('|------|-------|---------|');
-      for (const [kind, entries] of Object.entries(daemonData.byKind)) {
-        const examples = entries.slice(0, 2).map(e => {
-          const rel = rootDir ? path.relative(rootDir, e.file) : e.file;
-          return e.event ? `\`${e.event}\`` : `\`${path.basename(rel)}:${e.line}\``;
-        }).join(', ');
-        lines.push(`| ${kind} | ${entries.length} | ${examples} |`);
-      }
-      lines.push('');
+    lines.push('Scheduled/persistent patterns invisible to import analysis.');
+    lines.push('');
+    lines.push('| Kind | Count | Examples |');
+    lines.push('|------|-------|---------|');
+    for (const [kind, entries] of Object.entries(daemonData.byKind)) {
+      const examples = entries.slice(0, 2).map(e => {
+        const rel = rootDir ? path.relative(rootDir, e.file) : e.file;
+        return e.event ? `\`${e.event}\`` : `\`${path.basename(rel)}:${e.line}\``;
+      }).join(', ');
+      lines.push(`| ${kind} | ${entries.length} | ${examples} |`);
     }
-    if (hasAdapters) {
-      lines.push('**External adapters** — mocking points for tests');
-      lines.push('');
-      lines.push('| Category | Libraries | Files |');
-      lines.push('|----------|-----------|-------|');
-      for (const [kind, libraries] of Object.entries(adapterData.byKind)) {
-        const libs      = Object.keys(libraries).join(', ');
-        const fileCount = Object.values(libraries).reduce((s, arr) => s + arr.length, 0);
-        lines.push(`| ${kind} | ${libs} | ${fileCount} |`);
-      }
-      lines.push('');
+    lines.push('');
+  }
+
+  // ── External Adapters ──────────────────────────────────────────────────────
+  const hasAdapters = adapterData && adapterData.total > 0;
+  if (hasAdapters) {
+    lines.push('## External adapters');
+    lines.push('');
+    lines.push('Service boundaries — mocking points for tests.');
+    lines.push('');
+    lines.push('| Category | Libraries | Files |');
+    lines.push('|----------|-----------|-------|');
+    for (const [kind, libraries] of Object.entries(adapterData.byKind)) {
+      const libs      = Object.keys(libraries).join(', ');
+      const fileCount = Object.values(libraries).reduce((s, arr) => s + arr.length, 0);
+      lines.push(`| ${kind} | ${libs} | ${fileCount} |`);
     }
+    lines.push('');
   }
 
   // ── Dead code ──────────────────────────────────────────────────────────────
@@ -814,7 +1030,7 @@ function sampleRepresentativeNodes(nodes, maxCount = 10) {
  * This becomes the single input to the LLM that writes the full MASTER.md.
  */
 function buildCompactContext(graph, summaries, scoreMap, deadFiles, unusedExports,
-  daemonData, adapterData, features, legacyReport, flows, insights, stack) {
+  daemonData, adapterData, features, legacyReport, flows, insights, stack, entryPointsDetected = []) {
 
   const nodes    = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
@@ -837,13 +1053,21 @@ function buildCompactContext(graph, summaries, scoreMap, deadFiles, unusedExport
     .sort((a, b) => b.score - a.score)
     .slice(0, 12);
 
-  // Entry points
+  // Entry points with confidence scores
   const entries = allNodes
     .filter(([, n]) => n.isEntryPoint)
     .map(([file]) => ({
       file: path.relative(graph.rootDir || '', file) || file,
       summary: (summaries[file] || '').split('.')[0],
     }));
+
+  // Entry points with confidence (Phase 5)
+  const entriesWithConfidence = entryPointsDetected.slice(0, 5).map(e => ({
+    file: path.relative(graph.rootDir || '', e.filePath) || e.filePath,
+    confidence: e.confidence,
+    method: e.detectionMethod,
+    reason: e.reason,
+  }));
 
   // Daemons — kind + count + top events
   const daemonSummary = daemonData ? Object.entries(daemonData.byKind || {}).map(([kind, items]) => ({
@@ -877,6 +1101,7 @@ function buildCompactContext(graph, summaries, scoreMap, deadFiles, unusedExport
       bands,
     },
     entryPoints:    entries,
+    entryPointsWithConfidence: entriesWithConfidence,
     topRiskFiles:   topRisk,
     daemons:        daemonSummary,
     adapters:       adapterSummary,
@@ -922,7 +1147,10 @@ Write the MASTER.md in this exact structure:
 [2-3 sentences: pattern (Clean Swift/VIP, MVC, MVVM, etc.), how data flows, key structural observations.]
 
 ## Entry points
-[bullet list: filename — one-line purpose each]
+[table with columns: File | Confidence | Method | Reason. Use entryPointsWithConfidence data. Confidence format: "72% (HIGH/MODERATE/LOW)".]
+
+## Suggested reading order
+[numbered list of 10-15 files, starting with the highest-confidence entry point. Include brief reason for each (2-5 words). Show confidence percentage at top: "Entry confidence: X% (METHOD)". If confidence >= 80%, show single list. If 50-79%, show "Option A" and "Option B". If <50%, show multiple options.]
 
 ## Watch zones
 | File | Score | Role | Risk reason |

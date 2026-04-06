@@ -15,6 +15,8 @@ const { blastRadius } = require('./analysis/blast-radius');
 const { apiSurface, buildApiSurface } = require('./analysis/api-surface');
 const { findDeadCode, findCircularDeps } = require('./analysis/dead-code');
 const { score, scoreAll } = require('./analysis/safety-scorer');
+const { detectEntryPoints } = require('./analysis/entry-point-detector');
+const { classifyAllRoles } = require('./analysis/role-classifier');
 const { trace } = require('./analysis/call-graph');
 const { buildLegacyReport } = require('./analysis/legacy-health');
 const { fillGapsForNode } = require('./subagents/gap-filler');
@@ -243,6 +245,12 @@ async function analyze(rootDir, opts = {}) {
     node.riskScore = computeRiskScore(node);
   }
 
+  // ── Enrich nodes with denormalized counts for fast queries ────────────────
+  for (const node of Object.values(mergedNodes)) {
+    node.importedByCount = (node.importedBy || []).length;
+    node.imports = node.imports || [];
+  }
+
   // ── Persist all nodes to store with hashes ────────────────────────────────
   store.writeAll(mergedNodes, allHashes);
   store.setMeta('last_analyzed', new Date().toISOString());
@@ -292,6 +300,83 @@ async function analyze(rootDir, opts = {}) {
     fs.writeFileSync(path.join(p.analysisDir, 'safety-scores.json'), JSON.stringify(scoreMap, null, 2));
     fs.writeFileSync(path.join(p.analysisDir, 'api-surface.json'),   JSON.stringify(apiMap, null, 2));
     fs.writeFileSync(path.join(p.analysisDir, 'dead-code.json'),     JSON.stringify({ deadFiles, unusedExports, circularDeps: legacy.circularDeps }, null, 2));
+
+    // Phase 3: Save enrichment to graph.db
+    // Blast radius
+    try {
+      for (const [file, data] of Object.entries(blastMap)) {
+        store.saveBlastRadius(file, {
+          directDependents: data.dependents.slice(0, data.direct),
+          transitiveDependents: data.dependents,
+          crossLanguageHits: data.crossLang,
+          maxImportDepth: 0, // Computed separately if needed
+        });
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save blast radius:', e.message);
+    }
+
+    // Dead code
+    try {
+      const deadCodeEntries = [];
+      for (const df of deadFiles) {
+        deadCodeEntries.push({ filePath: df.file, type: 'file', isSafeToDelete: df.risk === 'low' });
+      }
+      for (const [filePath, exports] of Object.entries(unusedExports || {})) {
+        for (const exportName of exports) {
+          deadCodeEntries.push({ filePath, type: 'export', exportName, isSafeToDelete: false });
+        }
+      }
+      if (deadCodeEntries.length > 0) {
+        store.saveDeadCode(deadCodeEntries);
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save dead code:', e.message);
+    }
+
+    // Circular dependencies
+    try {
+      const cycles = (legacy.circularDeps || [])
+        .filter(c => c.type === 'Logic')
+        .map(c => ({
+          files: c.path ? c.path.split(' -> ') : [],
+          severity: c.type === 'Logic' ? 'logic' : 'structural',
+        }))
+        .filter(c => c.files.length > 0);
+      if (cycles.length > 0) {
+        store.saveCircularDependencies(cycles);
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save circular deps:', e.message);
+    }
+
+    // Entry points detection
+    try {
+      const pkg = (() => {
+        try {
+          return require(path.join(rootDir, 'package.json'));
+        } catch {
+          return {};
+        }
+      })();
+      const graphCoverage = 85; // Placeholder, could compute from gaps
+      const entryPoints = detectEntryPoints(graph.nodes, pkg, graphCoverage);
+      if (entryPoints.length > 0) {
+        store.saveEntryPoints(entryPoints);
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save entry points:', e.message);
+    }
+
+    // Role classification
+    try {
+      const roles = classifyAllRoles(graph.nodes);
+      if (roles.length > 0) {
+        store.saveModuleRoles(roles);
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save module roles:', e.message);
+    }
 
     // Conflict detection
     await analyzeAndWriteConflicts(rootDir, p.analysisDir, apiKey);

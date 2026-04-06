@@ -263,6 +263,53 @@ Respond with ONLY the JSON array. No preamble. No markdown fences.
 MODULES:
 `;
 
+// ── Pattern-based fallback enrichment ─────────────────────────────────────────
+
+const BIZ_PATTERNS = /auth|login|logout|signin|signup|register|password|token|otp|biometric|user|profile|account|avatar|settings|preference|home|dashboard|feed|payment|billing|checkout|cart|order|invoice|subscription|stripe|purchase|notif|alert|push|onboard|walkthrough|splash|search|filter|discover|chat|message|inbox|conversation|camera|photo|video|image|gallery|media|upload|map|location|geo|analytics|tracking/i;
+
+const INFRA_PATTERNS = /util|helper|extension|base|common|shared|core|config|logging|logger|network|http|client|api|service|manager|router|coordinator|constant|enum|protocol|interface|error|handler|validator|formatter|parser|serializ|deserializ|mapper|test|mock|stub|fake|fixture|spec/i;
+
+/**
+ * Infer enrichment fields from structure and comments without LLM.
+ * Used as the initial pass (always runs) and as fallback when LLM fails.
+ */
+function inferFromPatterns(dir, mod) {
+  // ── isBizFeature ────────────────────────────────────────────────────────────
+  const allNames = [dir, ...mod.files.map(f => path.basename(f, path.extname(f)))].join(' ');
+  const isBizFeature = BIZ_PATTERNS.test(allNames) && !INFRA_PATTERNS.test(dir);
+
+  // ── purpose from dir/file names ────────────────────────────────────────────
+  const dirBase = path.basename(dir);
+  let purpose = null;
+  if (dirBase && dirBase !== '.') {
+    // Convert camelCase/PascalCase/kebab-case to words
+    const words = dirBase
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/[-_]/g, ' ')
+      .toLowerCase();
+    purpose = `${isBizFeature ? 'Business' : 'Infrastructure'} module for ${words}.`;
+  } else if (mod.files.length > 0) {
+    const firstName = path.basename(mod.files[0], path.extname(mod.files[0]));
+    purpose = `Module containing ${mod.files.length} file${mod.files.length > 1 ? 's' : ''} (${firstName} and others).`;
+  }
+
+  // ── techDebt from tagged comments ──────────────────────────────────────────
+  const highCount = mod.tagged.filter(c => c.severity === 'high').length;
+  const medCount  = mod.tagged.filter(c => c.severity === 'medium').length;
+  let techDebt = 'none';
+  if (highCount >= 3 || (highCount >= 1 && medCount >= 2)) techDebt = 'high';
+  else if (highCount >= 1 || medCount >= 3) techDebt = 'medium';
+  else if (medCount >= 1 || mod.tagged.length > 0) techDebt = 'low';
+
+  // ── ideas from TODO/FIXME text ─────────────────────────────────────────────
+  const ideas = mod.tagged
+    .filter(c => ['TODO', 'FIXME', 'HACK', 'BUG', 'IDEA'].includes(c.type) && c.text.length > 10)
+    .slice(0, 3)
+    .map(c => c.text.slice(0, 120));
+
+  return { purpose, techDebt, isBizFeature, ideas };
+}
+
 /**
  * Enrich modules via direct Haiku calls (API key path).
  * Returns Map<dir, { purpose, techDebt, isBizFeature, ideas }>
@@ -280,7 +327,11 @@ async function enrichModules(moduleMap, nodes = {}) {
     return true;
   });
 
+  // Seed enriched with pattern-based values so every dir has something even if LLM fails
   const enriched = new Map();
+  for (const dir of dirs) {
+    enriched.set(dir, inferFromPatterns(dir, moduleMap.get(dir)));
+  }
 
   for (let i = 0; i < dirs.length; i += BATCH_SIZE) {
     const batch = dirs.slice(i, i + BATCH_SIZE);
@@ -297,7 +348,7 @@ async function enrichModules(moduleMap, nodes = {}) {
     const raw = await callLLM({
       model: 'haiku',
       messages: [{ role: 'user', content: MODULE_ENRICH_PROMPT + digest }],
-      maxTokens: 1400,  // 10 modules × ~120 tokens/module + JSON overhead
+      maxTokens: 2000,  // 10 modules × ~150 tokens/module + JSON overhead, with headroom
       temperature: 0,
       operation: 'comment-intel',
       baselineTokens,
@@ -309,10 +360,21 @@ async function enrichModules(moduleMap, nodes = {}) {
       const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim();
       const parsed = JSON.parse(cleaned);
       for (const item of parsed) {
-        if (item.dir) enriched.set(item.dir, item);
+        if (!item.dir) continue;
+        // Normalize dir: strip trailing slash the LLM may have copied from the prompt
+        const normalizedDir = item.dir.replace(/\/$/, '');
+        // Merge LLM result over the pattern fallback — LLM wins on non-null fields
+        const existing = enriched.get(normalizedDir) || {};
+        enriched.set(normalizedDir, {
+          ...existing,
+          purpose:      item.purpose      || existing.purpose,
+          techDebt:     item.techDebt     || existing.techDebt,
+          isBizFeature: item.isBizFeature ?? existing.isBizFeature,
+          ideas:        (item.ideas && item.ideas.length > 0) ? item.ideas : existing.ideas,
+        });
       }
     } catch {
-      // JSON parse failed — skip batch, structural data still written
+      // JSON parse failed — pattern fallback already seeded, nothing lost
     }
   }
 

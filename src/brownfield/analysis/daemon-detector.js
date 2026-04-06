@@ -3,13 +3,12 @@
 /**
  * Daemon Detector
  *
- * Scans source files for background/async process patterns.
- * Patterns are language-scoped — JS patterns never run on Swift files, etc.
- * This avoids false positives where `.on()` or `.emit()` appear naturally
- * in non-JS code.
+ * Scans source files for true background/scheduled process patterns only.
+ * Excludes generic event handlers, subscribers, and WebSocket listeners
+ * which are normal application code, not daemons.
  *
  * Supported:
- *   .js .ts .jsx .tsx .mjs .cjs  → event emitters, timers, queues, WebSocket, cron
+ *   .js .ts .jsx .tsx .mjs .cjs  → timers, process signals, queues, cron
  *   .swift .m .mm                 → BGTaskScheduler, Timer, DispatchQueue, NotificationCenter
  *   .go                           → goroutines, time.Tick/After, channel ops
  *   .plist (LaunchDaemons/Agents) → launchd label extraction
@@ -26,15 +25,8 @@ const GO_EXTS    = new Set(['.go']);
 // ── Pattern tables ────────────────────────────────────────────────────────────
 
 const JS_PATTERNS = [
-  // Event emitters / listeners
-  { re: /\.on\(\s*['"`](\w[^'"`]*?)['"`]/g,              kind: 'event-listener' },
-  { re: /\.once\(\s*['"`](\w[^'"`]*?)['"`]/g,            kind: 'event-listener-once' },
-  { re: /\.emit\(\s*['"`](\w[^'"`]*?)['"`]/g,            kind: 'event-emitter' },
-  { re: /\.addEventListener\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'dom-event' },
-  { re: /\.removeEventListener\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'dom-event-remove' },
   // Background timers
   { re: /\bsetInterval\s*\(/g,    kind: 'interval',  event: null },
-  { re: /\bsetTimeout\s*\(/g,     kind: 'timeout',   event: null },
   { re: /\bsetImmediate\s*\(/g,   kind: 'immediate', event: null },
   { re: /\bqueueMicrotask\s*\(/g, kind: 'microtask', event: null },
   // Process signals
@@ -42,13 +34,6 @@ const JS_PATTERNS = [
   { re: /process\.once\(\s*['"`](\w[^'"`]*?)['"`]/g, kind: 'process-signal-once' },
   // Queue / pub-sub
   { re: /\.consume\s*\(/g,                                  kind: 'queue-consumer', event: null },
-  { re: /\.subscribe\s*\(\s*['"`](\w[^'"`]*?)['"`]/g,      kind: 'subscriber' },
-  { re: /\.subscribe\s*\([^'"`]/g,                          kind: 'subscriber',     event: null },
-  { re: /\.listen\s*\(\s*['"`](\w[^'"`]*?)['"`]/g,         kind: 'listener' },
-  // WebSocket
-  { re: /io\.on\(\s*['"`](connection|disconnect)[^'"`]*['"`]/g, kind: 'websocket-server' },
-  { re: /socket\.on\(\s*['"`](\w[^'"`]*?)['"`]/g,              kind: 'websocket-handler' },
-  { re: /wss?\.on\(\s*['"`](\w[^'"`]*?)['"`]/g,                kind: 'websocket-raw' },
   // Cron
   { re: /cron\.schedule\s*\(\s*['"`]([^'"`]+)['"`]/g,    kind: 'cron-job' },
   { re: /schedule\s*\(\s*['"`]([\d*/,\- ]+)['"`]/g,      kind: 'cron-job' },

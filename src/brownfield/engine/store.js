@@ -115,12 +115,42 @@ CREATE TABLE IF NOT EXISTS nodes (
   role         TEXT    NOT NULL DEFAULT '',
   band         TEXT    NOT NULL DEFAULT '',
   summary      TEXT    NOT NULL DEFAULT '',
+  purpose      TEXT    NOT NULL DEFAULT '',
   exports      TEXT    NOT NULL DEFAULT '[]',
   gaps         TEXT    NOT NULL DEFAULT '[]',
   meta         TEXT    NOT NULL DEFAULT '{}',
   file_hash    TEXT,
   error        INTEGER NOT NULL DEFAULT 0,
-  updated_at   INTEGER NOT NULL
+  updated_at   INTEGER NOT NULL,
+
+  -- Git history (from git log)
+  total_commits        INTEGER NOT NULL DEFAULT 0,
+  bug_fix_commits      INTEGER NOT NULL DEFAULT 0,
+  hack_commits         INTEGER NOT NULL DEFAULT 0,
+  todo_count           INTEGER NOT NULL DEFAULT 0,
+  first_commit_date    TEXT    DEFAULT NULL,
+  last_commit_date     TEXT    DEFAULT NULL,
+  age_in_days          INTEGER NOT NULL DEFAULT 0,
+  authors              TEXT    NOT NULL DEFAULT '[]',
+
+  -- Relationships (denormalized for speed)
+  imported_by_count    INTEGER NOT NULL DEFAULT 0,
+  import_count         INTEGER NOT NULL DEFAULT 0,
+
+  -- Risk & safety
+  is_public_contract   INTEGER NOT NULL DEFAULT 0,
+  has_tests            INTEGER NOT NULL DEFAULT 0,
+  is_dead_file         INTEGER NOT NULL DEFAULT 0,
+  danger_reason        TEXT    DEFAULT NULL,
+
+  -- Entry points
+  entry_point_type     TEXT    DEFAULT NULL,
+  entry_point_confidence INTEGER NOT NULL DEFAULT 0,
+
+  -- Analysis results
+  is_circular_dep      INTEGER NOT NULL DEFAULT 0,
+  circular_cycle_id    INTEGER DEFAULT NULL,
+  gap_count            INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -162,21 +192,84 @@ CREATE TABLE IF NOT EXISTS adapters (
   line      INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS blast_radius (
+  file_path             TEXT PRIMARY KEY,
+  direct_dependents     TEXT NOT NULL DEFAULT '[]',
+  transitive_dependents TEXT NOT NULL DEFAULT '[]',
+  transitive_count      INTEGER NOT NULL DEFAULT 0,
+  cross_language_hits   TEXT NOT NULL DEFAULT '[]',
+  max_import_depth      INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(file_path) REFERENCES nodes(file_path)
+);
+
+CREATE TABLE IF NOT EXISTS dead_code (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path             TEXT NOT NULL,
+  type                  TEXT NOT NULL,
+  export_name           TEXT,
+  is_safe_to_delete     INTEGER NOT NULL DEFAULT 0,
+  reason                TEXT,
+  UNIQUE(file_path, export_name),
+  FOREIGN KEY(file_path) REFERENCES nodes(file_path)
+);
+
+CREATE TABLE IF NOT EXISTS circular_dependencies (
+  cycle_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  files                 TEXT NOT NULL,
+  files_count           INTEGER NOT NULL,
+  detected_at_line      INTEGER,
+  severity              TEXT NOT NULL DEFAULT 'logic'
+);
+
+CREATE TABLE IF NOT EXISTS coverage_gaps (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path             TEXT NOT NULL,
+  gap_type              TEXT NOT NULL,
+  pattern               TEXT,
+  line_number           INTEGER,
+  severity              TEXT NOT NULL DEFAULT 'medium',
+  FOREIGN KEY(file_path) REFERENCES nodes(file_path)
+);
+
+CREATE TABLE IF NOT EXISTS entry_points (
+  file_path             TEXT PRIMARY KEY,
+  detection_method      TEXT NOT NULL,
+  confidence            INTEGER NOT NULL DEFAULT 0,
+  signal_score          INTEGER NOT NULL DEFAULT 0,
+  reason                TEXT,
+  FOREIGN KEY(file_path) REFERENCES nodes(file_path)
+);
+
+CREATE TABLE IF NOT EXISTS module_roles (
+  file_path             TEXT PRIMARY KEY,
+  primary_role          TEXT NOT NULL,
+  confidence            INTEGER NOT NULL DEFAULT 0,
+  reason                TEXT,
+  FOREIGN KEY(file_path) REFERENCES nodes(file_path)
+);
+
 CREATE INDEX IF NOT EXISTS idx_edges_source   ON edges(source);
 CREATE INDEX IF NOT EXISTS idx_edges_target   ON edges(target);
 CREATE INDEX IF NOT EXISTS idx_edges_file     ON edges(file_path);
 CREATE INDEX IF NOT EXISTS idx_nodes_lang     ON nodes(lang);
-CREATE INDEX IF NOT EXISTS idx_nodes_risk     ON nodes(risk_score);
+CREATE INDEX IF NOT EXISTS idx_nodes_risk     ON nodes(risk_score DESC);
 CREATE INDEX IF NOT EXISTS idx_nodes_entry    ON nodes(is_entry);
 CREATE INDEX IF NOT EXISTS idx_nodes_role     ON nodes(role);
 CREATE INDEX IF NOT EXISTS idx_nodes_band     ON nodes(band);
 CREATE INDEX IF NOT EXISTS idx_nodes_test     ON nodes(is_test);
+CREATE INDEX IF NOT EXISTS idx_nodes_imported_by ON nodes(imported_by_count DESC);
+CREATE INDEX IF NOT EXISTS idx_nodes_dead     ON nodes(is_dead_file);
 CREATE INDEX IF NOT EXISTS idx_symbols_file   ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name   ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_daemons_file   ON daemons(file_path);
 CREATE INDEX IF NOT EXISTS idx_daemons_kind   ON daemons(kind);
 CREATE INDEX IF NOT EXISTS idx_adapters_file  ON adapters(file_path);
 CREATE INDEX IF NOT EXISTS idx_adapters_kind  ON adapters(kind);
+CREATE INDEX IF NOT EXISTS idx_entry_confidence ON entry_points(confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_role_primary   ON module_roles(primary_role);
+CREATE INDEX IF NOT EXISTS idx_dead_safe      ON dead_code(is_safe_to_delete);
+CREATE INDEX IF NOT EXISTS idx_circular_files ON circular_dependencies(files);
+CREATE INDEX IF NOT EXISTS idx_gaps_file      ON coverage_gaps(file_path);
 `;
 
 // ── GraphStore ────────────────────────────────────────────────────────────────
@@ -210,6 +303,27 @@ class GraphStore {
       'ALTER TABLE nodes ADD COLUMN role     TEXT    NOT NULL DEFAULT \'\'',
       'ALTER TABLE nodes ADD COLUMN band     TEXT    NOT NULL DEFAULT \'\'',
       'ALTER TABLE nodes ADD COLUMN summary  TEXT    NOT NULL DEFAULT \'\'',
+      // Phase 2: DB Enrichment columns
+      'ALTER TABLE nodes ADD COLUMN purpose      TEXT    NOT NULL DEFAULT \'\'',
+      'ALTER TABLE nodes ADD COLUMN total_commits        INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN bug_fix_commits      INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN hack_commits         INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN todo_count           INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN first_commit_date    TEXT    DEFAULT NULL',
+      'ALTER TABLE nodes ADD COLUMN last_commit_date     TEXT    DEFAULT NULL',
+      'ALTER TABLE nodes ADD COLUMN age_in_days          INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN authors              TEXT    NOT NULL DEFAULT \'[]\'',
+      'ALTER TABLE nodes ADD COLUMN imported_by_count    INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN import_count         INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN is_public_contract   INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN has_tests            INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN is_dead_file         INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN danger_reason        TEXT    DEFAULT NULL',
+      'ALTER TABLE nodes ADD COLUMN entry_point_type     TEXT    DEFAULT NULL',
+      'ALTER TABLE nodes ADD COLUMN entry_point_confidence INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN is_circular_dep      INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN circular_cycle_id    INTEGER DEFAULT NULL',
+      'ALTER TABLE nodes ADD COLUMN gap_count            INTEGER NOT NULL DEFAULT 0',
     ];
     for (const sql of newCols) {
       try { this._db.exec(sql); } catch { /* column already exists */ }
@@ -220,6 +334,13 @@ class GraphStore {
         CREATE INDEX IF NOT EXISTS idx_nodes_role ON nodes(role);
         CREATE INDEX IF NOT EXISTS idx_nodes_band ON nodes(band);
         CREATE INDEX IF NOT EXISTS idx_nodes_test ON nodes(is_test);
+        CREATE INDEX IF NOT EXISTS idx_nodes_imported_by ON nodes(imported_by_count DESC);
+        CREATE INDEX IF NOT EXISTS idx_nodes_dead ON nodes(is_dead_file);
+        CREATE INDEX IF NOT EXISTS idx_entry_confidence ON entry_points(confidence DESC);
+        CREATE INDEX IF NOT EXISTS idx_role_primary ON module_roles(primary_role);
+        CREATE INDEX IF NOT EXISTS idx_dead_safe ON dead_code(is_safe_to_delete);
+        CREATE INDEX IF NOT EXISTS idx_circular_files ON circular_dependencies(files);
+        CREATE INDEX IF NOT EXISTS idx_gaps_file ON coverage_gaps(file_path);
       `);
     } catch {}
   }
@@ -230,16 +351,31 @@ class GraphStore {
     this._stmts = {
       upsertNode: this._db.prepare(`
         INSERT INTO nodes
-          (file_path, lang, risk_score, is_entry, is_barrel, is_test, role, band, summary, exports, gaps, meta, file_hash, error, updated_at)
+          (file_path, lang, risk_score, is_entry, is_barrel, is_test, role, band, summary, purpose, exports, gaps, meta,
+           file_hash, error, updated_at, total_commits, bug_fix_commits, hack_commits, todo_count, first_commit_date,
+           last_commit_date, age_in_days, authors, imported_by_count, import_count, is_public_contract, has_tests,
+           is_dead_file, danger_reason, entry_point_type, entry_point_confidence, is_circular_dep, circular_cycle_id, gap_count)
         VALUES
-          (@file_path, @lang, @risk_score, @is_entry, @is_barrel, @is_test, @role, @band, @summary, @exports, @gaps, @meta, @file_hash, @error, @updated_at)
+          (@file_path, @lang, @risk_score, @is_entry, @is_barrel, @is_test, @role, @band, @summary, @purpose, @exports, @gaps, @meta,
+           @file_hash, @error, @updated_at, @total_commits, @bug_fix_commits, @hack_commits, @todo_count, @first_commit_date,
+           @last_commit_date, @age_in_days, @authors, @imported_by_count, @import_count, @is_public_contract, @has_tests,
+           @is_dead_file, @danger_reason, @entry_point_type, @entry_point_confidence, @is_circular_dep, @circular_cycle_id, @gap_count)
         ON CONFLICT(file_path) DO UPDATE SET
           lang=excluded.lang, risk_score=excluded.risk_score,
           is_entry=excluded.is_entry, is_barrel=excluded.is_barrel,
           is_test=excluded.is_test, role=excluded.role, band=excluded.band,
-          exports=excluded.exports, gaps=excluded.gaps,
+          summary=excluded.summary, purpose=excluded.purpose, exports=excluded.exports, gaps=excluded.gaps,
           meta=excluded.meta, file_hash=excluded.file_hash,
-          error=excluded.error, updated_at=excluded.updated_at
+          error=excluded.error, updated_at=excluded.updated_at,
+          total_commits=excluded.total_commits, bug_fix_commits=excluded.bug_fix_commits,
+          hack_commits=excluded.hack_commits, todo_count=excluded.todo_count,
+          first_commit_date=excluded.first_commit_date, last_commit_date=excluded.last_commit_date,
+          age_in_days=excluded.age_in_days, authors=excluded.authors,
+          imported_by_count=excluded.imported_by_count, import_count=excluded.import_count,
+          is_public_contract=excluded.is_public_contract, has_tests=excluded.has_tests,
+          is_dead_file=excluded.is_dead_file, danger_reason=excluded.danger_reason,
+          entry_point_type=excluded.entry_point_type, entry_point_confidence=excluded.entry_point_confidence,
+          is_circular_dep=excluded.is_circular_dep, circular_cycle_id=excluded.circular_cycle_id, gap_count=excluded.gap_count
       `),
 
       updateSummary: this._db.prepare(
@@ -370,6 +506,91 @@ class GraphStore {
       getAllAdapters: this._db.prepare(
         'SELECT file_path, kind, library, external, line FROM adapters ORDER BY kind, library'
       ),
+
+      // Blast radius operations
+      upsertBlastRadius: this._db.prepare(`
+        INSERT INTO blast_radius
+          (file_path, direct_dependents, transitive_dependents, transitive_count, cross_language_hits, max_import_depth)
+        VALUES
+          (@file_path, @direct_dependents, @transitive_dependents, @transitive_count, @cross_language_hits, @max_import_depth)
+        ON CONFLICT(file_path) DO UPDATE SET
+          direct_dependents=excluded.direct_dependents,
+          transitive_dependents=excluded.transitive_dependents,
+          transitive_count=excluded.transitive_count,
+          cross_language_hits=excluded.cross_language_hits,
+          max_import_depth=excluded.max_import_depth
+      `),
+
+      getBlastRadius: this._db.prepare(
+        'SELECT * FROM blast_radius WHERE file_path = ?'
+      ),
+
+      // Dead code operations
+      insertDeadCode: this._db.prepare(`
+        INSERT OR REPLACE INTO dead_code (file_path, type, export_name, is_safe_to_delete, reason)
+        VALUES (@file_path, @type, @export_name, @is_safe_to_delete, @reason)
+      `),
+
+      getDeadCode: this._db.prepare(
+        'SELECT file_path, type, export_name, reason FROM dead_code WHERE is_safe_to_delete = 1 ORDER BY file_path'
+      ),
+
+      // Entry point operations
+      upsertEntryPoint: this._db.prepare(`
+        INSERT INTO entry_points (file_path, detection_method, confidence, signal_score, reason)
+        VALUES (@file_path, @detection_method, @confidence, @signal_score, @reason)
+        ON CONFLICT(file_path) DO UPDATE SET
+          detection_method=excluded.detection_method,
+          confidence=excluded.confidence,
+          signal_score=excluded.signal_score,
+          reason=excluded.reason
+      `),
+
+      getEntryPoints: this._db.prepare(
+        'SELECT file_path, detection_method, confidence, reason FROM entry_points ORDER BY confidence DESC'
+      ),
+
+      getHighConfidenceEntryPoints: this._db.prepare(
+        'SELECT file_path FROM entry_points WHERE confidence > ? ORDER BY confidence DESC'
+      ),
+
+      // Module role operations
+      upsertModuleRole: this._db.prepare(`
+        INSERT INTO module_roles (file_path, primary_role, confidence, reason)
+        VALUES (@file_path, @primary_role, @confidence, @reason)
+        ON CONFLICT(file_path) DO UPDATE SET
+          primary_role=excluded.primary_role,
+          confidence=excluded.confidence,
+          reason=excluded.reason
+      `),
+
+      getModulesByRole: this._db.prepare(
+        'SELECT file_path, primary_role, confidence FROM module_roles WHERE primary_role = ? ORDER BY confidence DESC'
+      ),
+
+      // Circular dependency operations
+      insertCircularDependency: this._db.prepare(`
+        INSERT INTO circular_dependencies (files, files_count, detected_at_line, severity)
+        VALUES (@files, @files_count, @detected_at_line, @severity)
+      `),
+
+      getCircularDependencies: this._db.prepare(
+        'SELECT cycle_id, files, files_count, severity FROM circular_dependencies ORDER BY files_count DESC'
+      ),
+
+      // Coverage gap operations
+      insertCoverageGap: this._db.prepare(`
+        INSERT INTO coverage_gaps (file_path, gap_type, pattern, line_number, severity)
+        VALUES (@file_path, @gap_type, @pattern, @line_number, @severity)
+      `),
+
+      getCoverageGapsByFile: this._db.prepare(
+        'SELECT gap_type, pattern, line_number, severity FROM coverage_gaps WHERE file_path = ?'
+      ),
+
+      getAllCoverageGaps: this._db.prepare(
+        'SELECT file_path, gap_type, COUNT(*) as count FROM coverage_gaps GROUP BY file_path, gap_type ORDER BY count DESC'
+      ),
     };
   }
 
@@ -395,12 +616,33 @@ class GraphStore {
       role:       node.role || '',
       band:       node.band || '',
       summary:    node.summary || '',
+      purpose:    node.purpose || '',
       exports:    JSON.stringify(node.exports || []),
       gaps:       JSON.stringify(node.gaps || []),
       meta:       JSON.stringify(node.meta || {}),
       file_hash:  fileHash || null,
       error:      node.error ? 1 : 0,
       updated_at: Date.now(),
+      // Enrichment fields (populated by separate analysis passes)
+      total_commits:        node.gitHistory?.totalCommits || 0,
+      bug_fix_commits:      node.gitHistory?.bugFixCommits || 0,
+      hack_commits:         node.gitHistory?.hackCommits || 0,
+      todo_count:           node.gitHistory?.todoCount || 0,
+      first_commit_date:    node.gitHistory?.firstCommit || null,
+      last_commit_date:     node.gitHistory?.lastCommit || null,
+      age_in_days:          node.gitHistory?.ageInDays || 0,
+      authors:              JSON.stringify(node.gitHistory?.authors || []),
+      imported_by_count:    node.importedByCount || 0,
+      import_count:         (node.imports?.length || 0),
+      is_public_contract:   node.isPublicContract ? 1 : 0,
+      has_tests:            node.hasTests ? 1 : 0,
+      is_dead_file:         node.isDeadFile ? 1 : 0,
+      danger_reason:        node.dangerReason || null,
+      entry_point_type:     node.entryPointType || null,
+      entry_point_confidence: node.entryPointConfidence || 0,
+      is_circular_dep:      node.isCircularDep ? 1 : 0,
+      circular_cycle_id:    node.circularCycleId || null,
+      gap_count:            node.gaps?.length || 0,
     });
   }
 
@@ -914,6 +1156,274 @@ class GraphStore {
       imports:      [],
       importedBy:   [],
     };
+  }
+
+  // ── Enrichment: Blast Radius ────────────────────────────────────────────────
+
+  /**
+   * Save blast radius data for a file.
+   * @param {string} filePath
+   * @param {Object} data — { directDependents, transitiveDependents, etc. }
+   */
+  saveBlastRadius(filePath, data) {
+    this._stmts.upsertBlastRadius.run({
+      file_path: filePath,
+      direct_dependents: JSON.stringify(data.directDependents || []),
+      transitive_dependents: JSON.stringify(data.transitiveDependents || []),
+      transitive_count: data.transitiveDependents?.length || 0,
+      cross_language_hits: JSON.stringify(data.crossLanguageHits || []),
+      max_import_depth: data.maxImportDepth || 0,
+    });
+    // Also update the counts in nodes table
+    const tx = this._db.transaction(() => {
+      this._db.prepare(
+        'UPDATE nodes SET imported_by_count = ?, gap_count = ? WHERE file_path = ?'
+      ).run(data.directDependents?.length || 0, data.gaps?.length || 0, filePath);
+    });
+    tx();
+  }
+
+  getBlastRadius(filePath) {
+    const row = this._stmts.getBlastRadius.get(filePath);
+    if (!row) return null;
+    return {
+      filePath: row.file_path,
+      directDependents: this._parseJson(row.direct_dependents, []),
+      transitiveDependents: this._parseJson(row.transitive_dependents, []),
+      transitiveCount: row.transitive_count,
+      crossLanguageHits: this._parseJson(row.cross_language_hits, []),
+      maxImportDepth: row.max_import_depth,
+    };
+  }
+
+  // ── Enrichment: Dead Code ───────────────────────────────────────────────────
+
+  saveDeadCode(entries) {
+    const tx = this._db.transaction((list) => {
+      for (const entry of list) {
+        this._stmts.insertDeadCode.run({
+          file_path: entry.filePath,
+          type: entry.type, // 'file' or 'export'
+          export_name: entry.exportName || null,
+          is_safe_to_delete: entry.isSafeToDelete ? 1 : 0,
+          reason: entry.reason || null,
+        });
+        // Also mark file as dead if type='file'
+        if (entry.type === 'file') {
+          this._db.prepare(
+            'UPDATE nodes SET is_dead_file = 1 WHERE file_path = ?'
+          ).run(entry.filePath);
+        }
+      }
+    });
+    tx(entries);
+  }
+
+  getDeadCode() {
+    return this._stmts.getDeadCode.all().map(r => ({
+      filePath: r.file_path,
+      type: r.type,
+      exportName: r.export_name,
+      reason: r.reason,
+    }));
+  }
+
+  // ── Enrichment: Entry Points ────────────────────────────────────────────────
+
+  saveEntryPoints(entries) {
+    const tx = this._db.transaction((list) => {
+      for (const entry of list) {
+        this._stmts.upsertEntryPoint.run({
+          file_path: entry.filePath,
+          detection_method: entry.detectionMethod,
+          confidence: entry.confidence,
+          signal_score: entry.signalScore || 0,
+          reason: entry.reason || null,
+        });
+        // Update node's entry point info
+        this._db.prepare(
+          'UPDATE nodes SET entry_point_type = ?, entry_point_confidence = ? WHERE file_path = ?'
+        ).run(entry.detectionMethod, entry.confidence, entry.filePath);
+      }
+    });
+    tx(entries);
+  }
+
+  getEntryPoints() {
+    return this._stmts.getEntryPoints.all().map(r => ({
+      filePath: r.file_path,
+      detectionMethod: r.detection_method,
+      confidence: r.confidence,
+      reason: r.reason,
+    }));
+  }
+
+  getHighConfidenceEntryPoints(minConfidence = 70) {
+    return this._stmts.getHighConfidenceEntryPoints.all(minConfidence).map(r => r.file_path);
+  }
+
+  // ── Enrichment: Module Roles ────────────────────────────────────────────────
+
+  saveModuleRoles(entries) {
+    const tx = this._db.transaction((list) => {
+      for (const entry of list) {
+        this._stmts.upsertModuleRole.run({
+          file_path: entry.filePath,
+          primary_role: entry.primaryRole,
+          confidence: entry.confidence,
+          reason: entry.reason || null,
+        });
+      }
+    });
+    tx(entries);
+  }
+
+  getModulesByRole(role) {
+    return this._stmts.getModulesByRole.all(role).map(r => ({
+      filePath: r.file_path,
+      primaryRole: r.primary_role,
+      confidence: r.confidence,
+    }));
+  }
+
+  // ── Enrichment: Circular Dependencies ────────────────────────────────────────
+
+  saveCircularDependencies(cycles) {
+    const tx = this._db.transaction((list) => {
+      for (const cycle of list) {
+        const result = this._stmts.insertCircularDependency.run({
+          files: JSON.stringify(cycle.files || []),
+          files_count: cycle.files?.length || 0,
+          detected_at_line: cycle.detectedAtLine || null,
+          severity: cycle.severity || 'logic',
+        });
+        const cycleId = result.lastInsertRowid;
+        // Mark all files in the cycle
+        const tx2 = this._db.transaction(() => {
+          for (const file of cycle.files || []) {
+            this._db.prepare(
+              'UPDATE nodes SET is_circular_dep = 1, circular_cycle_id = ? WHERE file_path = ?'
+            ).run(cycleId, file);
+          }
+        });
+        tx2();
+      }
+    });
+    tx(cycles);
+  }
+
+  getCircularDependencies() {
+    return this._stmts.getCircularDependencies.all().map(r => ({
+      cycleId: r.cycle_id,
+      files: this._parseJson(r.files, []),
+      filesCount: r.files_count,
+      severity: r.severity,
+    }));
+  }
+
+  // ── Enrichment: Coverage Gaps ───────────────────────────────────────────────
+
+  saveCoverageGaps(gaps) {
+    const tx = this._db.transaction((list) => {
+      for (const gap of list) {
+        this._stmts.insertCoverageGap.run({
+          file_path: gap.filePath,
+          gap_type: gap.gapType,
+          pattern: gap.pattern || null,
+          line_number: gap.lineNumber || null,
+          severity: gap.severity || 'medium',
+        });
+      }
+    });
+    tx(gaps);
+  }
+
+  getCoverageGapsByFile(filePath) {
+    return this._stmts.getCoverageGapsByFile.all(filePath).map(r => ({
+      gapType: r.gap_type,
+      pattern: r.pattern,
+      lineNumber: r.line_number,
+      severity: r.severity,
+    }));
+  }
+
+  getAllCoverageGaps() {
+    return this._stmts.getAllCoverageGaps.all().map(r => ({
+      filePath: r.file_path,
+      gapType: r.gap_type,
+      count: r.count,
+    }));
+  }
+
+  // ── Enrichment: File Summary (denormalized for speed) ────────────────────────
+
+  /**
+   * Get comprehensive file info for commands (all enrichment in one query).
+   * @param {string} filePath
+   * @returns {Object} — complete file summary with all enrichment
+   */
+  getFileSummary(filePath) {
+    const node = this._db.prepare(`
+      SELECT file_path, lang, summary, purpose, role, risk_score, band,
+             imported_by_count, import_count, bug_fix_commits, total_commits,
+             age_in_days, has_tests, is_dead_file, is_circular_dep,
+             entry_point_type, entry_point_confidence, danger_reason
+      FROM nodes WHERE file_path = ?
+    `).get(filePath);
+
+    if (!node) return null;
+
+    const blastRadius = this.getBlastRadius(filePath);
+    const gaps = this.getCoverageGapsByFile(filePath);
+
+    return {
+      filePath: node.file_path,
+      lang: node.lang,
+      summary: node.summary,
+      purpose: node.purpose,
+      role: node.role,
+      riskScore: node.risk_score,
+      band: node.band,
+      importedByCount: node.imported_by_count,
+      importCount: node.import_count,
+      bugFixCommits: node.bug_fix_commits,
+      totalCommits: node.total_commits,
+      ageInDays: node.age_in_days,
+      hasTests: node.has_tests === 1,
+      isDeadFile: node.is_dead_file === 1,
+      isCircularDep: node.is_circular_dep === 1,
+      entryPointType: node.entry_point_type,
+      entryPointConfidence: node.entry_point_confidence,
+      dangerReason: node.danger_reason,
+      blastRadius,
+      coverageGaps: gaps,
+    };
+  }
+
+  /**
+   * Get reading order: top N files by importance score.
+   * importance = (imported_by_count × 0.4) + (bug_fix_commits × 0.3) + (total_commits × 0.3)
+   * @param {number} limit — default 25
+   * @returns {Array} — files with importance scores
+   */
+  getReadingOrder(limit = 25) {
+    return this._db.prepare(`
+      SELECT file_path, summary, imported_by_count, bug_fix_commits,
+             total_commits, entry_point_type, entry_point_confidence
+      FROM nodes
+      WHERE is_test = 0
+      ORDER BY
+        (imported_by_count * 0.4 + bug_fix_commits * 0.3 + total_commits * 0.3) DESC
+      LIMIT ?
+    `).all(limit).map(r => ({
+      filePath: r.file_path,
+      summary: r.summary,
+      importedByCount: r.imported_by_count,
+      bugFixCommits: r.bug_fix_commits,
+      totalCommits: r.total_commits,
+      isEntryPoint: r.entry_point_type !== null,
+      entryPointConfidence: r.entry_point_confidence,
+    }));
   }
 
   _parseJson(str, fallback) {

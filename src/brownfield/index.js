@@ -34,6 +34,7 @@ const { hasApiKey, getApiKey, tokenLogger } = require('./core/llm-client');
 const { analyseComments } = require('./analysis/comment-intel');
 const { detectFeatureModules } = require('./analysis/feature-modules');
 const { classifyRole } = require('./summarization/role-classifier');
+const { computeCommunities } = require('./analysis/communities');
 
 /**
  * Compute SHA-1 hashes for a list of absolute file paths.
@@ -253,6 +254,16 @@ async function analyze(rootDir, opts = {}) {
 
   // ── Persist all nodes to store with hashes ────────────────────────────────
   store.writeAll(mergedNodes, allHashes);
+
+  // ── Phase D: Community Detection ──────────────────────────────────────────
+  try {
+    const communities = computeCommunities(store);
+    store.updateCommunities(communities);
+    log(`Clustered ${Object.keys(communities).length} files into logical communities`);
+  } catch (e) {
+    console.warn('[analysis] Community detection failed:', e.message);
+  }
+
   store.setMeta('last_analyzed', new Date().toISOString());
   store.setMeta('root_dir', rootDir);
   store.close();

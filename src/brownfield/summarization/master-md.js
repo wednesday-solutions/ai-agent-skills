@@ -16,7 +16,6 @@ const { blastRadius } = require('../analysis/blast-radius');
 const { extractIosMetadata } = require('../analysis/ios-metadata');
 const { detectEntryPoints } = require('../analysis/entry-point-detector');
 
-// ── Shared grouping helper ─────────────────────────────────────────────────
 function groupByDir(allNodes) {
   const byDir = {};
   for (const [file, node] of allNodes) {
@@ -25,6 +24,26 @@ function groupByDir(allNodes) {
     byDir[dir].push([file, node]);
   }
   return byDir;
+}
+
+function groupByCommunity(allNodes, store) {
+  if (!store) return null;
+  const communities = store.getCommunities();
+  if (Object.keys(communities).length === 0) return null;
+
+  const nodesMap = Object.fromEntries(allNodes);
+  const grouped = {};
+  
+  for (const [cid, files] of Object.entries(communities)) {
+    const members = files
+      .map(f => [f, nodesMap[f]])
+      .filter(([, n]) => !!n);
+    
+    if (members.length > 0) {
+      grouped[cid] = members;
+    }
+  }
+  return grouped;
 }
 
 // ── Package manifest readers ──────────────────────────────────────────────────
@@ -306,6 +325,8 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
     for (const mod of commentIntel.modules) commentByDir.set(mod.dir, mod);
   }
 
+  const communityGroup = groupByCommunity(allNodes, store);
+
   const pkgJson    = readPackageJson(graph.rootDir);
   const frameworks = new Set(allNodes.map(([, n]) => n.meta?.framework).filter(Boolean));
   const stack      = buildTechStack(allNodes, pkgJson, graph.stats, frameworks, graph.packages);
@@ -318,7 +339,8 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
     const entryPointsDetected = detectEntryPoints(nodes, pkgJson, graphCoverage);
     const ctx = buildCompactContext(
       graph, summaries, scoreMap, deadFiles, unusedExports,
-      daemonData, adapterData, features, legacyReport, flows, insights, stack, entryPointsDetected
+      daemonData, adapterData, features, legacyReport, flows, insights, stack, entryPointsDetected,
+      communityGroup
     );
 
     let llmContent = null;
@@ -741,45 +763,78 @@ graph LR
     lines.push('');
   }
 
-  // ── Module map — directory level ─────────────────────────────────────────
-  lines.push('## Module map');
-  lines.push('');
-  lines.push('> One row per directory. For per-file detail: `wednesday-skills blast <file>` or `wednesday-skills chat "what does X do"`.');
-  lines.push('');
-  lines.push('| Directory | Files | Avg risk | Debt | Type | Purpose |');
-  lines.push('|-----------|-------|----------|------|------|---------|');
+  // ── Module map ────────────────────────────────────────────────────────────
+  if (communityGroup) {
+    lines.push('## Logical module map');
+    lines.push('');
+    lines.push('> Files grouped by logical interaction (Louvain community detection).');
+    lines.push('');
+    lines.push('| Community | Representative Files | Avg Risk | Primary Role | Purpose |');
+    lines.push('|-----------|----------------------|----------|--------------|---------|');
 
-  const byDir = groupByDir(allNodes);
-  for (const [dir, dirNodes] of Object.entries(byDir).sort()) {
-    const intel        = commentByDir.get(dir);
-    const avgRisk      = Math.round(dirNodes.reduce((s, [, n]) => s + n.riskScore, 0) / dirNodes.length);
-    const riskIcon     = avgRisk >= 61 ? '🔴' : avgRisk >= 31 ? '🟡' : '🟢';
-    let debt         = intel?.techDebt && intel.techDebt !== 'none' ? `**${intel.techDebt.toUpperCase()}**` : '—';
-    let type         = intel?.isBizFeature === true ? '`biz`' : intel?.isBizFeature === false ? '`infra`' : '—';
-    
-    // Heuristics for empty columns
-    if (type === '—') {
-      const roles = dirNodes.map(([, n]) => classifyRole(n.file, n));
-      if (roles.some(r => r === 'ios-viewcontroller' || r === 'ui-component' || r === 'react-hook')) {
-        type = '`biz`';
-      } else if (roles.every(r => r === 'utility' || r === 'data-model' || r === 'config')) {
-        type = '`infra`';
-      }
-    }
-
-    // Fallback purpose: structural summary if no semantic purpose
-    let purpose = intel?.purpose ? intel.purpose.split('.')[0] : null;
-    if (!purpose) {
-      const roles = dirNodes.reduce((acc, [, n]) => {
+    for (const [cid, members] of Object.entries(communityGroup).sort((a, b) => b[1].length - a[1].length)) {
+      const avgRisk = Math.round(members.reduce((s, [, n]) => s + n.riskScore, 0) / members.length);
+      const riskIcon = avgRisk >= 61 ? '🔴' : avgRisk >= 31 ? '🟡' : '🟢';
+      
+      const roles = members.reduce((acc, [, n]) => {
         const r = classifyRole(n.file, n);
         acc[r] = (acc[r] || 0) + 1;
         return acc;
       }, {});
-      const roleStr = Object.entries(roles).map(([r, c]) => `${c} ${r}${c > 1 ? 's' : ''}`).join(', ');
-      purpose = `Contains ${roleStr}`;
-    }
+      const primaryRole = Object.entries(roles).sort((a, b) => b[1] - a[1])[0][0];
 
-    lines.push(`| \`${dir}\` | ${dirNodes.length} | ${riskIcon} ${avgRisk} | ${debt} | ${type} | ${purpose} |`);
+      const reps = members
+        .sort((a, b) => (b[1].importedBy?.length || 0) - (a[1].importedBy?.length || 0))
+        .slice(0, 3)
+        .map(([f]) => `\`${path.basename(f)}\``)
+        .join(', ');
+
+      const memberCount = members.length > 3 ? ` (+${members.length - 3} more)` : '';
+      
+      // Look for a module-level description in commentIntel if any member's dir has one
+      const dirs = new Set(members.map(([f]) => path.dirname(f)));
+      let purpose = null;
+      for (const d of dirs) {
+        if (commentByDir.has(d)) {
+          purpose = commentByDir.get(d).purpose;
+          break;
+        }
+      }
+      if (!purpose) {
+        purpose = `Core ${primaryRole} logic for ${Object.keys(roles).length} types.`;
+      }
+
+      lines.push(`| **Tier ${cid}** | ${reps}${memberCount} | ${riskIcon} ${avgRisk} | ${primaryRole} | ${purpose} |`);
+    }
+  } else {
+    // Fallback to Directory map
+    lines.push('## Module map');
+    lines.push('');
+    lines.push('> One row per directory.');
+    lines.push('');
+    lines.push('| Directory | Files | Avg risk | Debt | Type | Purpose |');
+    lines.push('|-----------|-------|----------|------|------|---------|');
+
+    const byDir = groupByDir(allNodes);
+    for (const [dir, dirNodes] of Object.entries(byDir).sort()) {
+      const intel = commentByDir.get(dir);
+      const avgRisk = Math.round(dirNodes.reduce((s, [, n]) => s + n.riskScore, 0) / dirNodes.length);
+      const riskIcon = avgRisk >= 61 ? '🔴' : avgRisk >= 31 ? '🟡' : '🟢';
+      let debt = intel?.techDebt && intel.techDebt !== 'none' ? `**${intel.techDebt.toUpperCase()}**` : '—';
+      let type = intel?.isBizFeature === true ? '`biz`' : intel?.isBizFeature === false ? '`infra`' : '—';
+      
+      let purpose = intel?.purpose ? intel.purpose.split('.')[0] : null;
+      if (!purpose) {
+        const roles = dirNodes.reduce((acc, [, n]) => {
+          const r = classifyRole(n.file, n);
+          acc[r] = (acc[r] || 0) + 1;
+          return acc;
+        }, {});
+        const roleStr = Object.entries(roles).map(([r, c]) => `${c} ${r}${c > 1 ? 's' : ''}`).join(', ');
+        purpose = `Contains ${roleStr}`;
+      }
+      lines.push(`| \`${dir}\` | ${dirNodes.length} | ${riskIcon} ${avgRisk} | ${debt} | ${type} | ${purpose} |`);
+    }
   }
   lines.push('');
 
@@ -1030,7 +1085,8 @@ function sampleRepresentativeNodes(nodes, maxCount = 10) {
  * This becomes the single input to the LLM that writes the full MASTER.md.
  */
 function buildCompactContext(graph, summaries, scoreMap, deadFiles, unusedExports,
-  daemonData, adapterData, features, legacyReport, flows, insights, stack, entryPointsDetected = []) {
+  daemonData, adapterData, features, legacyReport, flows, insights, stack, entryPointsDetected = [],
+  communityGroup = null) {
 
   const nodes    = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
@@ -1117,6 +1173,11 @@ function buildCompactContext(graph, summaries, scoreMap, deadFiles, unusedExport
     primaryFlows: flowSummary,
     techDebtFiles: debtFiles,
     healthNarrative: insights?.healthNarrative || null,
+    communities: communityGroup ? Object.entries(communityGroup).map(([cid, members]) => ({
+      id: cid,
+      size: members.length,
+      reps: members.slice(0, 5).map(([f]) => path.basename(f)),
+    })) : null,
   };
 }
 

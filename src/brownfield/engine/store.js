@@ -150,7 +150,8 @@ CREATE TABLE IF NOT EXISTS nodes (
   -- Analysis results
   is_circular_dep      INTEGER NOT NULL DEFAULT 0,
   circular_cycle_id    INTEGER DEFAULT NULL,
-  gap_count            INTEGER NOT NULL DEFAULT 0
+  gap_count            INTEGER NOT NULL DEFAULT 0,
+  community_id         INTEGER DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -251,25 +252,13 @@ CREATE TABLE IF NOT EXISTS module_roles (
 CREATE INDEX IF NOT EXISTS idx_edges_source   ON edges(source);
 CREATE INDEX IF NOT EXISTS idx_edges_target   ON edges(target);
 CREATE INDEX IF NOT EXISTS idx_edges_file     ON edges(file_path);
-CREATE INDEX IF NOT EXISTS idx_nodes_lang     ON nodes(lang);
-CREATE INDEX IF NOT EXISTS idx_nodes_risk     ON nodes(risk_score DESC);
-CREATE INDEX IF NOT EXISTS idx_nodes_entry    ON nodes(is_entry);
-CREATE INDEX IF NOT EXISTS idx_nodes_role     ON nodes(role);
-CREATE INDEX IF NOT EXISTS idx_nodes_band     ON nodes(band);
-CREATE INDEX IF NOT EXISTS idx_nodes_test     ON nodes(is_test);
-CREATE INDEX IF NOT EXISTS idx_nodes_imported_by ON nodes(imported_by_count DESC);
-CREATE INDEX IF NOT EXISTS idx_nodes_dead     ON nodes(is_dead_file);
+CREATE INDEX IF NOT EXISTS idx_notes_lang     ON nodes(lang);
 CREATE INDEX IF NOT EXISTS idx_symbols_file   ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name   ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_daemons_file   ON daemons(file_path);
 CREATE INDEX IF NOT EXISTS idx_daemons_kind   ON daemons(kind);
 CREATE INDEX IF NOT EXISTS idx_adapters_file  ON adapters(file_path);
 CREATE INDEX IF NOT EXISTS idx_adapters_kind  ON adapters(kind);
-CREATE INDEX IF NOT EXISTS idx_entry_confidence ON entry_points(confidence DESC);
-CREATE INDEX IF NOT EXISTS idx_role_primary   ON module_roles(primary_role);
-CREATE INDEX IF NOT EXISTS idx_dead_safe      ON dead_code(is_safe_to_delete);
-CREATE INDEX IF NOT EXISTS idx_circular_files ON circular_dependencies(files);
-CREATE INDEX IF NOT EXISTS idx_gaps_file      ON coverage_gaps(file_path);
 `;
 
 // ── GraphStore ────────────────────────────────────────────────────────────────
@@ -324,6 +313,7 @@ class GraphStore {
       'ALTER TABLE nodes ADD COLUMN is_circular_dep      INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE nodes ADD COLUMN circular_cycle_id    INTEGER DEFAULT NULL',
       'ALTER TABLE nodes ADD COLUMN gap_count            INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE nodes ADD COLUMN community_id         INTEGER DEFAULT NULL',
     ];
     for (const sql of newCols) {
       try { this._db.exec(sql); } catch { /* column already exists */ }
@@ -331,8 +321,11 @@ class GraphStore {
     // New indexes (CREATE INDEX IF NOT EXISTS is idempotent)
     try {
       this._db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_nodes_risk ON nodes(risk_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_nodes_entry ON nodes(is_entry);
         CREATE INDEX IF NOT EXISTS idx_nodes_role ON nodes(role);
         CREATE INDEX IF NOT EXISTS idx_nodes_band ON nodes(band);
+        CREATE INDEX IF NOT EXISTS idx_nodes_community ON nodes(community_id);
         CREATE INDEX IF NOT EXISTS idx_nodes_test ON nodes(is_test);
         CREATE INDEX IF NOT EXISTS idx_nodes_imported_by ON nodes(imported_by_count DESC);
         CREATE INDEX IF NOT EXISTS idx_nodes_dead ON nodes(is_dead_file);
@@ -342,7 +335,9 @@ class GraphStore {
         CREATE INDEX IF NOT EXISTS idx_circular_files ON circular_dependencies(files);
         CREATE INDEX IF NOT EXISTS idx_gaps_file ON coverage_gaps(file_path);
       `);
-    } catch {}
+    } catch (e) {
+      console.warn('[db-migration] Index creation failed:', e.message);
+    }
   }
 
   // ── Prepared statements (hot paths) ─────────────────────────────────────────
@@ -354,12 +349,12 @@ class GraphStore {
           (file_path, lang, risk_score, is_entry, is_barrel, is_test, role, band, summary, purpose, exports, gaps, meta,
            file_hash, error, updated_at, total_commits, bug_fix_commits, hack_commits, todo_count, first_commit_date,
            last_commit_date, age_in_days, authors, imported_by_count, import_count, is_public_contract, has_tests,
-           is_dead_file, danger_reason, entry_point_type, entry_point_confidence, is_circular_dep, circular_cycle_id, gap_count)
+           is_dead_file, danger_reason, entry_point_type, entry_point_confidence, is_circular_dep, circular_cycle_id, gap_count, community_id)
         VALUES
           (@file_path, @lang, @risk_score, @is_entry, @is_barrel, @is_test, @role, @band, @summary, @purpose, @exports, @gaps, @meta,
            @file_hash, @error, @updated_at, @total_commits, @bug_fix_commits, @hack_commits, @todo_count, @first_commit_date,
            @last_commit_date, @age_in_days, @authors, @imported_by_count, @import_count, @is_public_contract, @has_tests,
-           @is_dead_file, @danger_reason, @entry_point_type, @entry_point_confidence, @is_circular_dep, @circular_cycle_id, @gap_count)
+           @is_dead_file, @danger_reason, @entry_point_type, @entry_point_confidence, @is_circular_dep, @circular_cycle_id, @gap_count, @community_id)
         ON CONFLICT(file_path) DO UPDATE SET
           lang=excluded.lang, risk_score=excluded.risk_score,
           is_entry=excluded.is_entry, is_barrel=excluded.is_barrel,
@@ -375,7 +370,7 @@ class GraphStore {
           is_public_contract=excluded.is_public_contract, has_tests=excluded.has_tests,
           is_dead_file=excluded.is_dead_file, danger_reason=excluded.danger_reason,
           entry_point_type=excluded.entry_point_type, entry_point_confidence=excluded.entry_point_confidence,
-          is_circular_dep=excluded.is_circular_dep, circular_cycle_id=excluded.circular_cycle_id, gap_count=excluded.gap_count
+          is_circular_dep=excluded.is_circular_dep, circular_cycle_id=excluded.circular_cycle_id, gap_count=excluded.gap_count, community_id=excluded.community_id
       `),
 
       updateSummary: this._db.prepare(
@@ -643,6 +638,7 @@ class GraphStore {
       is_circular_dep:      node.isCircularDep ? 1 : 0,
       circular_cycle_id:    node.circularCycleId || null,
       gap_count:            node.gaps?.length || 0,
+      community_id:         node.communityId || null,
     });
   }
 
@@ -1152,6 +1148,7 @@ class GraphStore {
       gaps:         this._parseJson(row.gaps, []),
       meta:         this._parseJson(row.meta, {}),
       error:        row.error === 1,
+      communityId:  row.community_id,
       // imports and importedBy populated by toGraphObject()
       imports:      [],
       importedBy:   [],
@@ -1429,6 +1426,34 @@ class GraphStore {
   _parseJson(str, fallback) {
     if (!str) return fallback;
     try { return JSON.parse(str); } catch { return fallback; }
+  }
+
+  /**
+   * Bulk-update community IDs after clustering.
+   * @param {Object} communityMap — { filePath: communityId }
+   */
+  updateCommunities(communityMap) {
+    const tx = this._db.transaction((entries) => {
+      const stmt = this._db.prepare('UPDATE nodes SET community_id = ? WHERE file_path = ?');
+      for (const [file, cid] of entries) {
+        stmt.run(cid, file);
+      }
+    });
+    tx(Object.entries(communityMap));
+  }
+
+  /**
+   * Get all nodes grouped by community ID.
+   * @returns {Object} — { communityId: [filePaths] }
+   */
+  getCommunities() {
+    const rows = this._db.prepare('SELECT file_path, community_id FROM nodes WHERE community_id IS NOT NULL').all();
+    const map = {};
+    for (const r of rows) {
+      map[r.community_id] = map[r.community_id] || [];
+      map[r.community_id].push(r.file_path);
+    }
+    return map;
   }
 }
 

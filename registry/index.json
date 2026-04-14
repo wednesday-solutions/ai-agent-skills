@@ -1,18 +1,18 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-03-27T06:05:04.867Z",
+  "updatedAt": "2026-04-14T10:43:26.733Z",
   "count": 17,
   "skills": [
     {
       "name": "brownfield-chat",
-      "version": "2.0.0",
-      "description": "Unified codebase Q&A — handles all structural, historical, and natural-language questions. Single file lookups, blast radius, daemons, adapters, git history, architecture overview, and anything spanning multiple modules. Use this for any codebase question.",
+      "version": "1.0.0",
+      "description": "Unified codebase Q&A — handles all structural, historical, and natural-language questions about a mapped codebase. Single file lookups, blast radius, daemons, adapters, git history, architecture overview, and anything spanning multiple modules. Use this for any codebase question.",
       "tags": [],
       "requires": [],
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 426,
+      "wordCount": 1034,
       "downloads": 0,
       "path": "skills/brownfield-chat"
     },
@@ -51,7 +51,7 @@
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 306,
+      "wordCount": 351,
       "downloads": 0,
       "path": "skills/brownfield-fix"
     },
@@ -64,20 +64,20 @@
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 367,
+      "wordCount": 392,
       "downloads": 0,
       "path": "skills/brownfield-gaps"
     },
     {
       "name": "brownfield-query",
-      "version": "2.0.0",
-      "description": "Merged into brownfield-chat. Use brownfield-chat for all codebase questions.",
+      "version": "1.0.0",
+      "description": "Merged into brownfield-chat. Use brownfield-chat for all codebase questions — single file lookups, blast radius, daemons, adapters, and everything else.",
       "tags": [],
       "requires": [],
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 308,
+      "wordCount": 43,
       "downloads": 0,
       "path": "skills/brownfield-query"
     },
@@ -161,7 +161,7 @@
       "conflicts": [],
       "author": "wednesday-solutions",
       "license": "MIT",
-      "wordCount": 899,
+      "wordCount": 938,
       "downloads": 0,
       "path": "skills/pr-create"
     },

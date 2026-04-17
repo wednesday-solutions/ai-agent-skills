@@ -35,6 +35,7 @@ const { analyseComments } = require('./analysis/comment-intel');
 const { detectFeatureModules } = require('./analysis/feature-modules');
 const { classifyRole } = require('./summarization/role-classifier');
 const { computeCommunities } = require('./analysis/communities');
+const queries = require('./db/queries');
 
 /**
  * Compute SHA-1 hashes for a list of absolute file paths.
@@ -664,5 +665,20 @@ module.exports = {
       }
     }
     return true;
+  },
+
+  query: (rootDir, type, ...args) => {
+    const p = paths(rootDir);
+    if (!fs.existsSync(p.dbPath)) throw new Error('Run wednesday-skills analyze first (database missing).');
+    
+    if (typeof queries[type] !== 'function') {
+      throw new Error(`Unknown query type: ${type}. Available: ${Object.keys(queries).filter(k => typeof queries[k] === 'function').join(', ')}`);
+    }
+
+    try {
+      return queries[type](p.dbPath, ...args);
+    } finally {
+      // Logic to close DB if needed, but queries.js uses a cache for now
+    }
   },
 };

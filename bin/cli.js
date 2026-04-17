@@ -453,6 +453,12 @@ function main() {
       });
       break;
     }
+    case 'query': {
+      const type = args[1];
+      if (!type) { log('red', 'Usage: wednesday-skills query <type> [args]'); process.exit(1); }
+      runQuery(type, process.cwd(), args.slice(2));
+      break;
+    }
 
     case 'help':
     case '--help':
@@ -2248,6 +2254,7 @@ function showHelp() {
   console.log('  build-skill                  AI-generate a new SKILL.md interactively');
   console.log('  submit <skill>               Submit a skill to the public registry via PR');
   console.log('  stats [--cost] [--stale]     Show skill usage analytics');
+  console.log('  query <type> [args]          Direct database query (file-summary, blast, dead, etc.)');
   console.log('');
   console.log('IDE-handled (ask Claude instead):');
   console.log('  blast, score, chat, gen-tests, plan-refactor, onboard');
@@ -2298,6 +2305,17 @@ function runChat(question, targetDir) {
     log('red', `Error: ${e.message}`);
     process.exit(1);
   });
+}
+
+function runQuery(type, targetDir, queryArgs) {
+  targetDir = path.resolve(targetDir);
+  try {
+    const result = brownfield.query(targetDir, type, ...queryArgs);
+    console.log(JSON.stringify(result, null, 2));
+  } catch (e) {
+    log('red', `Query error: ${e.message}`);
+    process.exit(1);
+  }
 }
 
 function runDrift(targetDir, opts) {

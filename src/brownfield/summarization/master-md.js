@@ -307,17 +307,16 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   }
 
   // Pre-compute derived data used by multiple sections
-  const scoreMap = scoreAll(nodes, buildTestCoverageMap(nodes), commentIntel);
-  const { deadFiles, unusedExports, riskByFile } = findDeadCode(nodes, commentIntel);
+  const scoreMap = store ? store.getScoreMap() : scoreAll(nodes, buildTestCoverageMap(nodes), commentIntel);
+  const deadData = store ? store.getDeadCode() : findDeadCode(nodes, commentIntel);
+  const { deadFiles, unusedExports } = deadData;
   const rootDir    = graph.rootDir || '';
   const features   = inferFeatures(allNodes);
   const deadClassification = insights.deadClassification || {};
   const cycleBreakPoints   = insights.cycleBreakPoints   || {};
-  const totalGaps = allNodes.reduce((s, [, n]) => s + n.gaps.length, 0);
-  const gapsByType = allNodes.flatMap(([, n]) => n.gaps).reduce((acc, g) => {
-    acc[g.type] = (acc[g.type] || 0) + 1;
-    return acc;
-  }, {});
+  
+  const stats = store ? store.getStats() : graph.stats;
+  const totalGaps = stats.gapCount || 0;
 
   // Build comment intel lookup by dir
   const commentByDir = new Map();
@@ -368,7 +367,7 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   let productOrientation = null;
   if (apiKey) {
     try {
-      productOrientation = await callHaikuProductOrientation(features, sampleRepresentativeNodes(nodes, 30));
+      productOrientation = await callHaikuProductOrientation(features, sampleRepresentativeNodes(nodes, 30, store));
     } catch {
       // LLM call failed, use fallback
     }
@@ -411,14 +410,14 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
 
   lines.push('| Metric | Value |');
   lines.push('|--------|-------|');
-  lines.push(`| Files | ${allNodes.length} mapped · ${graph.stats.totalEdges} edges |`);
-  lines.push(`| Risk bands | ${bandStr || `${graph.stats.highRiskFiles} high-risk`} |`);
+  lines.push(`| Files | ${stats.totalFiles} mapped · ${stats.totalEdges} edges |`);
+  lines.push(`| Risk bands | ${bandStr || `${stats.highRiskFiles} high-risk`} |`);
   lines.push(`| Dead | ${deadFiles.length} files · ${unusedExportCount} unused exports |`);
   lines.push(`| Circular deps | ${logicCycles} logic · ${structuralCycles} structural |`);
   lines.push(`| God files | ${legacyReport?.godFiles?.length || 0} |`);
   if (daemonData)  lines.push(`| Background processes | ${daemonData.total} patterns · ${Object.keys(daemonData.byKind || {}).length} kinds |`);
   if (adapterData) lines.push(`| External adapters | ${adapterData.total} · ${Object.keys(adapterData.byKind || {}).length} categories |`);
-  if (totalGaps > 0) lines.push(`| Coverage gaps | ${totalGaps}${gapsFilled ? ` · ${gapsFilled} filled` : ''} |`);
+  if (stats.gapCount > 0) lines.push(`| Coverage gaps | ${stats.gapCount}${gapsFilled ? ` · ${gapsFilled} filled` : ''} |`);
   lines.push('');
 
   // ── Table of contents ─────────────────────────────────────────────────────
@@ -450,7 +449,7 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
   const flows = store ? discoverPrimaryFlows(store, 5, 4) : [];
   const graphCoverage = graph.stats?.coverage || 0;
-  const entryPointsDetected = detectEntryPoints(nodes, readPackageJson(graph.rootDir), graphCoverage);
+  const entryPointsDetected = store ? store.getEntryPoints() : detectEntryPoints(nodes, readPackageJson(graph.rootDir), graphCoverage);
   const sortedEntries = entryPointsDetected.sort((a, b) => b.confidence - a.confidence);
 
   if (sortedEntries.length === 0) {
@@ -465,14 +464,14 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
 
     if (confidence >= 80) {
       // High confidence: show single reading order
-      const readingOrder = generateReadingOrder(topEntry.filePath, nodes, flows, 12);
+      const readingOrder = store ? store.getReadingOrder(12) : generateReadingOrder(topEntry.filePath, nodes, flows, 12);
       lines.push(`### Start here → \`${topEntry.filePath}\``);
       lines.push(`Detected via: ${topEntry.detectionMethod} (${topEntry.reason})`);
       lines.push('');
       for (let i = 0; i < readingOrder.length; i++) {
-        const file = readingOrder[i];
-        const node = nodes[file];
-        const summary = summaries[file] || '(no summary)';
+        const item = readingOrder[i];
+        const file = typeof item === 'string' ? item : item.file_path;
+        const summary = (typeof item === 'object' && item.summary) ? item.summary : (summaries[file] || '(no summary)');
         lines.push(`${i + 1}. **\`${file}\`** — ${summary.split('\n')[0]}`);
       }
       lines.push('');
@@ -482,10 +481,10 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
       lines.push(`### Option A (${confidence}% confidence) → \`${topEntry.filePath}\``);
       lines.push(`Detected via: ${topEntry.detectionMethod} (${topEntry.reason})`);
       lines.push('');
-      const readingOrder1 = generateReadingOrder(topEntry.filePath, nodes, flows, 10);
+      const readingOrder1 = store ? store.getReadingOrder(10) : generateReadingOrder(topEntry.filePath, nodes, flows, 10);
       for (let i = 0; i < readingOrder1.length; i++) {
-        const file = readingOrder1[i];
-        const summary = summaries[file] || '(no summary)';
+        const item = readingOrder1[i];
+        const file = typeof item === 'string' ? item : item.file_path;
         lines.push(`${i + 1}. **\`${file}\`**`);
       }
       lines.push('');
@@ -494,10 +493,10 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
         lines.push(`### Option B (${alt.confidence}% confidence) → \`${alt.filePath}\``);
         lines.push(`Detected via: ${alt.detectionMethod} (${alt.reason})`);
         lines.push('');
-        const readingOrder2 = generateReadingOrder(alt.filePath, nodes, flows, 10);
+        const readingOrder2 = store ? store.getReadingOrder(10) : generateReadingOrder(alt.filePath, nodes, flows, 10);
         for (let i = 0; i < readingOrder2.length; i++) {
-          const file = readingOrder2[i];
-          const summary = summaries[file] || '(no summary)';
+          const item = readingOrder2[i];
+          const file = typeof item === 'string' ? item : item.file_path;
           lines.push(`${i + 1}. **\`${file}\`**`);
         }
         lines.push('');
@@ -512,10 +511,10 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
         lines.push(`### Option ${String.fromCharCode(65 + i)} (${entry.confidence}% confidence) → \`${entry.filePath}\``);
         lines.push(`Detected via: ${entry.detectionMethod} (${entry.reason})`);
         lines.push('');
-        const order = generateReadingOrder(entry.filePath, nodes, flows, 8);
+        const order = store ? store.getReadingOrder(8) : generateReadingOrder(entry.filePath, nodes, flows, 8);
         for (let j = 0; j < order.length; j++) {
-          const file = order[j];
-          const summary = summaries[file] || '(no summary)';
+          const item = order[j];
+          const file = typeof item === 'string' ? item : item.file_path;
           lines.push(`${j + 1}. **\`${file}\`**`);
         }
         lines.push('');
@@ -587,9 +586,9 @@ graph LR
   }
 
   const { detectArchitecturePattern } = require('../analysis/architecture');
-  const detectedArch = detectArchitecturePattern(nodes);
+  const detectedArch = detectArchitecturePattern(nodes, store);
   
-  const representativeNodes = sampleRepresentativeNodes(nodes, 10);
+  const representativeNodes = sampleRepresentativeNodes(nodes, 10, store);
   if (apiKey && representativeNodes.length > 0) {
     const arch = await callHaikuArchitecture(representativeNodes, graph.stats);
     let archText = arch || generateStructuralArchOverview(graph.stats, representativeNodes);
@@ -607,7 +606,8 @@ graph LR
     lines.push('|-------|----------------|------------|-----------|--------|');
 
     const scenes = {};
-    for (const [file] of allNodes) {
+    const relevantFiles = store ? store.getFilesByPattern('%.swift') : allNodes.map(([f]) => f);
+    for (const file of relevantFiles) {
       const match = path.basename(file).match(/^(.+)(ViewController|Interactor|Presenter|Router|Worker)\.swift$/);
       if (match) {
         const name = match[1];
@@ -634,9 +634,9 @@ graph LR
   lines.push('');
   lines.push('| Language | Files | % |');
   lines.push('|----------|-------|---|');
-  const total = graph.stats.totalFiles;
-  for (const [lang, count] of Object.entries(graph.stats.byLang || {}).sort((a, b) => b[1] - a[1])) {
-    lines.push(`| ${lang} | ${count} | ${Math.round(count / total * 100)}% |`);
+  const totalCount = stats.totalFiles;
+  for (const [lang, count] of Object.entries(stats.byLang || {}).sort((a, b) => b[1] - a[1])) {
+    lines.push(`| ${lang} | ${count} | ${Math.round(count / totalCount * 100)}% |`);
   }
   lines.push('');
 
@@ -1041,7 +1041,13 @@ function generateStructuralArchOverview(stats, highValue) {
   return `${stats.totalFiles} files across ${langs}. ${stats.totalEdges} dependency edges tracked. ${highValue.length} high-value modules (entry points or widely imported). ${stats.highRiskFiles} files with risk score above 60.`;
 }
 
-function sampleRepresentativeNodes(nodes, maxCount = 10) {
+function sampleRepresentativeNodes(nodes, maxCount = 10, store = null) {
+  if (store) {
+    const important = store.getReadingOrder(maxCount * 3);
+    // Mix top tier with some from lower down for variety? 
+    // For now, let's just take the top ones as targets for LLM-based architecture summary
+    return important.map(i => ({ file: i.file_path, imports: [], importedBy: [], riskScore: i.importance_score }));
+  }
   const allNodes = Object.values(nodes);
   const layerPatterns = [
     { name: 'Interactor', re: /Interactor/ },

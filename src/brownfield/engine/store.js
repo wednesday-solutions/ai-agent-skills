@@ -880,6 +880,23 @@ class GraphStore {
   isEmpty() {
     return this._db.prepare('SELECT COUNT(*) as c FROM nodes').get().c === 0;
   }
+  
+  /**
+   * Get all file paths in the graph.
+   * @returns {Array<string>}
+   */
+  getAllFiles() {
+    return this._db.prepare('SELECT file_path FROM nodes').all().map(r => r.file_path);
+  }
+
+  /**
+   * Get files matching a simple LIKE pattern.
+   * @param {string} pattern - SQL LIKE pattern
+   * @returns {Array<string>}
+   */
+  getFilesByPattern(pattern) {
+    return this._db.prepare('SELECT file_path FROM nodes WHERE file_path LIKE ?').all(pattern).map(r => r.file_path);
+  }
 
   /**
    * Get all symbols defined in a file.

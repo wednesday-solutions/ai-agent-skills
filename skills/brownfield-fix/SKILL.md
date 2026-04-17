@@ -3,51 +3,36 @@ name: brownfield-fix
 description: Use before editing any file in a brownfield project. Runs risk check and blast radius before making any change.
 permissions:
   allow:
-    - Bash(wednesday-skills score *)
-    - Bash(wednesday-skills blast *)
-    - Bash(wednesday-skills fill-gaps *)
+    - Bash(wednesday-skills query *)
+    - Read(.wednesday/codebase/MASTER.md)
 ---
 
 ## When to use
 - About to edit, refactor, rename, or delete any file
 - About to change a function signature or exported value
 - Dev asks "is it safe to change X"
-- The file you're about to edit has gaps in dep-graph.json (dynamic require, event emitters, global injection)
 
 ## What to do
-1. Run: wednesday-skills score <file>
+1. **Assessment**: Run `Bash(wednesday-skills query getFileSummary <file_path>)`
+   - Review the `riskScore` (0–100)
+   - Review the `blastRadius.transitive` count
+2. **Guidelines based on Score**:
    - Score 0–30: proceed
    - Score 31–60: tell dev the score, proceed with care
    - Score 61–80: tell dev, list direct dependents, ask confirmation
    - Score 81–100: stop, tell dev, require explicit approval
-2. Run: wednesday-skills blast <file>
-   - Include dependent count in your response
-   - Cross-language dependents flagged separately
-3. Check .wednesday/codebase/MASTER.md danger zones section
-   - If file listed there: read the warning before proceeding
-3a. Check if the file has coverage gaps — query the DB:
-   ```bash
-   sqlite3 .wednesday/graph.db "SELECT file_path, meta FROM nodes WHERE file_path LIKE '%<file>%'"
-   ```
-   If the returned `meta` JSON contains `gaps.eventEmitter`, `gaps.dynamic`, or `gaps.conditional` — run `wednesday-skills fill-gaps --file <file> --min-risk 50` first to ensure blast radius is complete.
-4. Make the change
-5. Read git-os skill before writing commit message
-6. After committing: post-commit hook updates graph automatically
+3. **Context**: Read `Danger Zones` in `.wednesday/codebase/MASTER.md`
+   - If the file is mentioned there, follow the specific warnings.
+4. **Make the change**
+5. **Update**: After committing, the graph will update automatically.
 
 ## Never
-- Skip the score check — even for "small" changes
-- Modify a file with risk score > 80 without explicit dev confirmation
-- Bundle fixes to multiple high-risk files in one commit
-- Ignore danger zones section warnings
+- Skip the risk check — even for "small" changes.
+- Modify a file with risk score > 80 without explicit dev confirmation.
+- Bundle fixes to multiple high-risk files in one commit.
 
 ## Tools
-Use Bash tool to run:
-- `wednesday-skills score <file>` — get risk score
-- `wednesday-skills blast <file>` — get blast radius
-- `sqlite3 .wednesday/graph.db "SELECT file_path, meta FROM nodes WHERE file_path LIKE '%<file>%'"` — check for coverage gaps
+Use Bash tool for:
+- `wednesday-skills query getFileSummary <file>` — get risk, blast, and dependencies in one call.
 Use Read tool for:
-- `.wednesday/codebase/MASTER.md` — check danger zones section
-
-## Do NOT use
-Do not skip score check for any file edit.
-Do not read raw source to assess risk — use the graph only.
+- `.wednesday/codebase/MASTER.md` — check Danger Zones.

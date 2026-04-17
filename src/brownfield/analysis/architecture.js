@@ -13,7 +13,22 @@ const path = require('path');
  * @param {Object} nodes - Dep-graph nodes
  * @returns {string|null} - Pattern name or null
  */
-function detectArchitecturePattern(nodes) {
+ function detectArchitecturePattern(nodes, store = null) {
+   if (store) {
+     const interactors = store.getFilesByPattern('%Interactor%').length;
+     const presenters  = store.getFilesByPattern('%Presenter%').length;
+     const routers     = store.getFilesByPattern('%Router%').length;
+     if (interactors >= 3 && presenters >= 3 && routers >= 3) return 'Clean Swift (VIP)';
+
+     const viewModels = store.getFilesByPattern('%ViewModel.%').length;
+     if (viewModels >= 5) return 'MVVM';
+
+     const controllers = store.getFilesByPattern('%.controller.ts').length;
+     const services = store.getFilesByPattern('%.service.ts').length;
+     if (controllers >= 3 && services >= 3) return 'NestJS (Modular)';
+
+     return null;
+   }
   const allFiles = Object.keys(nodes);
   
   // Clean Swift (VIP) indicators

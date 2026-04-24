@@ -267,7 +267,6 @@ async function analyze(rootDir, opts = {}) {
 
   store.setMeta('last_analyzed', new Date().toISOString());
   store.setMeta('root_dir', rootDir);
-  store.close();
 
   // ── Export dep-graph.json (from merged nodes + supplementary data) ────────
   const all = Object.values(mergedNodes);
@@ -332,6 +331,7 @@ async function analyze(rootDir, opts = {}) {
     try {
       const deadCodeEntries = [];
       for (const df of deadFiles) {
+        if (!df.file) continue;
         deadCodeEntries.push({ filePath: df.file, type: 'file', isSafeToDelete: df.risk === 'low' });
       }
       for (const [filePath, exports] of Object.entries(unusedExports || {})) {
@@ -396,6 +396,8 @@ async function analyze(rootDir, opts = {}) {
     // Comment intelligence
     await analyseComments(graph.nodes, rootDir, p.analysisDir, apiKey);
   }
+
+  store.close();
 
   const elapsed = Date.now() - start;
   log(`Done. ${Object.keys(graph.nodes).length} files in ${elapsed}ms`);

@@ -248,6 +248,16 @@ module.exports = {
   getCircularDependencies,
   getCoverageGapsSummary,
 
+  getSymbolCalls: (dbPath, file, symbol) => {
+    const db = openDb(dbPath);
+    return db.getSymbolCalls(file, symbol);
+  },
+
+  getSymbolCallers: (dbPath, file, symbol) => {
+    const db = openDb(dbPath);
+    return db.getSymbolCallers(file, symbol);
+  },
+
   // Stats
   getCodebaseStats,
 };

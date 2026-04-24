@@ -57,13 +57,34 @@ Maintain this order for consistency:
 - **Narrowing**: Use type guards (`typeof`, `instanceof`) instead of casting.
 - **Strictness**: No `any`. Use `unknown` or generics.
 
-## 5. Commenting & Intelligence
+## 5. Module Headers (CRITICAL)
 
-- **Substantive Comments**: Explain **WHY** (>= 8 words).
-- **Tech Debt Tags**: 
-    - `FIXME:`/`BUG:`: High severity.
-    - `HACK:`/`TODO:`: Medium severity.
-    - `OPTIMIZE:`: Low severity.
-- **Graph Annotations**:
-    - `@wednesday-skills:connects-to [label] → [path]`
-    - `@wednesday-skills:global [label] → [path]`
+Every code file MUST start with a block comment describing its purpose. This is used by the intelligence pipeline to map the codebase.
+
+```typescript
+/**
+ * [MODULE_NAME]
+ * 
+ * Purpose: Detailed explanation of what this file does (>= 8 words).
+ * Connections: What other modules does this interact with?
+ * Risk: High/Medium/Low and why.
+ */
+```
+
+## 6. Testing Strategy
+
+- **Unit/Integration**: Use **Jest**. Aim for 80%+ coverage on business logic.
+- **E2E**: Use **Playwright**. Mandatory for happy-path flows and critical UI.
+- **Fixtures**: Always use stable fixtures; avoid mocking network calls in E2E.
+
+## 7. State Management
+
+- **Redux/Zustand**: Use slices and strictly typed actions.
+- **Selectors**: Always use memoized selectors to prevent re-renders.
+- **Side Effects**: Use middleware (Sagas/Thunks) for complex async logic; keep components pure.
+
+## 8. Security & Performance
+
+- **Sanitize**: Use DOMPurify for any HTML rendering.
+- **Logs**: Never log PII (email, phone) or sensitive tokens.
+- **Memoization**: Use `React.memo`, `useCallback`, and `useMemo` ONLY when profiling shows performance gains.

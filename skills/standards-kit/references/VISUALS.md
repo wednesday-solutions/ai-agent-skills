@@ -40,14 +40,38 @@ This document contains the visual design system and component standards for Wedn
 | **Transition** | 300ms | `easeOutCubic` |
 | **Reveal** | 500-800ms | `easeOutQuart` |
 
-## 4. Accessibility (A11y)
+## 4. Responsive Design
+
+### Breakpoints
+- **sm**: `640px` (Mobile landscape)
+- **md**: `768px` (Tablet)
+- **lg**: `1024px` (Desktop)
+- **xl**: `1280px` (Large desktop)
+- **2xl**: `1536px` (Extra large)
+
+### Best Practices
+- Touch targets minimum **44x44px**.
+- Stack layouts vertically on **sm** and **md**.
+- Hide decorative background elements on smaller screens to improve performance.
+
+## 5. Accessibility (A11y)
 
 - **Contrast**: 4.5:1 for standard text.
-- **Touch Targets**: Minimum 44x44px on mobile.
 - **Motion**: Wrap all animations in `prefers-reduced-motion` media queries.
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+```
+
 - **ARIA**: Mandatory `aria-label` for icons and `alt` text for images.
 
-## 5. Layout Patterns
+## 6. Layout Patterns
 
 - **Hero**: Badge -> Headline -> Lead text -> CTA -> Social Proof.
 - **Comparison**: Strikethrough "Old Way" vs Circled "New Way".

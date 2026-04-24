@@ -9,29 +9,9 @@ This project uses Wednesday Solutions agent skills for consistent code quality a
 
 <available_skills>
   <skill>
-    <name>brownfield-chat</name>
-    <description>Unified codebase Q&A — handles ALL codebase questions. Single file lookups, blast radius, daemons, adapters, git history, architecture overview, and anything spanning multiple modules. Use this for any codebase question. Do NOT use brownfield-query — it is merged here.</description>
-    <location>.wednesday/skills/brownfield-chat/SKILL.md</location>
-  </skill>
-  <skill>
-    <name>brownfield-drift</name>
-    <description>Enforces architecture boundaries defined in PLAN.md. Use when a PR crosses module/service boundaries, when the dev asks "are we following the architecture?", or as a scheduled architecture health check. Not for querying what a module does — use brownfield-chat for that.</description>
-    <location>.wednesday/skills/brownfield-drift/SKILL.md</location>
-  </skill>
-  <skill>
-    <name>brownfield-enrich</name>
-    <description>Schema reference for comment enrichment. The enrichment workflow is printed by `wednesday-skills map` in the `[ENRICH]` block — follow those instructions.</description>
-    <location>.wednesday/skills/brownfield-enrich/SKILL.md</location>
-  </skill>
-  <skill>
-    <name>brownfield-fix</name>
-    <description>Use before editing any file in a brownfield project. Runs risk check and blast radius before making any change.</description>
-    <location>.wednesday/skills/brownfield-fix/SKILL.md</location>
-  </skill>
-  <skill>
-    <name>brownfield-gaps</name>
-    <description>Improves graph coverage for a specific file with dynamic/unannotated patterns (event emitters, dynamic require, global injection). Use when dep-graph shows gaps on a file or when chat/query returns "not mapped". Not for querying — only for improving coverage.</description>
-    <location>.wednesday/skills/brownfield-gaps/SKILL.md</location>
+    <name>codebase-intel</name>
+    <description>Unified codebase intelligence. Handles all questions about structure, logic, risk, and dependencies. Combines natural-language Q&A with deterministic lookups and pre-edit blast radius checks.</description>
+    <location>.wednesday/skills/codebase-intel/SKILL.md</location>
   </skill>
   <skill>
     <name>deploy-checklist</name>
@@ -39,9 +19,9 @@ This project uses Wednesday Solutions agent skills for consistent code quality a
     <location>.wednesday/skills/deploy-checklist/SKILL.md</location>
   </skill>
   <skill>
-    <name>git-os</name>
-    <description>Enforces conventional commits, atomic changes, and GIT-OS workflow for Wednesday Solutions projects. Every agent that generates a commit must read this skill first.</description>
-    <location>.wednesday/skills/git-os/SKILL.md</location>
+    <name>wednesday-git</name>
+    <description>Unified Git workflow. Manages the entire task lifecycle: branch creation (sprint), atomic commits (git-os), and PR opening (pr-create).</description>
+    <location>.wednesday/skills/wednesday-git/SKILL.md</location>
   </skill>
   <skill>
     <name>greenfield</name>
@@ -49,19 +29,9 @@ This project uses Wednesday Solutions agent skills for consistent code quality a
     <location>.wednesday/skills/greenfield/SKILL.md</location>
   </skill>
   <skill>
-    <name>pr-create</name>
-    <description>Agent-driven PR creation skill. Validates branch, runs pre-push checklist, generates GIT-OS compliant PR title and body from commit history, detects stacked branches, then pushes and opens the PR via gh CLI.</description>
-    <location>.wednesday/skills/pr-create/SKILL.md</location>
-  </skill>
-  <skill>
     <name>pr-review</name>
     <description>Fix engine for PR review comments. Fetches review comments (Gemini bot or human), categorizes by impact, posts a prioritized fix queue, and applies fixes on dev approval. Called directly for quick fixes, or internally by pr-review-agent as part of full PR review.</description>
     <location>.wednesday/skills/pr-review/SKILL.md</location>
-  </skill>
-  <skill>
-    <name>sprint</name>
-    <description>Sprint initiation skill. Given a ticket title and description, outputs a GIT-OS-compliant branch name, PR title, and PR description template.</description>
-    <location>.wednesday/skills/sprint/SKILL.md</location>
   </skill>
   <skill>
     <name>wednesday-design</name>
@@ -95,23 +65,12 @@ Use these skills for all structural questions:
 
 <available_skills>
   <skill>
-    <name>brownfield-chat</name>
+    <name>codebase-intel</name>
     <description>
-      Use when asked what a module does, what breaks if a file
-      changes, what a dependency conflict means, or anything
-      structural or historical about the codebase.
+      Use for ALL codebase questions: what a module does, what breaks 
+      if a file changes, risk scores, or structural lookups.
     </description>
-    <location>.wednesday/skills/brownfield-chat/SKILL.md</location>
-  </skill>
-
-  <skill>
-    <name>brownfield-fix</name>
-    <description>
-      Use before editing any file in a brownfield project.
-      Checks risk score, blast radius, and fills coverage gaps
-      before any change.
-    </description>
-    <location>.wednesday/skills/brownfield-fix/SKILL.md</location>
+    <location>.wednesday/skills/codebase-intel/SKILL.md</location>
   </skill>
 
   <skill>
@@ -126,10 +85,8 @@ Use these skills for all structural questions:
 </available_skills>
 
 ## Rules for codebase questions
-- Always read from .wednesday/codebase/ — never read raw source
-- dep-graph.json for structure and relationships
-- summaries.json for module purpose
-- MASTER.md for architecture, data flow, danger zones
+- Prioritize querying via Bash: `wednesday-skills query <type> [args]`
+- `MASTER.md` for architecture, data flow, danger zones
 - Graph updates automatically on every commit via post-commit hook
 
 ## Mapping the codebase

@@ -193,6 +193,16 @@ CREATE TABLE IF NOT EXISTS adapters (
   line      INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS symbol_calls (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_file     TEXT    NOT NULL,
+  source_symbol   TEXT    NOT NULL,
+  target_file     TEXT    NOT NULL,
+  target_symbol   TEXT    NOT NULL,
+  kind            TEXT    NOT NULL DEFAULT 'call',
+  file_path       TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS blast_radius (
   file_path             TEXT PRIMARY KEY,
   direct_dependents     TEXT NOT NULL DEFAULT '[]',
@@ -259,6 +269,9 @@ CREATE INDEX IF NOT EXISTS idx_daemons_file   ON daemons(file_path);
 CREATE INDEX IF NOT EXISTS idx_daemons_kind   ON daemons(kind);
 CREATE INDEX IF NOT EXISTS idx_adapters_file  ON adapters(file_path);
 CREATE INDEX IF NOT EXISTS idx_adapters_kind  ON adapters(kind);
+CREATE INDEX IF NOT EXISTS idx_symbol_calls_source ON symbol_calls(source_file, source_symbol);
+CREATE INDEX IF NOT EXISTS idx_symbol_calls_target ON symbol_calls(target_file, target_symbol);
+CREATE INDEX IF NOT EXISTS idx_symbol_calls_file   ON symbol_calls(file_path);
 `;
 
 // ── GraphStore ────────────────────────────────────────────────────────────────
@@ -458,6 +471,23 @@ class GraphStore {
 
       findSymbolByName: this._db.prepare(
         'SELECT file_path, name, kind, line_start, signature FROM symbols WHERE name = ? COLLATE NOCASE'
+      ),
+
+      deleteSymbolCallsByFile: this._db.prepare(
+        'DELETE FROM symbol_calls WHERE file_path = ?'
+      ),
+
+      insertSymbolCall: this._db.prepare(`
+        INSERT INTO symbol_calls (source_file, source_symbol, target_file, target_symbol, kind, file_path)
+        VALUES (@source_file, @source_symbol, @target_file, @target_symbol, @kind, @file_path)
+      `),
+
+      getSymbolCallsBySource: this._db.prepare(
+        'SELECT target_file, target_symbol, kind FROM symbol_calls WHERE source_file = ? AND source_symbol = ?'
+      ),
+
+      getSymbolCallersByTarget: this._db.prepare(
+        'SELECT source_file, source_symbol, kind FROM symbol_calls WHERE target_file = ? AND target_symbol = ?'
       ),
 
       deleteDaemonsByFile: this._db.prepare(
@@ -703,6 +733,8 @@ class GraphStore {
   removeFile(filePath) {
     this._stmts.deleteEdgesByFileAndKind.run(filePath, 'imports');
     this._stmts.deleteEdgesByFileAndKind.run(filePath, 'calls');
+    this._stmts.deleteSymbolsByFile.run(filePath);
+    this._stmts.deleteSymbolCallsByFile.run(filePath);
     this._stmts.deleteNode.run(filePath);
   }
 
@@ -720,6 +752,25 @@ class GraphStore {
         kind:       sym.kind || 'function',
         line_start: sym.lineStart || 0,
         signature:  sym.signature || '',
+      });
+    }
+  }
+
+  /**
+   * Replace all symbol calls for a file atomically.
+   * @param {string} filePath
+   * @param {Array}  calls — [{ sourceSymbol, targetFile, targetSymbol, kind }]
+   */
+  upsertSymbolCalls(filePath, calls) {
+    this._stmts.deleteSymbolCallsByFile.run(filePath);
+    for (const c of calls) {
+      this._stmts.insertSymbolCall.run({
+        source_file:   filePath,
+        source_symbol: c.sourceSymbol,
+        target_file:   c.targetFile,
+        target_symbol: c.targetSymbol,
+        kind:          c.kind || 'call',
+        file_path:     filePath,
       });
     }
   }
@@ -745,6 +796,9 @@ class GraphStore {
         if (node.symbols && node.symbols.length > 0) {
           this.upsertSymbols(node.file, node.symbols);
         }
+        if (node.symbolCalls && node.symbolCalls.length > 0) {
+          this.upsertSymbolCalls(node.file, node.symbolCalls);
+        }
       }
     });
     writeAllTx(Object.entries(nodes));
@@ -766,6 +820,9 @@ class GraphStore {
       }
       if (node.symbols && node.symbols.length > 0) {
         this.upsertSymbols(node.file, node.symbols);
+      }
+      if (node.symbolCalls && node.symbolCalls.length > 0) {
+        this.upsertSymbolCalls(node.file, node.symbolCalls);
       }
     });
     writeTx();
@@ -832,6 +889,32 @@ class GraphStore {
    */
   getCalls(filePath) {
     return this._stmts.getCallsBySource.all(filePath, 'calls').map(r => r.target);
+  }
+
+  /**
+   * Get all calls made BY a specific symbol in a file.
+   * @param {string} file
+   * @param {string} symbol
+   */
+  getSymbolCalls(file, symbol) {
+    return this._stmts.getSymbolCallsBySource.all(file, symbol).map(r => ({
+      file:   r.target_file,
+      symbol: r.target_symbol,
+      kind:   r.kind,
+    }));
+  }
+
+  /**
+   * Get all callers OF a specific symbol.
+   * @param {string} file
+   * @param {string} symbol
+   */
+  getSymbolCallers(file, symbol) {
+    return this._stmts.getSymbolCallersByTarget.all(file, symbol).map(r => ({
+      file:   r.source_file,
+      symbol: r.source_symbol,
+      kind:   r.kind,
+    }));
   }
 
   /**

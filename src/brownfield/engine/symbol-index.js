@@ -16,8 +16,9 @@ function buildSymbolIndex(nodes) {
 
   for (const [file, node] of Object.entries(nodes)) {
     for (const sym of (node.symbols || [])) {
-      // Only index exported symbols — reduces false positives in call detection
-      if (!node.exports || !node.exports.includes(sym.name)) continue;
+      // Index exported symbols (TS/JS/Py) OR ALL symbols for Go (same-package visibility)
+      const isExported = node.exports && node.exports.includes(sym.name);
+      if (!isExported && node.lang !== 'go') continue;
 
       const qualifiedName = `${file}::${sym.name}`;
       const entry = {

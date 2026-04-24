@@ -1,408 +1,125 @@
-/**
- * 2A-4 — Dependency graph engine
- * Merges all adapter outputs into a unified dep-graph.json
- * Computes: importedBy, riskScore, isEntryPoint, isBarrel per node
- */
-
 'use strict';
 
-const fs = require('fs');
+const fg = require('fast-glob');
 const path = require('path');
+const fs = require('fs');
+const { GraphStore } = require('./store');
+const { buildSymbolIndex } = require('./symbol-index');
+const { extractCallEdges } = require('./calls-extractor');
+const tsAdapter = require('../adapters/typescript');
+const goAdapter = require('../adapters/go');
+const pyAdapter = require('../adapters/python');
 
-const { detectLang, loadAliases } = require('../core/parser');
-const tsAdapter     = require('../adapters/typescript');
-const goAdapter     = require('../adapters/go');
-const gqlAdapter    = require('../adapters/graphql');
-const kotlinAdapter = require('../adapters/kotlin');
-const swiftAdapter  = require('../adapters/swift');  // also exports resolveIntraModuleEdges
-const pythonAdapter = require('../adapters/python');
-const rubyAdapter   = require('../adapters/ruby');
-const javaAdapter   = require('../adapters/java');
-const phpAdapter    = require('../adapters/php');
-const csharpAdapter = require('../adapters/csharp');
-const cAdapter      = require('../adapters/c');
-const nestjsParser = require('../parsers/nestjs');
-const gitHistory = require('../parsers/git-history');
-const cocoapodsParser = require('../parsers/cocoapods');
-const spmParser = require('../parsers/spm');
-const serverlessParser = require('../parsers/serverless');
-
-const SUPPORTED_LANGS = new Set(['javascript', 'typescript', 'go', 'graphql', 'kotlin', 'swift', 'shell', 'python', 'ruby', 'java', 'php', 'csharp', 'c', 'cpp']);
-
-/**
- * Collect all analysable files under rootDir
- */
-function collectFiles(rootDir, opts = {}) {
-  const ignore = new Set([
-    'node_modules', '.git', 'dist', 'build', '.next', 'coverage',
-    '.wednesday', 'vendor', '__pycache__', '.gradle',
-    'Pods', 'DerivedData', '.build', 'xcuserdata',   // iOS/Swift
-    'Carthage', 'fastlane',
-    ...(opts.ignore || []),
-  ]);
-
-  const files = [];
-  const exts = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.go', '.graphql', '.gql', '.kt', '.kts', '.swift', '.py', '.rb', '.java', '.php', '.cs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.h++']);
-
-  function walk(dir) {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-
-    for (const entry of entries) {
-      if (ignore.has(entry.name)) continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-      } else if (entry.isFile() && exts.has(path.extname(entry.name))) {
-        files.push(full);
-      }
-    }
+function loadAliases(rootDir) {
+  const tsPath = path.join(rootDir, 'tsconfig.json');
+  const jsPath = path.join(rootDir, 'jsconfig.json');
+  let config = null;
+  if (fs.existsSync(tsPath)) {
+    try { config = JSON.parse(fs.readFileSync(tsPath, 'utf8')); } catch {}
+  } else if (fs.existsSync(jsPath)) {
+    try { config = JSON.parse(fs.readFileSync(jsPath, 'utf8')); } catch {}
   }
 
-  walk(rootDir);
-  return files;
+  if (config && config.compilerOptions && config.compilerOptions.paths) {
+    const aliases = {};
+    for (const [alias, targets] of Object.entries(config.compilerOptions.paths)) {
+      const cleanAlias = alias.replace('/*', '');
+      const cleanTarget = targets[0].replace('/*', '');
+      aliases[cleanAlias] = path.resolve(rootDir, cleanTarget);
+    }
+    return aliases;
+  }
+  return null;
 }
 
-/**
- * Parse a single file using the appropriate adapter
- */
 function parseFile(filePath, rootDir, aliases, goModulePath) {
-  const lang = detectLang(filePath);
-
-  switch (lang) {
-    case 'javascript':
-    case 'typescript':
-      return tsAdapter.parse(filePath, rootDir, aliases);
-    case 'go':
-      return goAdapter.parse(filePath, rootDir, aliases, goModulePath);
-    case 'graphql':
-      return gqlAdapter.parse(filePath, rootDir);
-    case 'kotlin':
-      return kotlinAdapter.parse(filePath, rootDir);
-    case 'swift':
-      return swiftAdapter.parse(filePath, rootDir);
-    case 'python':
-      return pythonAdapter.parse(filePath, rootDir);
-    case 'ruby':
-      return rubyAdapter.parse(filePath, rootDir);
-    case 'java':
-      return javaAdapter.parse(filePath, rootDir);
-    case 'php':
-      return phpAdapter.parse(filePath, rootDir);
-    case 'csharp':
-      return csharpAdapter.parse(filePath, rootDir);
-    case 'c':
-    case 'cpp':
-      return cAdapter.parse(filePath, rootDir);
-    default:
-      return null;
+  const ext = path.extname(filePath);
+  if (ext === '.ts' || ext === '.tsx' || ext === '.js' || ext === '.jsx') {
+    return tsAdapter.parse(filePath, rootDir, aliases);
   }
+  if (ext === '.go') {
+    return goAdapter.parse(filePath, rootDir, goModulePath);
+  }
+  if (ext === '.py') {
+    return pyAdapter.parse(filePath, rootDir);
+  }
+  return null;
 }
 
-/**
- * Collect shell/bash entry points from hook directories
- * (assets/hooks, hooks) and cron directories (crons, cron, scheduled).
- * These files have no JS imports and would otherwise look like dead code.
- */
-function collectShellEntryPoints(rootDir) {
-  const dirs = ['assets/hooks', 'hooks', 'crons', 'cron', 'scheduled'];
-  const entryPoints = [];
-
-  function walk(dir) {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-      } else {
-        const ext = path.extname(entry.name);
-        if (ext === '' || ext === '.sh' || ext === '.bash') {
-          entryPoints.push(full);
-        }
-      }
-    }
-  }
-
-  for (const dir of dirs) {
-    walk(path.join(rootDir, dir));
-  }
-
-  return entryPoints;
+function collectFiles(rootDir, opts = {}) {
+  const patterns = ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go', '**/*.py'];
+  const ignore = opts.ignore || ['**/node_modules/**', '**/vendor/**', '**/dist/**', '**/build/**', '**/.git/**'];
+  return fg.sync(patterns, { cwd: rootDir, ignore, absolute: true });
 }
 
-/**
- * Parse .claude/settings.json hooks and extract any local file references
- * (e.g. `node ./scripts/foo.js` or `bash ./hooks/bar.sh`).
- * Returns absolute paths to files that exist on disk.
- */
-function parseSettingsHooks(rootDir) {
-  const settingsPath = path.join(rootDir, '.claude', 'settings.json');
-  const entryPoints = [];
-
-  let settings;
-  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { return entryPoints; }
-
-  const commands = [];
-  if (settings.hooks) {
-    for (const hookGroups of Object.values(settings.hooks)) {
-      for (const group of hookGroups) {
-        for (const hook of (group.hooks || [])) {
-          if (hook.command) commands.push(hook.command);
-        }
-      }
-    }
-  }
-
-  // Match: `node foo.js`, `bash ./foo.sh`, or script extensions
-  const localPathRe = /(?:^|[\s;|&])(?:node|ts-node|bun|deno|bash|sh|python3?|ruby|perl)\s+([^\s-][^\s]*)|(?:^|[\s;|&])([^\s-][^\s]*\.(?:js|ts|sh|bash|py|rb))/gm;
-  for (const cmd of commands) {
-    let m;
-    while ((m = localPathRe.exec(cmd)) !== null) {
-      const p = (m[1] || m[2]).trim();
-      const full = path.resolve(rootDir, p);
-      try { fs.accessSync(full); entryPoints.push(full); } catch { /* file doesn't exist */ }
-    }
-  }
-
-  return entryPoints;
-}
-
-/**
- * Build the full dependency graph
- * @param {string} rootDir
- * @param {Object} opts - { files?: string[], withGitHistory?: boolean, cache?: Object }
- * @returns {Object} graph
- */
 function buildGraph(rootDir, opts = {}) {
+  const files = opts.files || collectFiles(rootDir, opts);
   const aliases = loadAliases(rootDir);
-  const goModulePath = goAdapter.loadModulePath(rootDir);
+  const goModulePath = goAdapter.loadModulePath ? goAdapter.loadModulePath(rootDir) : null;
 
-  const files = opts.files || collectFiles(rootDir);
-  const cache = opts.cache || {};
-
-  // ── Parse all files ───────────────────────────────────────────────────────
   const nodes = {};
 
+  // 1. First Pass: Parse
   for (const filePath of files) {
     const rel = path.relative(rootDir, filePath);
-    const result = parseFile(filePath, rootDir, aliases, goModulePath);
+    let result;
+    try {
+      result = parseFile(filePath, rootDir, aliases, goModulePath);
+    } catch (e) {
+      console.warn(`[analysis] Error parsing ${rel}:`, e.message);
+      result = { error: true, lang: 'typescript', imports: [], exports: [], gaps: [], symbols: [], meta: {} };
+    }
+
     if (!result) continue;
-
-    // NestJS DI enrichment
-    const nestInfo = result.lang === 'typescript' ? nestjsParser.parse(filePath) : { edges: [], meta: {} };
-
-    // Git history
-    const gitData = opts.withGitHistory ? gitHistory.mineFile(filePath, rootDir) : null;
 
     nodes[rel] = {
       file: rel,
-      lang: result.lang,
-      imports: result.imports,
-      exports: result.exports,
-      gaps: result.gaps,
-      importedBy: [],             // computed below
-      riskScore: 0,               // computed below
-      isEntryPoint: result.meta?.isEntryPoint || false,  // adapter may set this
-      isBarrel: result.meta?.isBarrel || false,
-      nestEdges: nestInfo.edges,
-      meta: { ...result.meta, ...nestInfo.meta, ...(gitData ? { gitHistory: gitData } : {}) },
+      lang: result.lang || 'typescript',
       symbols: result.symbols || [],
-      error: result.error,
+      imports: result.imports || [],
+      exports: result.exports || [],
+      gaps: result.gaps || [],
+      meta: result.meta || {},
+      error: !!result.error
     };
   }
 
-  // ── Shell entry points (hooks, crons, settings.json-referenced scripts) ──
-  const shellPaths = Array.from(new Set([...collectShellEntryPoints(rootDir), ...parseSettingsHooks(rootDir)]));
-  for (const filePath of shellPaths) {
-    const rel = path.relative(rootDir, filePath);
-    if (nodes[rel]) {
-      nodes[rel].isEntryPoint = true;
-    } else {
-      nodes[rel] = {
-        file: rel,
-        lang: 'shell',
-        imports: [],
-        exports: [],
-        gaps: [],
-        importedBy: [],
-        riskScore: 0,
-        isEntryPoint: true,
-        isBarrel: false,
-        nestEdges: [],
-        meta: { isShellEntryPoint: true },
-        error: false,
-      };
-    }
+  // Build index from all nodes
+  const symbolIndex = buildSymbolIndex(nodes);
+
+  // 2. Second Pass: Edges
+  for (const rel of Object.keys(nodes)) {
+    const node = nodes[rel];
+    if (node.error) continue;
+
+    const filePath = path.isAbsolute(rel) ? rel : path.join(rootDir, rel);
+    if (!fs.existsSync(filePath)) continue;
+    const src = fs.readFileSync(filePath, 'utf8');
+
+    const fileCalls = extractCallEdges(rel, src, node, symbolIndex);
+    node.imports = node.imports || [];
+    // node.symbolCalls is assigned inside extractCallEdges
   }
 
-  // ── Swift: resolve intra-module type-reference edges ─────────────────────
-  // Swift apps compile as a single module — files reference each other by
-  // type name, not by import statements. This second pass scans every Swift
-  // file for usages of types exported by other Swift files in the project,
-  // turning type references into real dependency edges.
-  const hasSwift = Object.values(nodes).some(n => n.lang === 'swift');
-  if (hasSwift) {
-    swiftAdapter.resolveIntraModuleEdges(nodes, rootDir);
-  }
-
-  // ── Build importedBy (reverse edges) ─────────────────────────────────────
-  for (const [file, node] of Object.entries(nodes)) {
-    for (const imp of node.imports) {
-      if (nodes[imp]) {
-        nodes[imp].importedBy.push(file);
-      }
-    }
-  }
-
-  // ── Detect entry points ───────────────────────────────────────────────────
-  // Entry points: files that are not imported by anyone, OR follow entry patterns
-  for (const node of Object.values(nodes)) {
-    if (!node.isBarrel) {
-      const ext = path.extname(node.file).toLowerCase();
-      const basename = path.basename(node.file, ext);
-      const isHeader = ext === '.h';
-      
-      const isDemoOrTest = /(?:^|[/\\])(demo|test|example|sample|mocks?|fixtures?)(?:[/\\]|$)/i.test(node.file);
-
-      const looksLikeEntry = ['index', 'main', 'app', 'server', 'handler', 'bootstrap', 'cli'].includes(basename.toLowerCase());
-      const isBin = node.file.startsWith('bin/') || node.file.startsWith('scripts/');
-
-      // Swift specific: trust @main/@UIApplicationMain (adapter.isEntryPoint) OR AppDelegate/SceneDelegate naming
-      // But reject everything else that looks like a Model/View/Cell/Header
-      if (node.lang === 'swift') {
-        const isAppLifecycle = ['appdelegate', 'scenedelegate'].includes(basename.toLowerCase());
-        const isHelper = /View$|Cell$|Model$|Header$|Component$/.test(basename);
-        
-        if (!isDemoOrTest && !isHelper && (node.isEntryPoint || isAppLifecycle)) {
-          node.isEntryPoint = true;
-        } else {
-          node.isEntryPoint = false; // Override any other detection for Swift helpers
-        }
-        continue;
-      }
-
-      // C/C++ files use #include (not tracked as imports), so importedBy is always empty.
-      // Only mark C files as entry points if they actually define main() or match name/bin patterns.
-      const isC = ['c', 'cpp', 'cc', 'cxx', 'm', 'mm'].includes(ext.replace('.', ''));
-      if (isC) {
-        let src = '';
-        try { src = fs.readFileSync(path.join(rootDir, node.file), 'utf8'); } catch {}
-        const hasMain = /\bint\s+main\s*\(|\bvoid\s+main\s*\(/.test(src);
-        if (!isDemoOrTest && !isHeader && (hasMain || isBin || looksLikeEntry)) {
-          node.isEntryPoint = true;
-        }
-      } else if (!isDemoOrTest && !isHeader && (node.importedBy.length === 0 || isBin || looksLikeEntry)) {
-        node.isEntryPoint = true;
-      }
-    }
-  }
-
-  // ── Compute risk scores ───────────────────────────────────────────────────
-  for (const node of Object.values(nodes)) {
-    node.riskScore = computeRiskScore(node);
-  }
-
-  // ── Extract Call Edges (Phase C) ──────────────────────────────────────────
-  const { buildSymbolIndex } = require('./symbol-index');
-  const { extractCallEdges } = require('./calls-extractor');
-
-  if (opts.extractCalls !== false) {
-    const symbolIndex = buildSymbolIndex(nodes);
-
-    for (const [rel, node] of Object.entries(nodes)) {
-      if (node.error || node.lang === 'shell' || node.lang === 'config') continue;
-
-      let src = '';
-      try { src = fs.readFileSync(path.join(rootDir, rel), 'utf8'); } catch { continue; }
-      
-      const stripped = src
-        .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
-        .replace(/\/\/[^\n]*/g, '');
-
-      node.calls = extractCallEdges(rel, stripped, node, symbolIndex);
-    }
-  }
-
-  // ── Supplementary: CocoaPods + SPM ───────────────────────────────────────
-  const ios = {
-    cocoapods: cocoapodsParser.parse(rootDir),
-    spm: spmParser.parse(rootDir),
-  };
-
-  // ── Supplementary: Serverless ─────────────────────────────────────────────
-  const serverless = serverlessParser.parse(rootDir);
-  // Add serverless edges to graph
-  for (const edge of serverless.edges) {
-    if (nodes[edge.from]) {
-      nodes[edge.from].imports.push(edge.to);
-      // Add synthetic "trigger" node
-      if (!nodes[edge.to]) {
-        nodes[edge.to] = {
-          file: edge.to,
-          lang: 'config',
-          imports: [],
-          exports: [],
-          gaps: [],
-          importedBy: [edge.from],
-          riskScore: 0,
-          isEntryPoint: true,
-          isBarrel: false,
-          nestEdges: [],
-          meta: { isServerlessTrigger: true, strength: 'config' },
-          error: false,
-        };
-      }
-    }
-  }
-
-  const graph = {
-    version: 2,
-    generatedAt: new Date().toISOString(),
-    rootDir,
-    nodes,
-    packages: { ios },
-    serverless,
-    stats: computeStats(nodes),
-  };
-
-  return graph;
+  return { nodes };
 }
 
-/**
- * Risk score: 0–100
- * score = min(100, (min(dependents,50)*1.2) + (isPublicContract?25:0) + ((100-testCoverage)*0.15))
- */
-function computeRiskScore(node, testCoverage = 0) {
-  const dependents = node.importedBy.length;
-  const isPublicContract = node.exports.length > 0 && dependents > 0;
-  return Math.min(100, Math.round(
-    (Math.min(dependents, 50) * 1.2) +
-    (isPublicContract ? 25 : 0) +
-    ((100 - testCoverage) * 0.15)
-  ));
+function computeRiskScore(node) {
+  let s = 0;
+  if ((node.importedByCount || 0) > 10) s += 30;
+  if (node.error) s += 50;
+  if (node.gaps && node.gaps.length > 0) s += 20;
+  return Math.min(100, s);
 }
 
-function computeStats(nodes) {
-  const all = Object.values(nodes);
-  return {
-    totalFiles: all.length,
-    errorFiles: all.filter(n => n.error).length,
-    totalEdges: all.reduce((s, n) => s + n.imports.length, 0),
-    byLang: all.reduce((acc, n) => { acc[n.lang] = (acc[n.lang] || 0) + 1; return acc; }, {}),
-    gapCount: all.reduce((s, n) => s + n.gaps.length, 0),
-    highRiskFiles: all.filter(n => n.riskScore > 60).length,
-  };
+function writeGraph(graph, outDir) {
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, 'dep-graph.json'), JSON.stringify(graph, null, 2));
 }
 
-/**
- * Write graph to .wednesday/codebase/dep-graph.json
- */
-function writeGraph(graph, codebaseDir) {
-  fs.mkdirSync(codebaseDir, { recursive: true });
-  const outPath = path.join(codebaseDir, 'dep-graph.json');
-  fs.writeFileSync(outPath, JSON.stringify(graph, null, 2));
-  return outPath;
-}
-
-module.exports = { buildGraph, collectFiles, writeGraph, computeRiskScore };
+module.exports = {
+  collectFiles,
+  buildGraph,
+  computeRiskScore,
+  writeGraph
+};

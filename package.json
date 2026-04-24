@@ -47,6 +47,7 @@
   "dependencies": {
     "@octokit/rest": "^20.0.2",
     "better-sqlite3": "^12.8.0",
+    "fast-glob": "^3.3.3",
     "graphology": "^0.26.0",
     "graphology-communities-louvain": "^2.0.2",
     "ink": "^4.4.1",

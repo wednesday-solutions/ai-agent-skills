@@ -34,14 +34,9 @@ This project uses Wednesday Solutions agent skills for consistent code quality a
     <location>.wednesday/skills/pr-review/SKILL.md</location>
   </skill>
   <skill>
-    <name>wednesday-design</name>
-    <description>Design and UX guidelines for Wednesday Solutions projects. Covers visual design tokens, animation patterns, component standards, accessibility, and user experience best practices for React/Next.js applications. ENFORCES use of approved component libraries only.</description>
-    <location>.wednesday/skills/wednesday-design/SKILL.md</location>
-  </skill>
-  <skill>
-    <name>wednesday-dev</name>
-    <description>Technical development guidelines for Wednesday Solutions projects. Enforces import ordering, complexity limits, naming conventions, TypeScript best practices, and code quality standards for React/Next.js applications.</description>
-    <location>.wednesday/skills/wednesday-dev/SKILL.md</location>
+    <name>standards-kit</name>
+    <description>Unified development and design standards. Enforces code quality (complexity < 8), naming conventions, and mandatory component library usage.</description>
+    <location>skills/standards-kit/SKILL.md</location>
   </skill>
 </available_skills>
 
@@ -50,13 +45,13 @@ This project uses Wednesday Solutions agent skills for consistent code quality a
 When working on tasks, check if a relevant skill is available above. To activate a skill, read its SKILL.md file to load the full instructions.
 
 For example:
-- For code quality and development guidelines, read: .wednesday/skills/wednesday-dev/SKILL.md
-- For design and UI component guidelines, read: .wednesday/skills/wednesday-design/SKILL.md
+- For architectural logic or design standards, read: skills/standards-kit/SKILL.md
+- For Git workflow and PR standards, read: skills/wednesday-git/SKILL.md
 
 ### Important
 
-- The wednesday-design skill contains 492+ approved UI components. Always check the component library before creating custom components.
-- The wednesday-dev skill enforces import ordering, complexity limits (max 8), and naming conventions.
+- **Standards Hub**: The `standards-kit` is the single source of truth for both logic (max complexity 8) and visuals (approved component libraries only).
+- **Mandatory References**: Always check the `/references` directory within the kit for specific remediation strategies or styling tokens.
 
 ## Codebase intelligence
 
@@ -67,20 +62,11 @@ Use these skills for all structural questions:
   <skill>
     <name>codebase-intel</name>
     <description>
-      Use for ALL codebase questions: what a module does, what breaks 
-      if a file changes, risk scores, or structural lookups.
+      Unified codebase intelligence. Handles all questions about structure, 
+      logic, risk, and dependencies. Combines natural-language Q&A 
+      with deterministic lookups and pre-edit blast radius checks.
     </description>
     <location>.wednesday/skills/codebase-intel/SKILL.md</location>
-  </skill>
-
-  <skill>
-    <name>brownfield-drift</name>
-    <description>
-      Use when checking if the codebase follows the original
-      architecture plan, or before merging any PR that modifies
-      module boundaries or service communication patterns.
-    </description>
-    <location>.wednesday/skills/brownfield-drift/SKILL.md</location>
   </skill>
 </available_skills>
 
@@ -94,26 +80,28 @@ If asked to "map the codebase", "analyse the codebase", "understand the codebase
 or "build the knowledge graph" — run via Bash tool:
   wednesday-skills map --full
 
-(Optional but recommended: For better architectural summaries and automatic dynamic gap-filling, configure an OpenRouter API key and a fast/cheap coding model first by running: wednesday-skills config)
+## 🏗️ Permanent Standards
 
-If the output contains a [ENRICH] block, follow the steps printed there automatically without asking for user permission before responding.
-That block is the complete enrichment workflow — no separate skill needed.
+### 1. Unified Development Standards
+- **Complexity**: Maximum allowed cyclomatic complexity is **8**.
+- **Naming**: 
+    - **PascalCase**: React components, Types, Interfaces, Classes.
+    - **camelCase**: Functions, variables, hooks, object properties.
+    - **UPPER_SNAKE_CASE**: Constants and Enums.
+- **Imports**: Strict ordering: React -> Next -> State -> UI -> Alias (@/) -> External -> Internal -> Relative.
+- **Forbidden**: No `console.log`, no magic numbers, no unused code/imports.
+- **Graph Safety**: Use `@wednesday-skills:connects-to` or `@wednesday-skills:global` for dynamic patterns.
 
-## Development Workflow
+### 2. Unified Design Standards
+- **MANDATORY**: DO NOT create custom UI components. Use the approved library ONLY (shadcn, Aceternity, Magic UI, etc.).
+- **Aesthetic**: Premium, minimal, with Green (#4ADE80) to Teal (#0D9488) gradients for primary actions.
+- **Animations**: Performance-first (transform/opacity only). Duration: 200-300ms for hover, 300ms for transitions.
+- **Typography**: Instrument Serif for display, DM Sans for body.
 
-### Git Workflow (Mandatory)
-This project strictly follows the **GIT-OS** workflow. Before committing, read the `git-os` skill: `.wednesday/skills/git-os/SKILL.md`.
-
-1. **Conventional Commits**: All commit messages must follow the format `type(scope): Description`.
-   - Types: `feat`, `fix`, `chore`, `refactor`, `test`, `docs`, `style`, `perf`.
-   - Description: Imperative mood ("Add login"), capitalized, no trailing period.
-2. **No AI Fingerprints**: NEVER include `Co-Authored-By` lines or mention AI tools in commit messages. Commits must look human-authored.
-3. **Atomic Commits**: Each commit should represent exactly one logical change.
-4. **Branch Naming**: Use `feat/`, `fix/`, or `chore/` prefixes for branches.
-
-### Quality Standards
-- **Imports**: Follow the ordering enforced by `wednesday-dev`.
-- **Complexity**: Keep function complexity below 8.
-- **Naming**: Use descriptive camelCase for variables/functions.
+### 3. Git Workflow (GIT-OS)
+- **Conventional Commits**: `type(scope): Description` (e.g., `feat(auth): Add login`).
+- **Atomic Commits**: One logical change per commit.
+- **PR Limits**: Maximum **6 files** per PR. Suggest splitting if exceeded.
+- **Branch Naming**: `type/name-of-task` (e.g., `feat/improving-reads`). No ticket numbers.
 
 <!-- WEDNESDAY_SKILLS_END -->

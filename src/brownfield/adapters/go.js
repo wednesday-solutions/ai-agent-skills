@@ -35,30 +35,41 @@ function parse(filePath, rootDir, _aliases, modulePathCache) {
   const exports = new Set();
   const gaps = [];
   const meta = {};
+  const aliases = {};
 
   const modulePath = modulePathCache || loadModulePath(rootDir);
 
   // ── import block ──────────────────────────────────────────────────────────
   // import "pkg"  or  import ( "pkg" \n "pkg" )
-  const singleImport = /import\s+"([^"]+)"/g;
+  const singleImport = /import\s+(?:(\w+)\s+)?"([^"]+)"/g;
   let m;
   while ((m = singleImport.exec(src)) !== null) {
-    imports.add(resolveGoImport(m[1], rootDir, modulePath));
+    const alias = m[1];
+    const pkg = m[2];
+    const resolved = resolveGoImport(pkg, rootDir, modulePath);
+    imports.add(resolved);
+    const local = alias || pkg.split('/').pop();
+    aliases[local] = { file: resolved, name: '*' };
   }
 
   // Import block: import ( ... )
   const blockMatch = src.match(/import\s*\(([\s\S]*?)\)/);
   if (blockMatch) {
     const block = blockMatch[1];
-    const lineRe = /(?:\w+\s+)?"([^"]+)"/g;
+    const lineRe = /(?:(\w+)\s+)?"([^"]+)"/g;
     while ((m = lineRe.exec(block)) !== null) {
-      imports.add(resolveGoImport(m[1], rootDir, modulePath));
+      const alias = m[1];
+      const pkg = m[2];
+      const resolved = resolveGoImport(pkg, rootDir, modulePath);
+      imports.add(resolved);
+      const local = alias || pkg.split('/').pop();
+      aliases[local] = { file: resolved, name: '*' };
     }
   }
 
   // ── Exported identifiers (capitalised first letter) ───────────────────────
-  // func FuncName / type TypeName / var VarName / const ConstName
-  const exportedRe = /^(?:func|type|var|const)\s+([A-Z]\w*)/gm;
+  // func FuncName / func (r R) FuncName / type TypeName / var VarName / const ConstName
+  const exportedRe = /^(?:func|type|var|const)\s+(?:\([^)]*\)\s+)?([A-Z]\w*)/gm;
   while ((m = exportedRe.exec(src)) !== null) {
     exports.add(m[1]);
   }
@@ -84,7 +95,7 @@ function parse(filePath, rootDir, _aliases, modulePathCache) {
     imports: [...imports],
     exports: [...exports],
     gaps,
-    meta: { ...meta, modulePath },
+    meta: { ...meta, aliases, modulePath },
     symbols: symbols,
     error: false,
   };

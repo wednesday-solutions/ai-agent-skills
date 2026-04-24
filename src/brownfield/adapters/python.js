@@ -20,6 +20,7 @@ function parse(filePath, rootDir) {
   const exports = new Set();
   const gaps = [];
   const meta = {};
+  const aliases = {};
 
   // Strip single-line comments (preserve newlines for line tracking)
   const stripped = src.replace(/#[^\n]*/g, '');
@@ -32,17 +33,33 @@ function parse(filePath, rootDir) {
   while ((m = importRe.exec(stripped)) !== null) {
     const parts = m[1].split(',');
     for (const part of parts) {
-      const name = part.trim().split(/\s+as\s+/)[0].trim();
-      if (name) imports.add(name);
+      const match = part.trim().match(/^([\w.]+)(?:\s+as\s+([\w]+))?$/);
+      if (match) {
+        const name = match[1];
+        const local = match[2] || name.split('.').pop();
+        const resolved = resolvePythonImport(filePath, name, rootDir);
+        imports.add(resolved);
+        aliases[local] = { file: resolved, name: '*' };
+      }
     }
   }
 
   // from foo import bar / from .foo import bar / from ..foo import bar
-  const fromRe = /^from\s+(\.{0,3}[\w.]*)\s+import\s+/gm;
+  const fromRe = /^from\s+(\.{0,3}[\w.]*)\s+import\s+([\w\s,()]+)/gm;
   while ((m = fromRe.exec(stripped)) !== null) {
-    const raw = m[1];
-    const resolved = resolvePythonImport(filePath, raw, rootDir);
-    imports.add(resolved);
+    const rawPath = m[1];
+    const rawSymbols = m[2].replace(/[()\n]/g, '').split(',');
+    const resolvedPath = resolvePythonImport(filePath, rawPath, rootDir);
+    imports.add(resolvedPath);
+
+    for (const symPart of rawSymbols) {
+      const symMatch = symPart.trim().match(/^([\w*]+)(?:\s+as\s+([\w]+))?$/);
+      if (symMatch) {
+        const name = symMatch[1];
+        const local = symMatch[2] || name;
+        aliases[local] = { file: resolvedPath, name };
+      }
+    }
   }
 
   // ── Dynamic import gaps ───────────────────────────────────────────────────
@@ -117,7 +134,7 @@ function parse(filePath, rootDir) {
     imports: [...imports],
     exports: [...exports],
     gaps,
-    meta,
+    meta: { ...meta, aliases },
     symbols: extractSymbols(src),
     error: false,
   };

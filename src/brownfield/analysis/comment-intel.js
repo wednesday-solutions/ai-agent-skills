@@ -333,37 +333,37 @@ async function enrichModules(moduleMap, nodes = {}) {
     enriched.set(dir, inferFromPatterns(dir, moduleMap.get(dir)));
   }
 
+  // Build all batch descriptors upfront, then fire all LLM calls in parallel.
+  // Pattern fallback is already seeded above, so a failed batch loses nothing.
+  const batches = [];
   for (let i = 0; i < dirs.length; i += BATCH_SIZE) {
     const batch = dirs.slice(i, i + BATCH_SIZE);
     const digest = batch
       .map(dir => buildModuleDigest(dir, moduleMap.get(dir), nodes))
       .join('\n\n---\n\n');
-
-    // Baseline = tokens the summarizer would spend calling Haiku per file WITHOUT enrichment.
-    // Each enriched module dir's files would each need a ~150-token Haiku call.
-    // Enrichment prevents all of those calls by providing purpose from comments instead.
     const batchFileCount = batch.reduce((s, dir) => s + (moduleMap.get(dir)?.files.length || 0), 0);
-    const baselineTokens = batchFileCount * 150;
+    batches.push({ batch, digest, baselineTokens: batchFileCount * 150 });
+  }
 
-    const raw = await callLLM({
+  const batchResults = await Promise.all(batches.map(({ digest, baselineTokens }) =>
+    callLLM({
       model: 'haiku',
       messages: [{ role: 'user', content: MODULE_ENRICH_PROMPT + digest }],
-      maxTokens: 2000,  // 10 modules × ~150 tokens/module + JSON overhead, with headroom
+      maxTokens: 2000,
       temperature: 0,
       operation: 'comment-intel',
       baselineTokens,
-    });
+    })
+  ));
 
+  for (const raw of batchResults) {
     if (!raw) continue;
-
     try {
       const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim();
       const parsed = JSON.parse(cleaned);
       for (const item of parsed) {
         if (!item.dir) continue;
-        // Normalize dir: strip trailing slash the LLM may have copied from the prompt
         const normalizedDir = item.dir.replace(/\/$/, '');
-        // Merge LLM result over the pattern fallback — LLM wins on non-null fields
         const existing = enriched.get(normalizedDir) || {};
         enriched.set(normalizedDir, {
           ...existing,

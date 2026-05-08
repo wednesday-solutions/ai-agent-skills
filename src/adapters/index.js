@@ -1,84 +1,123 @@
 'use strict';
 
 /**
- * Tool adapter registry.
- *
- * Each adapter knows how to inject skill references into a specific AI tool's
- * config file (XML block) or skills directory (file-copy).
+ * @wednesday-skills:purpose Tool adapter registry — routes sync and install commands to per-agent adapters.
+ * @wednesday-skills:risk low
  *
  * tools.json schema:
  * {
  *   "tools": [
- *     { "name": "claude-code",  "config": "CLAUDE.md",                          "format": "xml-block" },
- *     { "name": "gemini-cli",   "config": "GEMINI.md",                          "format": "xml-block" },
- *     { "name": "antigravity",  "config": "~/.gemini/antigravity/skills/",       "format": "file-copy" }
+ *     { "name": "claude-code",  "config": "CLAUDE.md",                              "format": "xml-block"  },
+ *     { "name": "gemini-cli",   "config": "GEMINI.md",                              "format": "xml-block"  },
+ *     { "name": "cursor",       "config": ".cursorrules",                           "format": "xml-block"  },
+ *     { "name": "copilot",      "config": ".github/copilot-instructions.md",        "format": "xml-block"  },
+ *     { "name": "antigravity",  "config": "~/.gemini/antigravity/skills/",          "format": "file-copy"  }
  *   ]
  * }
  */
 
-const fs = require('fs');
+const fs   = require('fs');
 const path = require('path');
-const os = require('os');
+const os   = require('os');
 
-const claudeCodeAdapter = require('./claude-code');
+const claudeCodeAdapter  = require('./claude-code');
 const antigravityAdapter = require('./antigravity');
-const geminiCliAdapter = require('./gemini-cli');
+const geminiCliAdapter   = require('./gemini-cli');
+const cursorAdapter      = require('./cursor');
+const copilotAdapter     = require('./copilot');
 
 const ADAPTERS = {
   'claude-code': claudeCodeAdapter,
   'antigravity': antigravityAdapter,
-  'gemini-cli': geminiCliAdapter,
+  'gemini-cli':  geminiCliAdapter,
+  'cursor':      cursorAdapter,
+  'copilot':     copilotAdapter,
 };
 
-/**
- * Default tools.json written to new projects on install.
- */
-const DEFAULT_TOOLS_CONFIG = {
-  tools: [
-    { name: 'claude-code', config: 'CLAUDE.md', format: 'xml-block' },
-    { name: 'gemini-cli', config: 'GEMINI.md', format: 'xml-block' },
-    {
-      name: 'antigravity',
-      config: path.join(os.homedir(), '.gemini', 'antigravity', 'skills'),
-      format: 'file-copy',
-    },
-  ],
+// Maps the short agent names used by `configure` / install to adapter names in tools.json
+const AGENT_TO_ADAPTER = {
+  claude:     'claude-code',
+  gemini:     'gemini-cli',
+  cursor:     'cursor',
+  copilot:    'copilot',
+  antigravity:'antigravity',
 };
 
-/**
- * Load tools.json from project, falling back to defaults.
- */
+// Default tool entries — written on first install, extended by configure()
+const TOOL_DEFAULTS = {
+  'claude-code':  { name: 'claude-code', config: 'CLAUDE.md',                          format: 'xml-block'  },
+  'gemini-cli':   { name: 'gemini-cli',  config: 'GEMINI.md',                          format: 'xml-block'  },
+  'cursor':       { name: 'cursor',      config: '.cursorrules',                        format: 'xml-block'  },
+  'copilot':      { name: 'copilot',     config: '.github/copilot-instructions.md',     format: 'xml-block'  },
+  'antigravity':  { name: 'antigravity', config: path.join(os.homedir(), '.gemini', 'antigravity', 'skills'), format: 'file-copy' },
+};
+
+function toolsConfigPath(projectDir) {
+  return path.join(projectDir, '.wednesday', 'tools.json');
+}
+
 function loadToolsConfig(projectDir) {
-  const configPath = path.join(projectDir, '.wednesday', 'tools.json');
+  const configPath = toolsConfigPath(projectDir);
   if (fs.existsSync(configPath)) {
-    try {
-      return JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    } catch {
-      console.warn('Warning: .wednesday/tools.json is invalid JSON, using defaults.');
-    }
+    try { return JSON.parse(fs.readFileSync(configPath, 'utf8')); }
+    catch { console.warn('Warning: .wednesday/tools.json is invalid JSON, using defaults.'); }
   }
-  return DEFAULT_TOOLS_CONFIG;
+  return { tools: [] };
+}
+
+function saveToolsConfig(projectDir, config) {
+  const configPath = toolsConfigPath(projectDir);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
 /**
  * Write default tools.json if it doesn't exist yet.
+ * Only claude-code + gemini-cli by default — cursor/copilot are opt-in via configure().
  */
 function ensureToolsConfig(projectDir) {
-  const wednesdayDir = path.join(projectDir, '.wednesday');
-  const configPath = path.join(wednesdayDir, 'tools.json');
+  const configPath = toolsConfigPath(projectDir);
   if (!fs.existsSync(configPath)) {
-    fs.mkdirSync(wednesdayDir, { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify(DEFAULT_TOOLS_CONFIG, null, 2));
+    saveToolsConfig(projectDir, {
+      tools: [
+        TOOL_DEFAULTS['claude-code'],
+        TOOL_DEFAULTS['gemini-cli'],
+        TOOL_DEFAULTS['antigravity'],
+      ],
+    });
   }
 }
 
 /**
- * Run all adapters (or a specific tool) for the given project.
+ * Register an agent in tools.json (called during install/configure).
+ * Idempotent — updates existing entry if present.
+ *
  * @param {string} projectDir
- * @param {string|null} toolFilter — name of specific tool to sync, or null for all
+ * @param {string} agentName  — short name: 'claude' | 'gemini' | 'cursor' | 'copilot' | 'antigravity'
+ */
+function registerAgent(projectDir, agentName) {
+  const adapterName = AGENT_TO_ADAPTER[agentName] || agentName;
+  const def         = TOOL_DEFAULTS[adapterName];
+  if (!def) return;
+
+  const config = loadToolsConfig(projectDir);
+  const exists  = config.tools.findIndex(t => t.name === adapterName);
+  if (exists !== -1) {
+    config.tools[exists] = def;
+  } else {
+    config.tools.push(def);
+  }
+  saveToolsConfig(projectDir, config);
+}
+
+/**
+ * Run all adapters (or a specific tool) for the given project.
+ *
+ * @param {string}      projectDir
+ * @param {string|null} toolFilter — adapter name or short agent name, or null for all
  */
 function syncAdapters(projectDir, toolFilter = null) {
-  const config = loadToolsConfig(projectDir);
+  const config    = loadToolsConfig(projectDir);
   const skillsDir = path.join(projectDir, '.wednesday', 'skills');
 
   if (!fs.existsSync(skillsDir)) {
@@ -86,13 +125,16 @@ function syncAdapters(projectDir, toolFilter = null) {
     return;
   }
 
-  const tools = toolFilter
-    ? config.tools.filter(t => t.name === toolFilter)
+  // Normalise filter: short agent names → adapter names
+  const normFilter = toolFilter ? (AGENT_TO_ADAPTER[toolFilter] || toolFilter) : null;
+
+  const tools = normFilter
+    ? config.tools.filter(t => t.name === normFilter)
     : config.tools;
 
-  if (toolFilter && tools.length === 0) {
-    console.error(`Unknown tool: ${toolFilter}`);
-    console.error(`Available tools: ${config.tools.map(t => t.name).join(', ')}`);
+  if (normFilter && tools.length === 0) {
+    console.error(`Unknown tool: ${normFilter}`);
+    console.error(`Available tools: ${config.tools.map(t => t.name).join(', ') || '(none registered — run install first)'}`);
     return;
   }
 
@@ -112,4 +154,12 @@ function syncAdapters(projectDir, toolFilter = null) {
   }
 }
 
-module.exports = { syncAdapters, ensureToolsConfig, loadToolsConfig, DEFAULT_TOOLS_CONFIG };
+module.exports = {
+  syncAdapters,
+  ensureToolsConfig,
+  registerAgent,
+  loadToolsConfig,
+  ADAPTERS,
+  AGENT_TO_ADAPTER,
+  TOOL_DEFAULTS,
+};

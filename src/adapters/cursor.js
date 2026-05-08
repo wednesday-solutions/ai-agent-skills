@@ -1,8 +1,11 @@
 'use strict';
 
 /**
- * @wednesday-skills:purpose Gemini CLI adapter — injects skill block into GEMINI.md.
+ * @wednesday-skills:purpose Cursor adapter — injects skill block into .cursorrules.
  * @wednesday-skills:risk low
+ *
+ * Cursor uses a plain Markdown file (.cursorrules). Hash-comment markers are used
+ * instead of HTML comments so the file stays valid for the Cursor rules parser.
  */
 
 const path = require('path');
@@ -17,7 +20,7 @@ function sync(projectDir, skillsDir, toolConfig) {
   const instructions = buildInstructions(skills);
   const block        = `${START}\n${instructions}\n${END}`;
 
-  injectBlock(configFile, START, END, block, '# Gemini Project Guidelines');
+  injectBlock(configFile, START, END, block);
 }
 
 module.exports = { sync };

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * @wednesday-skills:purpose Gemini CLI adapter — injects skill block into GEMINI.md.
+ * @wednesday-skills:purpose GitHub Copilot adapter — injects skill block into .github/copilot-instructions.md.
  * @wednesday-skills:risk low
  */
 
@@ -17,7 +17,7 @@ function sync(projectDir, skillsDir, toolConfig) {
   const instructions = buildInstructions(skills);
   const block        = `${START}\n${instructions}\n${END}`;
 
-  injectBlock(configFile, START, END, block, '# Gemini Project Guidelines');
+  injectBlock(configFile, START, END, block, '# GitHub Copilot Instructions');
 }
 
 module.exports = { sync };

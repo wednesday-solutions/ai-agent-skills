@@ -38,7 +38,7 @@ const skillsDir = path.resolve(__dirname, '..');
 if (skillsDir !== process.cwd()) {
   for (const f of ['.env.local', '.env']) loadEnvFile(path.join(skillsDir, f));
 }
-const { syncAdapters, ensureToolsConfig } = require('../src/adapters/index.js');
+const { syncAdapters, ensureToolsConfig, registerAgent } = require('../src/adapters/index.js');
 const { validateConnection, getApiKey } = require('../src/brownfield/core/llm-client');
 const brownfield = require('../src/brownfield/index.js');
 
@@ -1946,7 +1946,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     if (hasBrownfield || selectedSkills.includes('git-os')) {
       const hooksInstalled = brownfield.installHooks(targetDir);
       if (hooksInstalled) {
-        log('green', '  ✓ Git hooks installed (post-commit, post-merge)');
+        log('green', '  ✓ Git hooks installed (commit-msg, pre-commit, post-commit, post-merge)');
       }
     }
 
@@ -2026,95 +2026,19 @@ function configure(targetDir, agent = 'all') {
   targetDir = path.resolve(targetDir);
   const skillsDir = path.join(targetDir, '.wednesday', 'skills');
 
-  // Check if skills are installed
   if (!fs.existsSync(skillsDir)) {
     log('red', 'Error: Skills not installed. Run "wednesday-skills install" first.');
     process.exit(1);
   }
 
-  // Get installed skills metadata
-  const skills = getInstalledSkills(skillsDir);
-  if (skills.length === 0) {
-    log('red', 'Error: No valid skills found in .wednesday/skills/');
-    process.exit(1);
-  }
-
-  const instructions = generateInstructions(skills, targetDir);
   const agents = agent === 'all' ? ['claude', 'gemini', 'cursor', 'copilot'] : [agent];
 
   for (const agentType of agents) {
-    switch (agentType) {
-      case 'claude':
-        configureClaudeCode(targetDir, instructions);
-        break;
-      case 'gemini':
-        configureGemini(targetDir, instructions);
-        break;
-      case 'cursor':
-        configureCursor(targetDir, instructions);
-        break;
-      case 'copilot':
-        configureGitHubCopilot(targetDir, instructions);
-        break;
-      default:
-        log('yellow', `Unknown agent: ${agentType}`);
-    }
+    // Register in tools.json so future `sync` picks it up
+    registerAgent(targetDir, agentType);
+    // Run the adapter
+    syncAdapters(targetDir, agentType);
   }
-}
-
-function configureClaudeCode(targetDir, instructions) {
-  const claudeFile = path.join(targetDir, 'CLAUDE.md');
-
-  let content = '';
-  const marker = '<!-- WEDNESDAY_SKILLS_START -->';
-  const endMarker = '<!-- WEDNESDAY_SKILLS_END -->';
-  const wrappedInstructions = `${marker}\n${instructions}\n${endMarker}`;
-
-  if (fs.existsSync(claudeFile)) {
-    content = fs.readFileSync(claudeFile, 'utf8');
-    // Check if we already have our section
-    const startIdx = content.indexOf(marker);
-    const endIdx = content.indexOf(endMarker);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      // Replace existing section
-      content = content.slice(0, startIdx) + wrappedInstructions + content.slice(endIdx + endMarker.length);
-    } else {
-      // Append to end
-      content = content.trim() + '\n\n' + wrappedInstructions;
-    }
-  } else {
-    content = `# Project Guidelines\n\n${wrappedInstructions}`;
-  }
-
-  fs.writeFileSync(claudeFile, content);
-  log('green', '  ✓ Claude Code configured (CLAUDE.md)');
-}
-
-function configureGemini(targetDir, instructions) {
-  const geminiFile = path.join(targetDir, 'GEMINI.md');
-
-  let content = '';
-  const marker = '<!-- WEDNESDAY_SKILLS_START -->';
-  const endMarker = '<!-- WEDNESDAY_SKILLS_END -->';
-  const wrappedInstructions = `${marker}\n${instructions}\n${endMarker}`;
-
-  if (fs.existsSync(geminiFile)) {
-    content = fs.readFileSync(geminiFile, 'utf8');
-    const startIdx = content.indexOf(marker);
-    const endIdx = content.indexOf(endMarker);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      content = content.slice(0, startIdx) + wrappedInstructions + content.slice(endIdx + endMarker.length);
-    } else {
-      content = content.trim() + '\n\n' + wrappedInstructions;
-    }
-  } else {
-    content = `# Gemini Project Guidelines\n\n${wrappedInstructions}`;
-  }
-
-  fs.writeFileSync(geminiFile, content);
-  log('green', '  ✓ Gemini CLI configured (GEMINI.md)');
 }
 
 function copyGitHubAssets(packageRoot, targetDir, selectedCicd = []) {
@@ -2143,63 +2067,6 @@ function copyGitHubAssets(packageRoot, targetDir, selectedCicd = []) {
   });
 }
 
-function configureCursor(targetDir, instructions) {
-  const cursorFile = path.join(targetDir, '.cursorrules');
-
-  let content = '';
-  const marker = '# WEDNESDAY_SKILLS_START';
-  const endMarker = '# WEDNESDAY_SKILLS_END';
-  const wrappedInstructions = `${marker}\n${instructions}\n${endMarker}`;
-
-  if (fs.existsSync(cursorFile)) {
-    content = fs.readFileSync(cursorFile, 'utf8');
-    const startIdx = content.indexOf(marker);
-    const endIdx = content.indexOf(endMarker);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      content = content.slice(0, startIdx) + wrappedInstructions + content.slice(endIdx + endMarker.length);
-    } else {
-      content = content.trim() + '\n\n' + wrappedInstructions;
-    }
-  } else {
-    content = wrappedInstructions;
-  }
-
-  fs.writeFileSync(cursorFile, content);
-  log('green', '  ✓ Cursor configured (.cursorrules)');
-}
-
-function configureGitHubCopilot(targetDir, instructions) {
-  const githubDir = path.join(targetDir, '.github');
-  const copilotFile = path.join(githubDir, 'copilot-instructions.md');
-
-  // Create .github directory if it doesn't exist
-  if (!fs.existsSync(githubDir)) {
-    fs.mkdirSync(githubDir, { recursive: true });
-  }
-
-  let content = '';
-  const marker = '<!-- WEDNESDAY_SKILLS_START -->';
-  const endMarker = '<!-- WEDNESDAY_SKILLS_END -->';
-  const wrappedInstructions = `${marker}\n${instructions}\n${endMarker}`;
-
-  if (fs.existsSync(copilotFile)) {
-    content = fs.readFileSync(copilotFile, 'utf8');
-    const startIdx = content.indexOf(marker);
-    const endIdx = content.indexOf(endMarker);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      content = content.slice(0, startIdx) + wrappedInstructions + content.slice(endIdx + endMarker.length);
-    } else {
-      content = content.trim() + '\n\n' + wrappedInstructions;
-    }
-  } else {
-    content = `# GitHub Copilot Instructions\n\n${wrappedInstructions}`;
-  }
-
-  fs.writeFileSync(copilotFile, content);
-  log('green', '  ✓ GitHub Copilot configured (.github/copilot-instructions.md)');
-}
 
 function showHelp() {
   console.log('Usage: wednesday-skills [command] [options]');

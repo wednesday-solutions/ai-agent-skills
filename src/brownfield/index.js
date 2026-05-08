@@ -658,7 +658,7 @@ module.exports = {
     if (!fs.existsSync(hooksDir)) return false;
 
     const packageHooks = path.join(__dirname, '..', '..', 'assets', 'hooks');
-    for (const hook of ['post-commit', 'post-merge']) {
+    for (const hook of ['commit-msg', 'pre-commit', 'post-commit', 'post-merge']) {
       const src = path.join(packageHooks, hook);
       const dest = path.join(hooksDir, hook);
       if (fs.existsSync(src)) {

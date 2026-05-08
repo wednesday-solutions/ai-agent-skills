@@ -187,7 +187,13 @@ function callAnthropic({ model, messages, system, maxTokens, temperature, key })
     max_tokens: maxTokens,
     temperature,
   };
-  if (system) bodyObj.system = system;
+
+  // Apply prompt caching to the system prompt when present.
+  // cache_control marks it as a cacheable prefix — Anthropic stores it for 5 min,
+  // saving ~90% on repeated input tokens for the same system prompt across batched calls.
+  if (system) {
+    bodyObj.system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+  }
 
   const body = JSON.stringify(bodyObj);
 
@@ -195,8 +201,9 @@ function callAnthropic({ model, messages, system, maxTokens, temperature, key })
     hostname: 'api.anthropic.com',
     path: '/v1/messages',
     headers: {
-      'x-api-key': key,
+      'x-api-key':        key,
       'anthropic-version': '2023-06-01',
+      'anthropic-beta':   'prompt-caching-2024-07-31',
     },
     body,
     extractResult: (data) => {
@@ -206,15 +213,15 @@ function callAnthropic({ model, messages, system, maxTokens, temperature, key })
       }
       const text = json.content?.[0]?.text?.trim() || null;
       const usage = json.usage || {};
-      
-      const estimatedInput = Math.ceil(body.length / 4);
+
+      const estimatedInput  = Math.ceil(body.length / 4);
       const estimatedOutput = text ? Math.ceil(text.length / 4) : 0;
 
       return {
         text,
-        usage: { 
-          input:  usage.input_tokens  || estimatedInput, 
-          output: usage.output_tokens || estimatedOutput 
+        usage: {
+          input:  (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) || estimatedInput,
+          output: usage.output_tokens || estimatedOutput,
         },
       };
     },
@@ -242,9 +249,10 @@ function makeRequest({ hostname, path, headers, body, extractResult, timeoutMs =
       res.on('end', () => {
         try { resolve(extractResult(data)); }
         catch (e) {
-          // If not JSON or extract fails, provide snippet for debugging
-          const snippet = typeof data === 'string' ? data.slice(0, 100) : 'binary/unknown';
-          resolve({ text: null, error: `Parse error: ${e.message} | Raw: ${snippet}`, usage: { input: 0, output: 0 } });
+          // Reject so the retry loop in callLLM() can attempt recovery.
+          // Resolving here would silently burn tokens with no result and no retry.
+          const snippet = typeof data === 'string' ? data.slice(0, 120) : 'binary/unknown';
+          reject(new Error(`Parse error: ${e.message} | Raw: ${snippet}`));
         }
       });
     });

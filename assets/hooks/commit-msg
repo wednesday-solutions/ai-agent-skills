@@ -1,0 +1,14 @@
+#!/bin/bash
+# Wednesday Skills — commit-msg hook
+# Enforces GIT-OS conventional commits via commitlint.
+# < 1 second. Never slows the commit.
+
+if command -v commitlint &> /dev/null; then
+  commitlint --edit "$1"
+  exit $?
+elif [ -f "./node_modules/.bin/commitlint" ]; then
+  ./node_modules/.bin/commitlint --edit "$1"
+  exit $?
+fi
+
+exit 0

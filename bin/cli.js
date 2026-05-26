@@ -38,7 +38,7 @@ const skillsDir = path.resolve(__dirname, '..');
 if (skillsDir !== process.cwd()) {
   for (const f of ['.env.local', '.env']) loadEnvFile(path.join(skillsDir, f));
 }
-const { syncAdapters, ensureToolsConfig } = require('../src/adapters/index.js');
+const { syncAdapters, ensureToolsConfig, registerAgent } = require('../src/adapters/index.js');
 const { validateConnection, getApiKey } = require('../src/brownfield/core/llm-client');
 const brownfield = require('../src/brownfield/index.js');
 
@@ -453,6 +453,12 @@ function main() {
       });
       break;
     }
+    case 'query': {
+      const type = args[1];
+      if (!type) { log('red', 'Usage: wednesday-skills query <type> [args]'); process.exit(1); }
+      runQuery(type, process.cwd(), args.slice(2));
+      break;
+    }
 
     case 'help':
     case '--help':
@@ -607,12 +613,101 @@ async function runMap(targetDir, opts = {}) {
   log('cyan', `   Gaps found: ${gapCount} total, ${highRiskWithGaps} on high-risk files`);
   console.log('');
 
+  // ── Step 1b: Detect daemons and adapters (before summarize so prompts are enriched) ──
+  log('cyan', '① Detecting daemons and adapters...');
+  const { detectDaemons: _detectD }  = require('../src/brownfield/analysis/daemon-detector');
+  const { detectAdapters: _detectA } = require('../src/brownfield/analysis/adapter-detector');
+  const { GraphStore } = require('../src/brownfield/engine/store');
+  const _daemonsByFile  = {};
+  const _adaptersByFile = {};
+  let _daemonCount = 0, _adapterCount = 0;
+
+  // Open store once — reused in Step 4 for writes
+  const _daemonStore = GraphStore.open(path.join(targetDir, '.wednesday', 'graph.db'));
+
+  // Load daemon/adapter cache keyed by file hash — skips re-detection on unchanged files.
+  // Version key: bump when detection patterns change to force full re-detection.
+  const _DA_CACHE_VERSION = 2; // bumped: language-scoped patterns + Swift/Go support
+  const _daCacheFile = path.join(targetDir, '.wednesday', 'cache', 'daemon-adapter-cache.json');
+  let _daCache = {};
+  try {
+    const _loaded = JSON.parse(fs.readFileSync(_daCacheFile, 'utf8'));
+    // Discard cache if version mismatch — old entries used wrong patterns
+    if (_loaded._version === _DA_CACHE_VERSION) _daCache = _loaded;
+  } catch {}
+  let _daCacheHits = 0;
+
+  for (const [filePath, node] of Object.entries(graph.nodes)) {
+    if (node.error) continue;
+
+    // DB hash lookup (fast SQLite read, no disk I/O on the source file)
+    const relPath = path.relative(targetDir, filePath);
+    const storedHash = _daemonStore.getFileHash(relPath);
+
+    if (storedHash && _daCache[storedHash]) {
+      // Cache hit — file unchanged, reuse previous detection results
+      const cached = _daCache[storedHash];
+      if (cached.daemons.length > 0) { _daemonsByFile[filePath] = cached.daemons; _daemonCount += cached.daemons.length; }
+      if (cached.adapters.length > 0) { _adaptersByFile[filePath] = cached.adapters; _adapterCount += cached.adapters.length; }
+      _daCacheHits++;
+      continue;
+    }
+
+    // Cache miss — read file and run detection
+    let _src;
+    try { _src = fs.readFileSync(filePath, 'utf8'); } catch { continue; }
+    const _d = _detectD(filePath, _src);
+    const _a = _detectA(filePath, _src);
+
+    // Persist to cache (store even empty results to avoid re-reading next run)
+    if (storedHash) _daCache[storedHash] = { daemons: _d, adapters: _a };
+
+    if (_d.length > 0) { _daemonsByFile[filePath]  = _d; _daemonCount  += _d.length; }
+    if (_a.length > 0) { _adaptersByFile[filePath] = _a; _adapterCount += _a.length; }
+  }
+
+  // ── Extra: scan .plist files under LaunchDaemons/LaunchAgents (not in graph) ──
+  {
+    function _walkPlist(dir) {
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (['node_modules', '.git', 'build', 'DerivedData', 'Pods'].includes(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          _walkPlist(full);
+        } else if (entry.isFile() && entry.name.endsWith('.plist')) {
+          const rel = path.relative(targetDir, full);
+          if (!rel.includes('LaunchDaemons') && !rel.includes('LaunchAgents')) continue;
+          let _src;
+          try { _src = fs.readFileSync(full, 'utf8'); } catch { continue; }
+          const _d = _detectD(full, _src);
+          if (_d.length > 0) { _daemonsByFile[full] = _d; _daemonCount += _d.length; }
+        }
+      }
+    }
+    _walkPlist(targetDir);
+  }
+
+  // Save updated cache (include version so old entries are invalidated on pattern changes)
+  try {
+    fs.mkdirSync(path.dirname(_daCacheFile), { recursive: true });
+    fs.writeFileSync(_daCacheFile, JSON.stringify({ ...(_daCache), _version: _DA_CACHE_VERSION }));
+  } catch {}
+
+  const _cacheNote = _daCacheHits > 0 ? ` (${_daCacheHits} files from cache)` : '';
+  log('green', `   ✓ ${_daemonCount} daemon patterns · ${_adapterCount} adapter patterns detected${_cacheNote}`);
+  console.log('');
+
   // ── Step 2: Summarize ─────────────────────────────────────────────────────
   log('cyan', '② Generating summaries and MASTER.md...');
   if (!apiKey) {
     log('yellow', '   No API key — structural summaries only. Comment collection still runs (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY for LLM enrichment)');
   }
-  const { summaries, masterPath, qaReport } = await brownfield.summarize(targetDir);
+  const { summaries, masterPath, qaReport } = await brownfield.summarize(targetDir, {
+    daemonsByFile: _daemonsByFile,
+    adaptersByFile: _adaptersByFile,
+  });
   log('green', `   ✓ ${Object.keys(summaries).length} module summaries written`);
   log('green', `   ✓ MASTER.md generated`);
   if (qaReport.flagged.length > 0) {
@@ -636,6 +731,56 @@ async function runMap(targetDir, opts = {}) {
     console.log('');
   } else {
     log('green', '③ No high-risk gaps — graph coverage is complete');
+    console.log('');
+  }
+
+  // ── Step 4: Persist daemons/adapters to DB and export JSON ──────────────
+  log('cyan', '④ Persisting daemons and adapters...');
+  {
+    // Reuse store opened in Step 1b — no new connection needed
+    const daemonStore = _daemonStore;
+
+    // Reuse data already detected in Step 1b — no re-reading files
+    for (const [filePath, daemons] of Object.entries(_daemonsByFile)) {
+      daemonStore.saveDaemons(filePath, daemons);
+    }
+    for (const [filePath, adapters] of Object.entries(_adaptersByFile)) {
+      daemonStore.saveAdapters(filePath, adapters);
+    }
+
+    // Export to JSON so brownfield-chat can read them without querying SQLite
+    const analysisDir4 = path.join(targetDir, '.wednesday', 'codebase', 'analysis');
+    fs.mkdirSync(analysisDir4, { recursive: true });
+
+    const allDaemons  = daemonStore.getAllDaemons();
+    const allAdapters = daemonStore.getAllAdapters();
+
+    // Group daemons by kind for easy querying
+    const daemonsByKind = allDaemons.reduce((acc, d) => {
+      acc[d.kind] = acc[d.kind] || [];
+      acc[d.kind].push({ file: d.file, event: d.event, line: d.line });
+      return acc;
+    }, {});
+
+    // Group adapters by kind and library
+    const adaptersByKind = allAdapters.reduce((acc, a) => {
+      acc[a.kind] = acc[a.kind] || {};
+      acc[a.kind][a.library] = acc[a.kind][a.library] || [];
+      acc[a.kind][a.library].push({ file: a.file, line: a.line });
+      return acc;
+    }, {});
+
+    fs.writeFileSync(
+      path.join(analysisDir4, 'daemons.json'),
+      JSON.stringify({ total: _daemonCount, byKind: daemonsByKind }, null, 2)
+    );
+    fs.writeFileSync(
+      path.join(analysisDir4, 'adapters.json'),
+      JSON.stringify({ total: _adapterCount, byKind: adaptersByKind }, null, 2)
+    );
+
+    daemonStore.close();
+    log('green', `   ✓ daemons.json + adapters.json written`);
     console.log('');
   }
 
@@ -670,12 +815,19 @@ async function runMap(targetDir, opts = {}) {
   });
   if (insights.healthNarrative) log('green', '   ✓ Health narrative generated');
 
-  const codebaseDir = require('path').join(targetDir, '.wednesday', 'codebase');
-  const { GraphStore } = require('../src/brownfield/engine/store');
-  const store = GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
+  const codebaseDir = path.join(targetDir, '.wednesday', 'codebase');
+  const store = GraphStore.open(path.join(targetDir, '.wednesday', 'graph.db'));
+
+  // Load daemon/adapter JSON for MASTER.md summary sections
+  const _analysisDir = path.join(codebaseDir, 'analysis');
+  let _daemonData = null, _adapterData = null;
+  try { _daemonData  = JSON.parse(fs.readFileSync(path.join(_analysisDir, 'daemons.json'), 'utf8')); } catch {}
+  try { _adapterData = JSON.parse(fs.readFileSync(path.join(_analysisDir, 'adapters.json'), 'utf8')); } catch {}
+
   const masterOutPath = await generateMasterMd(
     graph, summaries, legacyReport, codebaseDir, apiKey,
-    commentIntel, gapsFilled, Date.now() - mapStart, insights, store
+    commentIntel, gapsFilled, Date.now() - mapStart, insights, store,
+    _daemonData, _adapterData
   );
   store.close();
   log('green', `   ✓ ${masterOutPath}`);
@@ -686,9 +838,16 @@ async function runMap(targetDir, opts = {}) {
   log('blue', '│  Mapping complete                           │');
   log('blue', '└─────────────────────────────────────────────┘');
   console.log('');
+  const _daemonSummaryStore = require('../src/brownfield/engine/store').GraphStore.open(require('path').join(targetDir, '.wednesday', 'graph.db'));
+  const _daemonTotal  = _daemonSummaryStore.getAllDaemons().length;
+  const _adapterTotal = _daemonSummaryStore.getAllAdapters().length;
+  _daemonSummaryStore.close();
+
   console.log(`  Files mapped:     ${nodeCount}`);
   console.log(`  Summaries:        ${Object.keys(summaries).length}`);
   console.log(`  Gaps resolved:    ${gapsFilled}`);
+  console.log(`  Daemons found:    ${_daemonTotal}`);
+  console.log(`  Adapters found:   ${_adapterTotal}`);
   console.log(`  Danger zones:     ${legacyReport.dangerZones?.length || 0}`);
   console.log(`  Dead files:       ${deadFilesForInsights.length}`);
   console.log('');
@@ -1659,7 +1818,47 @@ function ensureCicdTools(targetDir, selectedCicd) {
   }
 }
 
+function isRunningViaNpx() {
+  const argv1 = process.argv[1] || '';
+  return (
+    argv1.includes('/_npx/')           ||  // Linux/macOS npx cache
+    argv1.includes('\\_npx\\')         ||  // Windows npx cache
+    argv1.includes('/.npm/_npx')       ||  // alternative npx cache path
+    (process.env.npm_config_user_agent || '').includes('npx')
+  );
+}
+
+function ensureGlobalInstall() {
+  if (!isRunningViaNpx()) return; // already global, nothing to do
+
+  console.log('');
+  log('blue', '─────────────────────────────────────────────────────────────');
+  log('cyan', '  Running via npx — installing ws-skills globally...');
+  log('blue', '─────────────────────────────────────────────────────────────');
+  console.log('');
+
+  const pkg = 'github:wednesday-solutions/ai-agent-skills';
+  try {
+    execSync(`npm install -g ${pkg}`, { stdio: 'inherit' });
+    console.log('');
+    log('green', '  ✓ ws-skills installed globally');
+    log('green', '  You can now run: ws-skills install');
+    log('green', '  in any project directory without npx.');
+    console.log('');
+  } catch {
+    console.log('');
+    log('yellow', '  ⚠ Global install failed (permissions?). Run manually:');
+    log('blue',   `    npm install -g ${pkg}`);
+    log('yellow', '  Or with sudo:');
+    log('blue',   `    sudo npm install -g ${pkg}`);
+    console.log('');
+  }
+}
+
 function install(targetDir, skipConfig = false, skipChecklist = false) {
+  // If running via npx, make ws-skills a permanent global command first
+  ensureGlobalInstall();
+
   // Resolve to absolute path
   targetDir = path.resolve(targetDir);
 
@@ -1694,7 +1893,23 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     fs.mkdirSync(skillsDir, { recursive: true });
 
     selectedSkills.forEach(skill => {
-      const src = path.join(skillsSource, skill);
+      let sourceSkill = skill;
+      const mapping = {
+        'git-os': 'wednesday-git',
+        'sprint': 'wednesday-git',
+        'pr-create': 'wednesday-git',
+        'brownfield-chat': 'codebase-intel',
+        'brownfield-fix': 'codebase-intel',
+        'brownfield-enrich': 'codebase-intel',
+        'brownfield-gaps': 'codebase-intel',
+        'wednesday-dev': 'standards-kit',
+        'wednesday-design': 'standards-kit'
+      };
+      if (mapping[skill]) {
+        sourceSkill = mapping[skill];
+      }
+
+      const src = path.join(skillsSource, sourceSkill);
       const dest = path.join(skillsDir, skill);
       const isUpdate = fs.existsSync(dest);
       // Wipe first so removed files from older versions don't linger
@@ -1702,6 +1917,35 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
       log('blue', `${isUpdate ? 'Updating' : 'Installing'} ${skill} skill...`);
       copyRecursive(src, dest);
       log('green', `  ✓ ${skill} ${isUpdate ? 'updated' : 'installed'}`);
+
+      // ALSO copy consolidated versions to their legacy folder aliases for full backward compatibility
+      if (skill === 'wednesday-git') {
+        const legacyGitSkills = ['git-os', 'sprint', 'pr-create'];
+        legacyGitSkills.forEach(legacy => {
+          const lDest = path.join(skillsDir, legacy);
+          if (fs.existsSync(lDest)) fs.rmSync(lDest, { recursive: true, force: true });
+          copyRecursive(src, lDest);
+          log('green', `  ✓ ${legacy} legacy-alias installed`);
+        });
+      }
+      if (skill === 'codebase-intel') {
+        const legacyIntelSkills = ['brownfield-chat', 'brownfield-fix', 'brownfield-enrich', 'brownfield-gaps'];
+        legacyIntelSkills.forEach(legacy => {
+          const lDest = path.join(skillsDir, legacy);
+          if (fs.existsSync(lDest)) fs.rmSync(lDest, { recursive: true, force: true });
+          copyRecursive(src, lDest);
+          log('green', `  ✓ ${legacy} legacy-alias installed`);
+        });
+      }
+      if (skill === 'standards-kit') {
+        const legacyStandardsSkills = ['wednesday-dev', 'wednesday-design'];
+        legacyStandardsSkills.forEach(legacy => {
+          const lDest = path.join(skillsDir, legacy);
+          if (fs.existsSync(lDest)) fs.rmSync(lDest, { recursive: true, force: true });
+          copyRecursive(src, lDest);
+          log('green', `  ✓ ${legacy} legacy-alias installed`);
+        });
+      }
     });
 
     // Symlink .wednesday/skills/* into .claude/skills/ so Claude Code's
@@ -1747,7 +1991,7 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     if (hasBrownfield || selectedSkills.includes('git-os')) {
       const hooksInstalled = brownfield.installHooks(targetDir);
       if (hooksInstalled) {
-        log('green', '  ✓ Git hooks installed (post-commit, post-merge)');
+        log('green', '  ✓ Git hooks installed (commit-msg, pre-commit, post-commit, post-merge)');
       }
     }
 
@@ -1827,95 +2071,19 @@ function configure(targetDir, agent = 'all') {
   targetDir = path.resolve(targetDir);
   const skillsDir = path.join(targetDir, '.wednesday', 'skills');
 
-  // Check if skills are installed
   if (!fs.existsSync(skillsDir)) {
     log('red', 'Error: Skills not installed. Run "wednesday-skills install" first.');
     process.exit(1);
   }
 
-  // Get installed skills metadata
-  const skills = getInstalledSkills(skillsDir);
-  if (skills.length === 0) {
-    log('red', 'Error: No valid skills found in .wednesday/skills/');
-    process.exit(1);
-  }
-
-  const instructions = generateInstructions(skills, targetDir);
   const agents = agent === 'all' ? ['claude', 'gemini', 'cursor', 'copilot'] : [agent];
 
   for (const agentType of agents) {
-    switch (agentType) {
-      case 'claude':
-        configureClaudeCode(targetDir, instructions);
-        break;
-      case 'gemini':
-        configureGemini(targetDir, instructions);
-        break;
-      case 'cursor':
-        configureCursor(targetDir, instructions);
-        break;
-      case 'copilot':
-        configureGitHubCopilot(targetDir, instructions);
-        break;
-      default:
-        log('yellow', `Unknown agent: ${agentType}`);
-    }
+    // Register in tools.json so future `sync` picks it up
+    registerAgent(targetDir, agentType);
+    // Run the adapter
+    syncAdapters(targetDir, agentType);
   }
-}
-
-function configureClaudeCode(targetDir, instructions) {
-  const claudeFile = path.join(targetDir, 'CLAUDE.md');
-
-  let content = '';
-  const marker = '<!-- WEDNESDAY_SKILLS_START -->';
-  const endMarker = '<!-- WEDNESDAY_SKILLS_END -->';
-  const wrappedInstructions = `${marker}\n${instructions}\n${endMarker}`;
-
-  if (fs.existsSync(claudeFile)) {
-    content = fs.readFileSync(claudeFile, 'utf8');
-    // Check if we already have our section
-    const startIdx = content.indexOf(marker);
-    const endIdx = content.indexOf(endMarker);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      // Replace existing section
-      content = content.slice(0, startIdx) + wrappedInstructions + content.slice(endIdx + endMarker.length);
-    } else {
-      // Append to end
-      content = content.trim() + '\n\n' + wrappedInstructions;
-    }
-  } else {
-    content = `# Project Guidelines\n\n${wrappedInstructions}`;
-  }
-
-  fs.writeFileSync(claudeFile, content);
-  log('green', '  ✓ Claude Code configured (CLAUDE.md)');
-}
-
-function configureGemini(targetDir, instructions) {
-  const geminiFile = path.join(targetDir, 'GEMINI.md');
-
-  let content = '';
-  const marker = '<!-- WEDNESDAY_SKILLS_START -->';
-  const endMarker = '<!-- WEDNESDAY_SKILLS_END -->';
-  const wrappedInstructions = `${marker}\n${instructions}\n${endMarker}`;
-
-  if (fs.existsSync(geminiFile)) {
-    content = fs.readFileSync(geminiFile, 'utf8');
-    const startIdx = content.indexOf(marker);
-    const endIdx = content.indexOf(endMarker);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      content = content.slice(0, startIdx) + wrappedInstructions + content.slice(endIdx + endMarker.length);
-    } else {
-      content = content.trim() + '\n\n' + wrappedInstructions;
-    }
-  } else {
-    content = `# Gemini Project Guidelines\n\n${wrappedInstructions}`;
-  }
-
-  fs.writeFileSync(geminiFile, content);
-  log('green', '  ✓ Gemini CLI configured (GEMINI.md)');
 }
 
 function copyGitHubAssets(packageRoot, targetDir, selectedCicd = []) {
@@ -1944,63 +2112,6 @@ function copyGitHubAssets(packageRoot, targetDir, selectedCicd = []) {
   });
 }
 
-function configureCursor(targetDir, instructions) {
-  const cursorFile = path.join(targetDir, '.cursorrules');
-
-  let content = '';
-  const marker = '# WEDNESDAY_SKILLS_START';
-  const endMarker = '# WEDNESDAY_SKILLS_END';
-  const wrappedInstructions = `${marker}\n${instructions}\n${endMarker}`;
-
-  if (fs.existsSync(cursorFile)) {
-    content = fs.readFileSync(cursorFile, 'utf8');
-    const startIdx = content.indexOf(marker);
-    const endIdx = content.indexOf(endMarker);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      content = content.slice(0, startIdx) + wrappedInstructions + content.slice(endIdx + endMarker.length);
-    } else {
-      content = content.trim() + '\n\n' + wrappedInstructions;
-    }
-  } else {
-    content = wrappedInstructions;
-  }
-
-  fs.writeFileSync(cursorFile, content);
-  log('green', '  ✓ Cursor configured (.cursorrules)');
-}
-
-function configureGitHubCopilot(targetDir, instructions) {
-  const githubDir = path.join(targetDir, '.github');
-  const copilotFile = path.join(githubDir, 'copilot-instructions.md');
-
-  // Create .github directory if it doesn't exist
-  if (!fs.existsSync(githubDir)) {
-    fs.mkdirSync(githubDir, { recursive: true });
-  }
-
-  let content = '';
-  const marker = '<!-- WEDNESDAY_SKILLS_START -->';
-  const endMarker = '<!-- WEDNESDAY_SKILLS_END -->';
-  const wrappedInstructions = `${marker}\n${instructions}\n${endMarker}`;
-
-  if (fs.existsSync(copilotFile)) {
-    content = fs.readFileSync(copilotFile, 'utf8');
-    const startIdx = content.indexOf(marker);
-    const endIdx = content.indexOf(endMarker);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      content = content.slice(0, startIdx) + wrappedInstructions + content.slice(endIdx + endMarker.length);
-    } else {
-      content = content.trim() + '\n\n' + wrappedInstructions;
-    }
-  } else {
-    content = `# GitHub Copilot Instructions\n\n${wrappedInstructions}`;
-  }
-
-  fs.writeFileSync(copilotFile, content);
-  log('green', '  ✓ GitHub Copilot configured (.github/copilot-instructions.md)');
-}
 
 function showHelp() {
   console.log('Usage: wednesday-skills [command] [options]');
@@ -2055,6 +2166,7 @@ function showHelp() {
   console.log('  build-skill                  AI-generate a new SKILL.md interactively');
   console.log('  submit <skill>               Submit a skill to the public registry via PR');
   console.log('  stats [--cost] [--stale]     Show skill usage analytics');
+  console.log('  query <type> [args]          Direct database query (file-summary, blast, dead, etc.)');
   console.log('');
   console.log('IDE-handled (ask Claude instead):');
   console.log('  blast, score, chat, gen-tests, plan-refactor, onboard');
@@ -2062,9 +2174,13 @@ function showHelp() {
   console.log('');
   console.log('  help                         Show this help message');
   console.log('');
-  console.log('Examples:');
-  console.log('  npx @wednesday-solutions-eng/ai-agent-skills install');
-  console.log('  wednesday-skills install ./my-project');
+  console.log('First-time setup (installs ws-skills globally + sets up project):');
+  console.log('  npx github:wednesday-solutions/ai-agent-skills install');
+  console.log('  → auto-installs ws-skills as a permanent global command');
+  console.log('');
+  console.log('After first install (use directly):');
+  console.log('  ws-skills install');
+  console.log('  ws-skills install ./my-project');
   console.log('  wednesday-skills configure . gemini');
   console.log('  wednesday-skills sync --tool antigravity');
   console.log('  wednesday-skills dashboard');
@@ -2101,6 +2217,17 @@ function runChat(question, targetDir) {
     log('red', `Error: ${e.message}`);
     process.exit(1);
   });
+}
+
+function runQuery(type, targetDir, queryArgs) {
+  targetDir = path.resolve(targetDir);
+  try {
+    const result = brownfield.query(targetDir, type, ...queryArgs);
+    console.log(JSON.stringify(result, null, 2));
+  } catch (e) {
+    log('red', `Query error: ${e.message}`);
+    process.exit(1);
+  }
 }
 
 function runDrift(targetDir, opts) {

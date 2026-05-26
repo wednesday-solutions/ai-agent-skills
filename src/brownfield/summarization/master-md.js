@@ -14,8 +14,8 @@ const { scoreAll } = require('../analysis/safety-scorer');
 const { findDeadCode, findCircularDeps } = require('../analysis/dead-code');
 const { blastRadius } = require('../analysis/blast-radius');
 const { extractIosMetadata } = require('../analysis/ios-metadata');
+const { detectEntryPoints } = require('../analysis/entry-point-detector');
 
-// ── Shared grouping helper ─────────────────────────────────────────────────
 function groupByDir(allNodes) {
   const byDir = {};
   for (const [file, node] of allNodes) {
@@ -24,6 +24,26 @@ function groupByDir(allNodes) {
     byDir[dir].push([file, node]);
   }
   return byDir;
+}
+
+function groupByCommunity(allNodes, store) {
+  if (!store) return null;
+  const communities = store.getCommunities();
+  if (Object.keys(communities).length === 0) return null;
+
+  const nodesMap = Object.fromEntries(allNodes);
+  const grouped = {};
+  
+  for (const [cid, files] of Object.entries(communities)) {
+    const members = files
+      .map(f => [f, nodesMap[f]])
+      .filter(([, n]) => !!n);
+    
+    if (members.length > 0) {
+      grouped[cid] = members;
+    }
+  }
+  return grouped;
 }
 
 // ── Package manifest readers ──────────────────────────────────────────────────
@@ -142,7 +162,7 @@ function buildTechStack(allNodes, pkgJson, stats, frameworks, graphPackages) {
 
 function buildTestCoverageMap(nodes) {
   const coverageMap = {};
-  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/;
+  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__|Tests\.swift$|Spec\.swift$|UITests\.swift$|\/Tests\/|_test\.go$|Test\.kt$|\/androidTest\//;
   for (const file of Object.keys(nodes)) {
     if (!TEST_RE.test(file)) coverageMap[file] = 0;
   }
@@ -159,23 +179,144 @@ function isHighValue(node) {
   return node.isEntryPoint || node.importedBy.length > 10 || node.riskScore > 70;
 }
 
+// ── Mode 0: Skeleton for unmapped codebase ────────────────────────────────────
+function generateMode0Skeleton(rootDir, pkgJson) {
+  const projectName = pkgJson?.name || path.basename(rootDir) || 'Project';
+  const mainField = pkgJson?.main || '';
+  const desc = pkgJson?.description || '';
+
+  const lines = [];
+  lines.push(`# ${projectName} — Codebase Intelligence`);
+  lines.push('');
+  lines.push('> ⚠️ **Not yet analyzed.** This document is a skeleton template.');
+  lines.push('');
+  lines.push('To generate comprehensive intelligence about your codebase:');
+  lines.push('');
+  lines.push('```bash');
+  lines.push('wednesday-skills map --full');
+  lines.push('```');
+  lines.push('');
+  lines.push('(Takes 2-5 minutes on first run.)');
+  lines.push('');
+
+  if (desc) {
+    lines.push('## What This Does');
+    lines.push('');
+    lines.push(desc);
+    lines.push('');
+  }
+
+  if (mainField) {
+    lines.push('## Quick Start');
+    lines.push('');
+    lines.push(`Entry point (from package.json): \`${mainField}\``);
+    lines.push('');
+    lines.push(`Read this file first, then follow its imports to understand the codebase.`);
+    lines.push('');
+  }
+
+  lines.push('## Getting Help');
+  lines.push('');
+  lines.push('- **Understand a file:** Use `/brownfield-chat "what does X do?"`');
+  lines.push('- **Check edit risk:** Use `/brownfield-fix <filename>`');
+  lines.push('- **See change impact:** Use `/brownfield-blast <filename>`');
+  lines.push('- **Update this doc:** Run `wednesday-skills map --full`');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ── Generate reading order from entry point ────────────────────────────────────
+function generateReadingOrder(entryFile, nodes, flows, limit = 10) {
+  const visited = new Set();
+  const order = [];
+
+  // Start with entry point
+  if (entryFile && nodes[entryFile]) {
+    order.push(entryFile);
+    visited.add(entryFile);
+  }
+
+  // Add files from flows
+  if (flows && flows.length > 0) {
+    for (const flow of flows) {
+      const parts = flow.path?.split(' -> ') || [];
+      for (const part of parts) {
+        if (!visited.has(part) && order.length < limit) {
+          order.push(part);
+          visited.add(part);
+        }
+      }
+    }
+  }
+
+  // Fill remaining slots with high-fanin files not yet added
+  if (order.length < limit) {
+    const candidates = Object.entries(nodes)
+      .filter(([f]) => !visited.has(f) && nodes[f].importedBy?.length > 3)
+      .sort((a, b) => (b[1].importedBy?.length || 0) - (a[1].importedBy?.length || 0))
+      .slice(0, limit - order.length)
+      .map(([f]) => f);
+    order.push(...candidates);
+  }
+
+  return order.slice(0, limit);
+}
+
+// ── Confidence label helper ────────────────────────────────────────────────────
+function confidenceLabel(confidence) {
+  if (confidence >= 80) return 'HIGH';
+  if (confidence >= 50) return 'MODERATE';
+  return 'LOW';
+}
+
+// ── Deterministic product orientation fallback ────────────────────────────────
+function generateDeterministicOrientation(pkgJson, stack, stats) {
+  const lines = [];
+
+  if (pkgJson?.description) {
+    lines.push(pkgJson.description);
+  } else {
+    const langList = stack.languages.join(', ');
+    const platform = stack.platform || 'Unknown';
+    lines.push(`${platform} project written in ${langList}. Contains ${stats.totalFiles} files across ${Object.keys(stats.byLang || {}).length} language(s).`);
+  }
+
+  if (stack.frameworks?.length > 0) {
+    lines.push(``);
+    lines.push(`**Tech stack:** ${stack.frameworks.join(', ')}`);
+  }
+
+  return lines.join('\n') || 'A software project.';
+}
+
 /**
  * Generate full MASTER.md — every file documented in detail
  */
-async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null, gapsFilled = 0, elapsed = 0, insights = {}, store = null) {
+async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, apiKey, commentIntel = null, gapsFilled = 0, elapsed = 0, insights = {}, store = null, daemonData = null, adapterData = null) {
   const nodes = graph.nodes;
   const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
 
+  // ── Mode 0: No graph / unmapped codebase ──────────────────────────────────
+  if (allNodes.length === 0) {
+    const skeleton = generateMode0Skeleton(graph.rootDir, readPackageJson(graph.rootDir));
+    const outPath = path.join(codebaseDir, 'MASTER.md');
+    fs.mkdirSync(codebaseDir, { recursive: true });
+    fs.writeFileSync(outPath, skeleton);
+    return outPath;
+  }
+
   // Pre-compute derived data used by multiple sections
-  const scoreMap = scoreAll(nodes, buildTestCoverageMap(nodes), commentIntel);
-  const { deadFiles, riskByFile } = findDeadCode(nodes, commentIntel);
+  const scoreMap = store ? store.getScoreMap() : scoreAll(nodes, buildTestCoverageMap(nodes), commentIntel);
+  const deadData = store ? store.getDeadCode() : findDeadCode(nodes, commentIntel);
+  const { deadFiles, unusedExports } = deadData;
+  const rootDir    = graph.rootDir || '';
+  const features   = inferFeatures(allNodes);
   const deadClassification = insights.deadClassification || {};
   const cycleBreakPoints   = insights.cycleBreakPoints   || {};
-  const totalGaps = allNodes.reduce((s, [, n]) => s + n.gaps.length, 0);
-  const gapsByType = allNodes.flatMap(([, n]) => n.gaps).reduce((acc, g) => {
-    acc[g.type] = (acc[g.type] || 0) + 1;
-    return acc;
-  }, {});
+  
+  const stats = store ? store.getStats() : graph.stats;
+  const totalGaps = stats.gapCount || 0;
 
   // Build comment intel lookup by dir
   const commentByDir = new Map();
@@ -183,27 +324,62 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
     for (const mod of commentIntel.modules) commentByDir.set(mod.dir, mod);
   }
 
+  const communityGroup = groupByCommunity(allNodes, store);
+
+  const pkgJson    = readPackageJson(graph.rootDir);
+  const frameworks = new Set(allNodes.map(([, n]) => n.meta?.framework).filter(Boolean));
+  const stack      = buildTechStack(allNodes, pkgJson, graph.stats, frameworks, graph.packages);
+
+  // ── LLM path — if API key available, generate the whole document in one call ──
+  if (apiKey) {
+    const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
+    const flows = store ? discoverPrimaryFlows(store, 5, 4) : [];
+    const graphCoverage = graph.stats?.coverage || 0;
+    const entryPointsDetected = detectEntryPoints(nodes, pkgJson, graphCoverage);
+    const ctx = buildCompactContext(
+      graph, summaries, scoreMap, deadFiles, unusedExports,
+      daemonData, adapterData, features, legacyReport, flows, insights, stack, entryPointsDetected,
+      communityGroup
+    );
+
+    let llmContent = null;
+    try {
+      llmContent = await generateWithLlm(ctx, new Date().toISOString());
+    } catch { /* fall through to template */ }
+
+    if (llmContent && llmContent.length > 200) {
+      const outPath = path.join(codebaseDir, 'MASTER.md');
+      fs.mkdirSync(codebaseDir, { recursive: true });
+      fs.writeFileSync(outPath, llmContent);
+      return outPath;
+    }
+  }
+
+  // ── Template fallback (no API key or LLM failed) ───────────────────────────
   const lines = [];
 
   // ── Header ────────────────────────────────────────────────────────────────
-  // ── Header ────────────────────────────────────────────────────────────────
   lines.push(`# Codebase Intelligence — MASTER.md`);
-  lines.push(`> Generated: ${new Date().toISOString()}`);
-  lines.push(`> Project root: ${graph.rootDir}`);
-  lines.push(`> Files: ${graph.stats.totalFiles} | Edges: ${graph.stats.totalEdges} | High-risk: ${graph.stats.highRiskFiles} | Dead: ${deadFiles.length} | Gaps filled: ${gapsFilled}${elapsed ? ` | Time: ${elapsed}ms` : ''}`);
+  lines.push(`> Generated: ${new Date().toISOString()} · Root: \`${graph.rootDir}\``);
   lines.push('');
 
   // ── Product orientation (AI-generated from features/signatures) ────────────
+  let productOrientation = null;
   if (apiKey) {
-    const features = inferFeatures(allNodes);
-    const productOrientation = await callHaikuProductOrientation(features, sampleRepresentativeNodes(nodes, 30));
-    if (productOrientation) {
-      lines.push('## Product orientation');
-      lines.push('');
-      lines.push(`${productOrientation}`);
-      lines.push('');
+    try {
+      productOrientation = await callHaikuProductOrientation(features, sampleRepresentativeNodes(nodes, 30, store));
+    } catch {
+      // LLM call failed, use fallback
     }
   }
+  if (!productOrientation) {
+    // Use deterministic fallback
+    productOrientation = generateDeterministicOrientation(pkgJson, stack, graph.stats);
+  }
+  lines.push('## Product orientation');
+  lines.push('');
+  lines.push(`${productOrientation}`);
+  lines.push('');
 
   // ── Codebase health (AI narrative) ────────────────────────────────────────
   if (insights.healthNarrative) {
@@ -213,49 +389,139 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
     lines.push('');
   }
 
-  // ── Quick stats ────────────────────────────────────────────────────────────
+  // ── Health snapshot ────────────────────────────────────────────────────────
   const logicCycles = (legacyReport?.circularDeps || []).filter(c => c.type === 'Logic').length;
   const structuralCycles = (legacyReport?.circularDeps || []).filter(c => c.type === 'Structural').length;
 
+  // Risk band distribution
+  const bands = { critical: 0, risky: 0, moderate: 0, safe: 0 };
+  for (const s of Object.values(scoreMap)) {
+    const b = s.band?.toLowerCase();
+    if (b && bands[b] !== undefined) bands[b]++;
+  }
+  const bandStr = [
+    bands.critical ? `🔴 ${bands.critical} critical` : '',
+    bands.risky    ? `🟠 ${bands.risky} risky`       : '',
+    bands.moderate ? `🟡 ${bands.moderate} moderate`  : '',
+    bands.safe     ? `🟢 ${bands.safe} safe`          : '',
+  ].filter(Boolean).join('  ');
+
+  const unusedExportCount = Object.keys(unusedExports || {}).length;
+
   lines.push('| Metric | Value |');
   lines.push('|--------|-------|');
-  lines.push(`| Files mapped | ${allNodes.length} |`);
-  lines.push(`| Total edges | ${graph.stats.totalEdges} |`);
-  lines.push(`| Summaries | ${Object.keys(summaries).length} |`);
-  lines.push(`| High-risk files (>60) | ${graph.stats.highRiskFiles} |`);
-  lines.push(`| Dead files | ${deadFiles.length} |`);
-  lines.push(`| Circular dependencies | ${logicCycles} Logic, ${structuralCycles} Structural |`);
+  lines.push(`| Files | ${stats.totalFiles} mapped · ${stats.totalEdges} edges |`);
+  lines.push(`| Risk bands | ${bandStr || `${stats.highRiskFiles} high-risk`} |`);
+  lines.push(`| Dead | ${deadFiles.length} files · ${unusedExportCount} unused exports |`);
+  lines.push(`| Circular deps | ${logicCycles} logic · ${structuralCycles} structural |`);
   lines.push(`| God files | ${legacyReport?.godFiles?.length || 0} |`);
-  lines.push(`| Coverage gaps | ${totalGaps} |`);
-  lines.push(`| Gaps filled (subagents) | ${gapsFilled} |`);
-  lines.push(`| Danger zones | ${legacyReport?.dangerZones?.length || 0} |`);
+  if (daemonData)  lines.push(`| Background processes | ${daemonData.total} patterns · ${Object.keys(daemonData.byKind || {}).length} kinds |`);
+  if (adapterData) lines.push(`| External adapters | ${adapterData.total} · ${Object.keys(adapterData.byKind || {}).length} categories |`);
+  if (stats.gapCount > 0) lines.push(`| Coverage gaps | ${stats.gapCount}${gapsFilled ? ` · ${gapsFilled} filled` : ''} |`);
   lines.push('');
 
   // ── Table of contents ─────────────────────────────────────────────────────
   lines.push('## Table of contents');
   lines.push('');
-  let tocItems = [
+  const tocItems = [
+    { title: 'Suggested reading order',   id: 'suggested-reading-order' },
     { title: 'Primary application flows', id: 'primary-application-flows' },
-    { title: 'Architecture overview', id: 'architecture-overview' },
-    { title: 'Entry points', id: 'entry-points' },
-    { title: 'Platform & Environment', id: 'platform--environment' },
-    { title: 'Danger zones', id: 'danger-zones' },
-    { title: 'High-risk files', id: 'high-risk-files' },
-    { title: 'Dead code candidates', id: 'dead-code-candidates' },
-    { title: 'Coverage gaps', id: 'coverage-gaps' },
-    { title: 'Module map', id: 'module-map' },
-    { title: 'Tech stack', id: 'tech-stack' },
-    { title: 'Feature inventory', id: 'feature-inventory' },
+    { title: 'Architecture overview',     id: 'architecture-overview' },
+    { title: 'Entry points',              id: 'entry-points' },
+    { title: 'Watch zones',               id: 'watch-zones' },
+    { title: 'Background processes',       id: 'background-processes' },
+    { title: 'External adapters',          id: 'external-adapters' },
+    { title: 'Dead code',                 id: 'dead-code' },
+    { title: 'Module map',                id: 'module-map' },
+    { title: 'Tech stack',                id: 'tech-stack' },
   ];
-  if (commentIntel?.modules?.some(m => m.purpose || m.techDebt)) {
-    tocItems.push({ title: 'Comment intelligence', id: 'comment-intelligence' });
-  }
-  tocItems.push({ title: 'Legacy health report', id: 'legacy-health-report' });
-  tocItems.push({ title: 'Output files', id: 'output-files' });
+  if (Object.keys(features).length > 0) tocItems.push({ title: 'Feature inventory', id: 'feature-inventory' });
+  if (commentIntel?.modules?.some(m => m.purpose || m.techDebt)) tocItems.push({ title: 'Comment intelligence', id: 'comment-intelligence' });
 
-  tocItems.forEach((item, i) => {
-    lines.push(`${i + 1}. [${item.title}](#${item.id})`);
-  });
+  tocItems.forEach((item, i) => lines.push(`${i + 1}. [${item.title}](#${item.id})`));
+  lines.push('');
+
+  // ── Suggested reading order ────────────────────────────────────────────────
+  lines.push('## Suggested reading order');
+  lines.push('');
+
+  // Detect entry points with confidence scores
+  const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
+  const flows = store ? discoverPrimaryFlows(store, 5, 4) : [];
+  const graphCoverage = graph.stats?.coverage || 0;
+  const entryPointsDetected = store ? store.getEntryPoints() : detectEntryPoints(nodes, readPackageJson(graph.rootDir), graphCoverage);
+  const sortedEntries = entryPointsDetected.sort((a, b) => b.confidence - a.confidence);
+
+  if (sortedEntries.length === 0) {
+    lines.push('*No entry points detected. Consider marking a file with `@main` comment or setting `main` field in package.json.*');
+  } else {
+    const topEntry = sortedEntries[0];
+    const confidence = topEntry.confidence;
+    const confLabel = confidenceLabel(confidence);
+
+    lines.push(`**Entry point confidence: ${confidence}% (${confLabel})**`);
+    lines.push('');
+
+    if (confidence >= 80) {
+      // High confidence: show single reading order
+      const readingOrder = store ? store.getReadingOrder(12) : generateReadingOrder(topEntry.filePath, nodes, flows, 12);
+      lines.push(`### Start here → \`${topEntry.filePath}\``);
+      lines.push(`Detected via: ${topEntry.detectionMethod} (${topEntry.reason})`);
+      lines.push('');
+      for (let i = 0; i < readingOrder.length; i++) {
+        const item = readingOrder[i];
+        const file = typeof item === 'string' ? item : item.file_path;
+        const summary = (typeof item === 'object' && item.summary) ? item.summary : (summaries[file] || '(no summary)');
+        lines.push(`${i + 1}. **\`${file}\`** — ${summary.split('\n')[0]}`);
+      }
+      lines.push('');
+      lines.push('> Once you understand these files, trace imports to explore the rest of the codebase.');
+    } else if (confidence >= 50) {
+      // Moderate confidence: show primary + alternative
+      lines.push(`### Option A (${confidence}% confidence) → \`${topEntry.filePath}\``);
+      lines.push(`Detected via: ${topEntry.detectionMethod} (${topEntry.reason})`);
+      lines.push('');
+      const readingOrder1 = store ? store.getReadingOrder(10) : generateReadingOrder(topEntry.filePath, nodes, flows, 10);
+      for (let i = 0; i < readingOrder1.length; i++) {
+        const item = readingOrder1[i];
+        const file = typeof item === 'string' ? item : item.file_path;
+        lines.push(`${i + 1}. **\`${file}\`**`);
+      }
+      lines.push('');
+      if (sortedEntries.length > 1) {
+        const alt = sortedEntries[1];
+        lines.push(`### Option B (${alt.confidence}% confidence) → \`${alt.filePath}\``);
+        lines.push(`Detected via: ${alt.detectionMethod} (${alt.reason})`);
+        lines.push('');
+        const readingOrder2 = store ? store.getReadingOrder(10) : generateReadingOrder(alt.filePath, nodes, flows, 10);
+        for (let i = 0; i < readingOrder2.length; i++) {
+          const item = readingOrder2[i];
+          const file = typeof item === 'string' ? item : item.file_path;
+          lines.push(`${i + 1}. **\`${file}\`**`);
+        }
+        lines.push('');
+      }
+      lines.push('> **Tip:** If neither option matches your actual code flow, check the [Entry points](#entry-points) section for other detected entries.');
+    } else {
+      // Low confidence: show multiple options + manual selector
+      lines.push('**Multiple entry points detected. Choose the one that matches your deployment:**');
+      lines.push('');
+      for (let i = 0; i < Math.min(3, sortedEntries.length); i++) {
+        const entry = sortedEntries[i];
+        lines.push(`### Option ${String.fromCharCode(65 + i)} (${entry.confidence}% confidence) → \`${entry.filePath}\``);
+        lines.push(`Detected via: ${entry.detectionMethod} (${entry.reason})`);
+        lines.push('');
+        const order = store ? store.getReadingOrder(8) : generateReadingOrder(entry.filePath, nodes, flows, 8);
+        for (let j = 0; j < order.length; j++) {
+          const item = order[j];
+          const file = typeof item === 'string' ? item : item.file_path;
+          lines.push(`${j + 1}. **\`${file}\`**`);
+        }
+        lines.push('');
+      }
+      lines.push('> **Graph coverage is low.** Run `wednesday-skills map --full` to improve entry point detection accuracy.');
+    }
+  }
   lines.push('');
 
   // ── Primary application flows ──────────────────────────────────────────────
@@ -263,9 +529,6 @@ async function generateMasterMd(graph, summaries, legacyReport, codebaseDir, api
   lines.push('');
   lines.push('> Traced functional paths from entry points to core logic. Read these to understand the execution lifecycle.');
   lines.push('');
-
-  const { discoverPrimaryFlows } = require('../analysis/flow-discovery');
-  const flows = store ? discoverPrimaryFlows(store, 5, 4) : [];
 
   if (flows.length > 0) {
     for (const flow of flows) {
@@ -308,50 +571,6 @@ graph LR
     } catch { /* ignore invalid journeys.json */ }
   }
 
-  // ── Platform & Environment ────────────────────────────────────────────────
-  const iosMeta = extractIosMetadata(graph.rootDir, nodes);
-  lines.push('## Platform & Environment');
-  lines.push('');
-  lines.push('| Category | Details |');
-  lines.push('|----------|---------|');
-  lines.push(`| **Deployment Target** | iOS ${iosMeta.deploymentTarget || 'N/A'} |`);
-  lines.push(`| **Firebase Features** | ${Object.entries(iosMeta.firebase).filter(([k,v]) => v).map(([k]) => k).join(', ') || 'None detected'} |`);
-  lines.push(`| **Environments** | ${iosMeta.environments.join(', ') || 'Default only'} |`);
-  lines.push(`| **TabBar Structure** | ${iosMeta.tabBar.items.length} items detected (${iosMeta.tabBar.items.join(' → ') || 'Root only'}) |`);
-  lines.push('');
-
-  // ── Vendored Code Analysis (Typo / Duplicate Detection) ────────────────────
-  const thirdPartyNodes = allNodes.filter(([f]) => f.toLowerCase().includes('thirdparty/') || f.toLowerCase().includes('vendor/'));
-  if (thirdPartyNodes.length > 0) {
-    const basenames = thirdPartyNodes.map(([f]) => path.basename(f));
-    const duplicates = [];
-    for (let i = 0; i < basenames.length; i++) {
-      for (let j = i + 1; j < basenames.length; j++) {
-        const a = basenames[i].toLowerCase();
-        const b = basenames[j].toLowerCase();
-        if (a !== b && (a.includes(b) || b.includes(a) || distance(a, b) < 2)) {
-          duplicates.push(`- Potential Duplicate: \`${basenames[i]}\` and \`${basenames[j]}\``);
-        }
-      }
-    }
-    if (duplicates.length > 0) {
-      lines.push('### 📦 Vendored Code Analysis');
-      lines.push('> Detected potential duplicates or typos in third-party libraries:');
-      lines.push('');
-      lines.push(...new Set(duplicates));
-      lines.push('');
-    }
-  }
-
-  function distance(s1, s2) {
-    if (Math.abs(s1.length - s2.length) > 2) return 99;
-    let dist = 0;
-    for (let i = 0; i < Math.min(s1.length, s2.length); i++) {
-        if (s1[i] !== s2[i]) dist++;
-    }
-    return dist + Math.abs(s1.length - s2.length);
-  }
-
   // ── Architecture overview ─────────────────────────────────────────────────
   lines.push('## Architecture overview');
   lines.push('');
@@ -367,9 +586,9 @@ graph LR
   }
 
   const { detectArchitecturePattern } = require('../analysis/architecture');
-  const detectedArch = detectArchitecturePattern(nodes);
+  const detectedArch = detectArchitecturePattern(nodes, store);
   
-  const representativeNodes = sampleRepresentativeNodes(nodes, 10);
+  const representativeNodes = sampleRepresentativeNodes(nodes, 10, store);
   if (apiKey && representativeNodes.length > 0) {
     const arch = await callHaikuArchitecture(representativeNodes, graph.stats);
     let archText = arch || generateStructuralArchOverview(graph.stats, representativeNodes);
@@ -387,7 +606,8 @@ graph LR
     lines.push('|-------|----------------|------------|-----------|--------|');
 
     const scenes = {};
-    for (const [file] of allNodes) {
+    const relevantFiles = store ? store.getFilesByPattern('%.swift') : allNodes.map(([f]) => f);
+    for (const file of relevantFiles) {
       const match = path.basename(file).match(/^(.+)(ViewController|Interactor|Presenter|Router|Worker)\.swift$/);
       if (match) {
         const name = match[1];
@@ -414,158 +634,212 @@ graph LR
   lines.push('');
   lines.push('| Language | Files | % |');
   lines.push('|----------|-------|---|');
-  const total = graph.stats.totalFiles;
-  for (const [lang, count] of Object.entries(graph.stats.byLang || {}).sort((a, b) => b[1] - a[1])) {
-    lines.push(`| ${lang} | ${count} | ${Math.round(count / total * 100)}% |`);
+  const totalCount = stats.totalFiles;
+  for (const [lang, count] of Object.entries(stats.byLang || {}).sort((a, b) => b[1] - a[1])) {
+    lines.push(`| ${lang} | ${count} | ${Math.round(count / totalCount * 100)}% |`);
   }
   lines.push('');
 
   // ── Entry points ──────────────────────────────────────────────────────────
   lines.push('## Entry points');
   lines.push('');
-  const entries = allNodes.filter(([, n]) => n.isEntryPoint);
-  if (entries.length === 0) {
-    lines.push('*No entry points detected*');
+  lines.push('> Detected starting points for reading/debugging this codebase. See [Suggested reading order](#suggested-reading-order) for recommended sequence.');
+  lines.push('');
+
+  if (sortedEntries.length === 0) {
+    lines.push('*No entry points detected. Consider marking a file with `@main` comment or setting `main` field in package.json.*');
   } else {
-    for (const [file, node] of entries) {
-      lines.push(`- **\`${file}\`** — ${summaries[file] || 'application entry point'}`);
-      if (node.imports.length > 0) {
-        lines.push(`  - Imports: ${node.imports.slice(0, 6).join(', ')}`);
-      }
+    lines.push('| File | Confidence | Method | Details |');
+    lines.push('|------|-----------|--------|---------|');
+    for (const entry of sortedEntries.slice(0, 8)) {
+      const confLabel = confidenceLabel(entry.confidence);
+      lines.push(`| \`${entry.filePath}\` | **${entry.confidence}%** (${confLabel}) | ${entry.detectionMethod} | ${entry.reason} |`);
     }
   }
   lines.push('');
 
-  // ── Danger zones ──────────────────────────────────────────────────────────
-  lines.push('## Danger zones');
+  // ── Watch zones — high-risk + danger zones merged ─────────────────────────
+  lines.push('## Watch zones');
   lines.push('');
-  if (legacyReport?.dangerZones?.length > 0) {
-    lines.push('> ⚠️ These files have high bug history or known workarounds. Always check with the contact before modifying.');
+  lines.push('> Files to read before modifying. Sorted by risk score.');
+  lines.push('');
+  {
+    const highRiskFiles = Object.values(nodes)
+      .filter(n => n.riskScore > 60)
+      .sort((a, b) => b.riskScore - a.riskScore)
+      .slice(0, 12);
+    const dangerSet = new Set((legacyReport?.dangerZones || []).map(d => d.file));
+    const dangerMap = Object.fromEntries((legacyReport?.dangerZones || []).map(d => [d.file, d]));
+
+    if (highRiskFiles.length > 0) {
+      lines.push('| File | Score | Dependents | Flags |');
+      lines.push('|------|-------|------------|-------|');
+      for (const n of highRiskFiles) {
+        const br  = blastRadius(n.file, nodes);
+        const dep = br.transitive > br.direct ? `${br.direct}+${br.transitive - br.direct}t` : `${br.direct}`;
+        const dz  = dangerSet.has(n.file) ? ' ⚠️ danger' : '';
+        const band = scoreMap[n.file]?.band || '?';
+        lines.push(`| \`${n.file}\` | ${n.riskScore} | ${dep} | ${band}${dz} |`);
+      }
+      // Show any danger zones not already in the high-risk list
+      for (const dz of (legacyReport?.dangerZones || [])) {
+        if (!highRiskFiles.find(n => n.file === dz.file)) {
+          lines.push(`| \`${dz.file}\` | — | — | ⚠️ ${dz.reason} |`);
+        }
+      }
+    } else {
+      lines.push('*No high-risk files detected.*');
+    }
+  }
+  lines.push('');
+
+  // ── Background Processes ────────────────────────────────────────────────────
+  const hasDaemons  = daemonData  && daemonData.total  > 0;
+  if (hasDaemons) {
+    lines.push('## Background processes');
     lines.push('');
-    for (const dz of legacyReport.dangerZones) {
-      lines.push(`### ⚠️ \`${dz.file}\``);
-      lines.push(`**Reason:** ${dz.reason}`);
-      lines.push(`**Contact:** ${dz.contact}`);
+    lines.push('Scheduled/persistent patterns invisible to import analysis.');
+    lines.push('');
+    lines.push('| Kind | Count | Examples |');
+    lines.push('|------|-------|---------|');
+    for (const [kind, entries] of Object.entries(daemonData.byKind)) {
+      const examples = entries.slice(0, 2).map(e => {
+        const rel = rootDir ? path.relative(rootDir, e.file) : e.file;
+        return e.event ? `\`${e.event}\`` : `\`${path.basename(rel)}:${e.line}\``;
+      }).join(', ');
+      lines.push(`| ${kind} | ${entries.length} | ${examples} |`);
+    }
+    lines.push('');
+  }
+
+  // ── External Adapters ──────────────────────────────────────────────────────
+  const hasAdapters = adapterData && adapterData.total > 0;
+  if (hasAdapters) {
+    lines.push('## External adapters');
+    lines.push('');
+    lines.push('Service boundaries — mocking points for tests.');
+    lines.push('');
+    lines.push('| Category | Libraries | Files |');
+    lines.push('|----------|-----------|-------|');
+    for (const [kind, libraries] of Object.entries(adapterData.byKind)) {
+      const libs      = Object.keys(libraries).join(', ');
+      const fileCount = Object.values(libraries).reduce((s, arr) => s + arr.length, 0);
+      lines.push(`| ${kind} | ${libs} | ${fileCount} |`);
+    }
+    lines.push('');
+  }
+
+  // ── Dead code ──────────────────────────────────────────────────────────────
+  lines.push('## Dead code');
+  lines.push('');
+  if (deadFiles.length > 0 || unusedExportCount > 0) {
+    if (deadFiles.length > 0) {
+      lines.push(`**${deadFiles.length} unreferenced files** — no importers detected`);
+      lines.push('');
+      lines.push('| File | Lang | Risk |');
+      lines.push('|------|------|------|');
+      for (const f of deadFiles.slice(0, 15)) {
+        const n    = nodes[f] || {};
+        const risk = riskByFile[f] === 'high' ? '🔴' : riskByFile[f] === 'low' ? '🟢' : '⚪';
+        lines.push(`| \`${f}\` | ${n.lang || '?'} | ${risk} ${riskByFile[f] || '?'} |`);
+      }
+      if (deadFiles.length > 15) lines.push(`| _…+${deadFiles.length - 15} more_ | | |`);
+      lines.push('');
+    }
+    if (unusedExportCount > 0) {
+      const topUnused = Object.entries(unusedExports || {}).slice(0, 8);
+      lines.push(`**${unusedExportCount} unused exports** — exported but never imported`);
+      lines.push('');
+      lines.push('| File | Exports |');
+      lines.push('|------|---------|');
+      for (const [file, exports] of topUnused) {
+        lines.push(`| \`${file}\` | ${(exports || []).slice(0, 4).join(', ')} |`);
+      }
+      if (unusedExportCount > 8) lines.push(`| _…+${unusedExportCount - 8} more files_ | |`);
       lines.push('');
     }
   } else {
-    lines.push('*No danger zones detected.*');
+    lines.push('> No dead code detected — every file is imported and every export is used.');
     lines.push('');
   }
 
-  // ── High-risk files ────────────────────────────────────────────────────────
-  lines.push('## High-risk files');
-  lines.push('');
-  lines.push('> Files with risk score > 60. Read before modifying.');
-  lines.push('');
-  const highRiskFiles = Object.values(nodes)
-    .filter(n => n.riskScore > 60)
-    .sort((a, b) => b.riskScore - a.riskScore)
-    .slice(0, 10);
-  if (highRiskFiles.length > 0) {
-    lines.push('| File | Score | Dependents | Band |');
-    lines.push('|------|-------|------------|------|');
-    for (const n of highRiskFiles) {
-      const br = blastRadius(n.file, nodes);
-      const depStr = br.transitive > br.direct
-        ? `${br.direct} (+${br.transitive - br.direct} transitive)`
-        : `${br.direct}`;
-      lines.push(`| \`${n.file}\` | ${n.riskScore} | ${depStr} | ${scoreMap[n.file]?.band || '?'} |`);
-    }
-  } else {
-    lines.push('*No high-risk files detected.*');
-  }
-  lines.push('');
-
-  // ── Dead code candidates ───────────────────────────────────────────────────
-  lines.push('## Dead code candidates');
-  lines.push('');
-  if (deadFiles.length > 0) {
-    lines.push(`> ${deadFiles.length} files have no importers. They may be unused, entry points, or dynamically loaded.`);
+  // ── Module map ────────────────────────────────────────────────────────────
+  if (communityGroup) {
+    lines.push('## Logical module map');
     lines.push('');
-    lines.push('| File | Language | Module risk | Classification |');
-    lines.push('|------|----------|-------------|----------------|');
-    for (const f of deadFiles.slice(0, 20)) {
-      const n = nodes[f] || {};
-      const risk = riskByFile[f] || 'unknown';
-      const riskIcon = risk === 'high' ? '🔴 high — investigate before deleting'
-        : risk === 'low' ? '🟢 low — safe to remove'
-        : '⚪ unknown';
-      const label = deadClassification[f] || '—';
-      lines.push(`| \`${f}\` | ${n.lang || '?'} | ${riskIcon} | ${label} |`);
-    }
-    if (deadFiles.length > 20) {
-      lines.push('');
-      lines.push(`> ...and ${deadFiles.length - 20} more. Run \`wednesday-skills dead\` for full list.`);
-    }
-  } else {
-    lines.push('> No dead code detected — every file is imported by at least one other.');
-  }
-  lines.push('');
-
-  // ── Coverage gaps ──────────────────────────────────────────────────────────
-  lines.push('## Coverage gaps');
-  lines.push('');
-  if (totalGaps > 0) {
-    lines.push('| Gap type | Count |');
-    lines.push('|----------|-------|');
-    for (const [type, count] of Object.entries(gapsByType)) {
-      lines.push(`| ${type} | ${count} |`);
-    }
+    lines.push('> Files grouped by logical interaction (Louvain community detection).');
     lines.push('');
-    lines.push('> Run `wednesday-skills fill-gaps --min-risk 50` to resolve gaps.');
-  } else {
-    lines.push('> No gaps detected. Graph coverage is complete.');
-  }
-  lines.push('');
+    lines.push('| Community | Representative Files | Avg Risk | Primary Role | Purpose |');
+    lines.push('|-----------|----------------------|----------|--------------|---------|');
 
-  // ── Module map — directory level ─────────────────────────────────────────
-  lines.push('## Module map');
-  lines.push('');
-  lines.push('> One row per directory. For per-file detail: `wednesday-skills blast <file>` or `wednesday-skills chat "what does X do"`.');
-  lines.push('');
-  lines.push('| Directory | Files | Avg risk | Debt | Type | Purpose |');
-  lines.push('|-----------|-------|----------|------|------|---------|');
-
-  const byDir = groupByDir(allNodes);
-  for (const [dir, dirNodes] of Object.entries(byDir).sort()) {
-    const intel        = commentByDir.get(dir);
-    const avgRisk      = Math.round(dirNodes.reduce((s, [, n]) => s + n.riskScore, 0) / dirNodes.length);
-    const riskIcon     = avgRisk >= 61 ? '🔴' : avgRisk >= 31 ? '🟡' : '🟢';
-    let debt         = intel?.techDebt && intel.techDebt !== 'none' ? `**${intel.techDebt.toUpperCase()}**` : '—';
-    let type         = intel?.isBizFeature === true ? '`biz`' : intel?.isBizFeature === false ? '`infra`' : '—';
-    
-    // Heuristics for empty columns
-    if (type === '—') {
-      const roles = dirNodes.map(([, n]) => classifyRole(n.file, n));
-      if (roles.some(r => r === 'ios-viewcontroller' || r === 'ui-component' || r === 'react-hook')) {
-        type = '`biz`';
-      } else if (roles.every(r => r === 'utility' || r === 'data-model' || r === 'config')) {
-        type = '`infra`';
-      }
-    }
-
-    // Fallback purpose: structural summary if no semantic purpose
-    let purpose = intel?.purpose ? intel.purpose.split('.')[0] : null;
-    if (!purpose) {
-      const roles = dirNodes.reduce((acc, [, n]) => {
+    for (const [cid, members] of Object.entries(communityGroup).sort((a, b) => b[1].length - a[1].length)) {
+      const avgRisk = Math.round(members.reduce((s, [, n]) => s + n.riskScore, 0) / members.length);
+      const riskIcon = avgRisk >= 61 ? '🔴' : avgRisk >= 31 ? '🟡' : '🟢';
+      
+      const roles = members.reduce((acc, [, n]) => {
         const r = classifyRole(n.file, n);
         acc[r] = (acc[r] || 0) + 1;
         return acc;
       }, {});
-      const roleStr = Object.entries(roles).map(([r, c]) => `${c} ${r}${c > 1 ? 's' : ''}`).join(', ');
-      purpose = `Contains ${roleStr}`;
-    }
+      const primaryRole = Object.entries(roles).sort((a, b) => b[1] - a[1])[0][0];
 
-    lines.push(`| \`${dir}\` | ${dirNodes.length} | ${riskIcon} ${avgRisk} | ${debt} | ${type} | ${purpose} |`);
+      const reps = members
+        .sort((a, b) => (b[1].importedBy?.length || 0) - (a[1].importedBy?.length || 0))
+        .slice(0, 3)
+        .map(([f]) => `\`${path.basename(f)}\``)
+        .join(', ');
+
+      const memberCount = members.length > 3 ? ` (+${members.length - 3} more)` : '';
+      
+      // Look for a module-level description in commentIntel if any member's dir has one
+      const dirs = new Set(members.map(([f]) => path.dirname(f)));
+      let purpose = null;
+      for (const d of dirs) {
+        if (commentByDir.has(d)) {
+          purpose = commentByDir.get(d).purpose;
+          break;
+        }
+      }
+      if (!purpose) {
+        purpose = `Core ${primaryRole} logic for ${Object.keys(roles).length} types.`;
+      }
+
+      lines.push(`| **Tier ${cid}** | ${reps}${memberCount} | ${riskIcon} ${avgRisk} | ${primaryRole} | ${purpose} |`);
+    }
+  } else {
+    // Fallback to Directory map
+    lines.push('## Module map');
+    lines.push('');
+    lines.push('> One row per directory.');
+    lines.push('');
+    lines.push('| Directory | Files | Avg risk | Debt | Type | Purpose |');
+    lines.push('|-----------|-------|----------|------|------|---------|');
+
+    const byDir = groupByDir(allNodes);
+    for (const [dir, dirNodes] of Object.entries(byDir).sort()) {
+      const intel = commentByDir.get(dir);
+      const avgRisk = Math.round(dirNodes.reduce((s, [, n]) => s + n.riskScore, 0) / dirNodes.length);
+      const riskIcon = avgRisk >= 61 ? '🔴' : avgRisk >= 31 ? '🟡' : '🟢';
+      let debt = intel?.techDebt && intel.techDebt !== 'none' ? `**${intel.techDebt.toUpperCase()}**` : '—';
+      let type = intel?.isBizFeature === true ? '`biz`' : intel?.isBizFeature === false ? '`infra`' : '—';
+      
+      let purpose = intel?.purpose ? intel.purpose.split('.')[0] : null;
+      if (!purpose) {
+        const roles = dirNodes.reduce((acc, [, n]) => {
+          const r = classifyRole(n.file, n);
+          acc[r] = (acc[r] || 0) + 1;
+          return acc;
+        }, {});
+        const roleStr = Object.entries(roles).map(([r, c]) => `${c} ${r}${c > 1 ? 's' : ''}`).join(', ');
+        purpose = `Contains ${roleStr}`;
+      }
+      lines.push(`| \`${dir}\` | ${dirNodes.length} | ${riskIcon} ${avgRisk} | ${debt} | ${type} | ${purpose} |`);
+    }
   }
   lines.push('');
 
   // ── Tech stack ─────────────────────────────────────────────────────────────
-  const pkgJson = readPackageJson(graph.rootDir);
-  const frameworks = new Set(allNodes.map(([, n]) => n.meta?.framework).filter(Boolean));
-  const stack = buildTechStack(allNodes, pkgJson, graph.stats, frameworks, graph.packages);
-
+  // stack/pkgJson/frameworks already computed above before the LLM path
   lines.push('## Tech stack');
   lines.push('');
   lines.push('| Dimension | Details |');
@@ -577,7 +851,6 @@ graph LR
   lines.push('');
 
   // ── Feature inventory ──────────────────────────────────────────────────────
-  const features = inferFeatures(allNodes);
   if (Object.keys(features).length > 0) {
     lines.push('## Feature inventory');
     lines.push('');
@@ -598,32 +871,19 @@ graph LR
     appendCommentIntelSection(lines, commentIntel);
   }
 
-  // ── Legacy health report ──────────────────────────────────────────────────
-  lines.push('## Legacy health report');
-  lines.push('');
-  appendLegacySection(lines, legacyReport, scoreMap);
+  // ── Tech debt (top 5 only, compact) ──────────────────────────────────────
+  if (legacyReport?.techDebt?.length > 0) {
+    lines.push('## Tech debt');
+    lines.push('');
+    lines.push('| File | Bug fixes | Age | Priority |');
+    lines.push('|------|-----------|-----|----------|');
+    for (const td of legacyReport.techDebt.slice(0, 8)) {
+      lines.push(`| \`${td.file}\` | ${td.bugFixes} | ${td.age} | **${td.priority}** |`);
+    }
+    if (legacyReport.techDebt.length > 8) lines.push(`| _…+${legacyReport.techDebt.length - 8} more_ | | | |`);
+    lines.push('');
+  }
 
-  // ── Annotation coverage ───────────────────────────────────────────────────
-  lines.push('## Annotation coverage');
-  lines.push('');
-  appendAnnotationCoverage(lines, allNodes);
-
-  // ── Output files ──────────────────────────────────────────────────────────
-  lines.push('## Output files');
-  lines.push('');
-  lines.push('| File | Description |');
-  lines.push('|------|-------------|');
-  lines.push('| `.wednesday/codebase/dep-graph.json` | Full dependency graph |');
-  lines.push('| `.wednesday/codebase/summaries.json` | Module summaries |');
-  lines.push('| `.wednesday/codebase/MASTER.md` | This file — architecture overview + module map |');
-  lines.push('| `.wednesday/codebase/analysis/blast-radius.json` | Top 50 files by blast radius |');
-  lines.push('| `.wednesday/codebase/analysis/safety-scores.json` | Risk scores (0–100) per file |');
-  lines.push('| `.wednesday/codebase/analysis/dead-code.json` | Dead files + circular deps |');
-  lines.push('| `.wednesday/codebase/analysis/api-surface.json` | Public contracts per file |');
-  lines.push('| `.wednesday/codebase/analysis/conflicts.json` | Dependency conflicts |');
-  lines.push('| `.wednesday/codebase/analysis/comments.json` | Comment intelligence — TODOs, ideas, tech debt |');
-  lines.push('| `.wednesday/codebase/analysis/comments-raw.md` | Pre-LLM comment collection |');
-  lines.push('');
   lines.push('---');
   lines.push('*Generated by wednesday-skills map — graph analysis only, no raw source read*');
 
@@ -765,117 +1025,6 @@ function appendCommentIntelSection(lines, intel) {
   }
 }
 
-function appendLegacySection(lines, report, scoreMap) {
-  if (!report) { lines.push('*No legacy analysis available.*\n'); return; }
-
-  if (report.godFiles?.length > 0) {
-    lines.push('### God files');
-    lines.push('');
-    lines.push('> Files doing too many things. Candidates for decomposition.');
-    lines.push('');
-    lines.push('| File | Exports | Concerns |');
-    lines.push('|------|---------|----------|');
-    for (const gf of report.godFiles.slice(0, 20)) {
-      lines.push(`| \`${gf.file}\` | ${gf.exports} | ${gf.concerns} |`);
-    }
-    if (report.godFiles.length > 20) {
-      lines.push(`| ... and ${report.godFiles.length - 20} more | | |`);
-    }
-    lines.push('');
-  } else {
-    lines.push('### God files\n*None detected.*\n');
-  }
-
-  if (report.circularDeps?.length > 0) {
-    lines.push('### Circular dependencies');
-    lines.push('');
-    lines.push('> ℹ️ **Note for Swift developers**: Swift allows "circular" type references (where two classes refer to each other). The graph tracks these as dependency edges. In many cases, these are not runtime issues but rather a side effect of object modeling.');
-    lines.push('');
-    for (const c of report.circularDeps.slice(0, 20)) {
-      const typeLabel = c.type === 'Logic' ? '⚠️ **Logic Cycle**' : 'ℹ️ Structural';
-      lines.push(`- **${c.risk}:** ${typeLabel} (\`${c.files.join('\` → \`')}\`)`);
-    }
-    if (report.circularDeps.length > 20) {
-      lines.push(`- ... and ${report.circularDeps.length - 20} more`);
-    }
-    lines.push('');
-  } else {
-    lines.push('### Circular dependencies\n*None detected.*\n');
-  }
-
-  if (report.techDebt?.length > 0) {
-    lines.push('### Tech debt (ranked)');
-    lines.push('');
-    const hasTests = Object.values(scoreMap).some(s => s.coverage > 0);
-    if (!hasTests) {
-      lines.push('> ⚠️ **No unit tests detected in the project.** All coverage scores below are estimated at 0%.');
-      lines.push('');
-    }
-    lines.push('| File | Bug fixes | Age | Coverage | Priority |');
-    lines.push('|------|-----------|-----|----------|----------|');
-    for (const td of report.techDebt.slice(0, 20)) {
-      lines.push(`| \`${td.file}\` | ${td.bugFixes} | ${td.age} | ${td.coverage} | **${td.priority}** |`);
-    }
-    if (report.techDebt.length > 20) {
-      lines.push(`| ... and ${report.techDebt.length - 20} more | | | | |`);
-    }
-    lines.push('');
-  }
-
-  if (report.unannotatedDynamic?.length > 0) {
-    lines.push('### Unannotated dynamic patterns');
-    lines.push('');
-    lines.push('> Add these annotations to improve graph coverage.');
-    lines.push('');
-    lines.push('| File | Line | Pattern | Suggested annotation |');
-    lines.push('|------|------|---------|----------------------|');
-    for (const p of report.unannotatedDynamic.slice(0, 20)) {
-      lines.push(`| \`${p.file}\` | ${p.line} | \`${p.pattern}\` | \`${p.action}\` |`);
-    }
-    if (report.unannotatedDynamic.length > 20) {
-      lines.push(`| ... and ${report.unannotatedDynamic.length - 20} more | | | |`);
-    }
-    lines.push('');
-  }
-}
-
-function appendAnnotationCoverage(lines, allNodes) {
-  let dynamicRequires = 0, annotatedDynamic = 0;
-  let globals = 0, annotatedGlobals = 0;
-  let emitters = 0, annotatedEmitters = 0;
-
-  for (const [, node] of allNodes) {
-    for (const gap of node.gaps) {
-      if (gap.type === 'dynamic-require' || gap.type === 'dynamic-import') dynamicRequires++;
-      if (gap.type === 'event-emit') emitters++;
-      if (gap.type === 'global-inject') globals++;
-    }
-    if (node.meta?.annotations) {
-      for (const ann of node.meta.annotations) {
-        if (ann.type === 'connects-to') {
-          if (ann.raw?.includes('event')) annotatedEmitters++;
-          else annotatedDynamic++;
-        }
-        if (ann.type === 'global') annotatedGlobals++;
-      }
-    }
-  }
-
-  lines.push('| Category | Found | Annotated | Coverage |');
-  lines.push('|----------|-------|-----------|---------|');
-  lines.push(`| Dynamic requires | ${dynamicRequires} | ${annotatedDynamic} | ${pct(annotatedDynamic, dynamicRequires)} |`);
-  lines.push(`| Global injections | ${globals} | ${annotatedGlobals} | ${pct(annotatedGlobals, globals)} |`);
-  lines.push(`| Event emitters | ${emitters} | ${annotatedEmitters} | ${pct(annotatedEmitters, emitters)} |`);
-  lines.push('');
-  lines.push('> Boy scout rule: whoever touches a file adds annotations for that file.');
-  lines.push('');
-}
-
-function pct(a, b) {
-  if (b === 0) return 'N/A';
-  return Math.round(a / b * 100) + '%';
-}
-
 function riskLabel(score) {
   if (score >= 81) return 'Critical';
   if (score >= 61) return 'High';
@@ -892,7 +1041,13 @@ function generateStructuralArchOverview(stats, highValue) {
   return `${stats.totalFiles} files across ${langs}. ${stats.totalEdges} dependency edges tracked. ${highValue.length} high-value modules (entry points or widely imported). ${stats.highRiskFiles} files with risk score above 60.`;
 }
 
-function sampleRepresentativeNodes(nodes, maxCount = 10) {
+function sampleRepresentativeNodes(nodes, maxCount = 10, store = null) {
+  if (store) {
+    const important = store.getReadingOrder(maxCount * 3);
+    // Mix top tier with some from lower down for variety? 
+    // For now, let's just take the top ones as targets for LLM-based architecture summary
+    return important.map(i => ({ file: i.file_path, imports: [], importedBy: [], riskScore: i.importance_score }));
+  }
   const allNodes = Object.values(nodes);
   const layerPatterns = [
     { name: 'Interactor', re: /Interactor/ },
@@ -927,6 +1082,170 @@ function sampleRepresentativeNodes(nodes, maxCount = 10) {
   }
 
   return samples.slice(0, maxCount);
+}
+
+// ── LLM-written MASTER.md ─────────────────────────────────────────────────────
+
+/**
+ * Build a compact context bundle (target: ~1000 tokens) from all collected data.
+ * This becomes the single input to the LLM that writes the full MASTER.md.
+ */
+function buildCompactContext(graph, summaries, scoreMap, deadFiles, unusedExports,
+  daemonData, adapterData, features, legacyReport, flows, insights, stack, entryPointsDetected = [],
+  communityGroup = null) {
+
+  const nodes    = graph.nodes;
+  const allNodes = Object.entries(nodes).filter(([, n]) => !n.error);
+
+  // Band distribution
+  const bands = { critical: 0, risky: 0, moderate: 0, safe: 0 };
+  for (const s of Object.values(scoreMap)) {
+    const b = s.band?.toLowerCase();
+    if (b && bands[b] !== undefined) bands[b]++;
+  }
+
+  // Top risk files — name, role, score, first sentence of summary
+  const topRisk = allNodes
+    .map(([file, node]) => ({
+      file: path.relative(graph.rootDir || '', file) || file,
+      role: node.role || classifyRole(file, node),
+      score: scoreMap[file]?.score || node.riskScore || 0,
+      summary: (summaries[file] || '').split('.')[0],
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
+
+  // Entry points with confidence scores
+  const entries = allNodes
+    .filter(([, n]) => n.isEntryPoint)
+    .map(([file]) => ({
+      file: path.relative(graph.rootDir || '', file) || file,
+      summary: (summaries[file] || '').split('.')[0],
+    }));
+
+  // Entry points with confidence (Phase 5)
+  const entriesWithConfidence = entryPointsDetected.slice(0, 5).map(e => ({
+    file: path.relative(graph.rootDir || '', e.filePath) || e.filePath,
+    confidence: e.confidence,
+    method: e.detectionMethod,
+    reason: e.reason,
+  }));
+
+  // Daemons — kind + count + top events
+  const daemonSummary = daemonData ? Object.entries(daemonData.byKind || {}).map(([kind, items]) => ({
+    kind,
+    count: items.length,
+    examples: items.slice(0, 3).map(e => e.event || path.basename(e.file || '')).filter(Boolean),
+  })) : [];
+
+  // Adapters — category + libraries
+  const adapterSummary = adapterData ? Object.entries(adapterData.byKind || {}).map(([kind, libs]) => ({
+    kind,
+    libraries: Object.keys(libs),
+  })) : [];
+
+  // Primary flows (abbreviated)
+  const flowSummary = (flows || []).slice(0, 4).map(f => {
+    const steps = f.path.split(' -> ').map(s => path.basename(s));
+    return steps.join(' → ');
+  });
+
+  // Top tech debt
+  const debtFiles = (legacyReport?.techDebt || []).slice(0, 4).map(td => td.file);
+
+  return {
+    project:    path.basename(graph.rootDir || 'unknown'),
+    platform:   stack?.platform || null,
+    languages:  Object.entries(graph.stats.byLang || {}).sort((a, b) => b[1] - a[1]).map(([l, c]) => `${l}(${c})`),
+    stats: {
+      files:    allNodes.length,
+      edges:    graph.stats.totalEdges,
+      bands,
+    },
+    entryPoints:    entries,
+    entryPointsWithConfidence: entriesWithConfidence,
+    topRiskFiles:   topRisk,
+    daemons:        daemonSummary,
+    adapters:       adapterSummary,
+    features:       Object.keys(features),
+    deadCode: {
+      files:   deadFiles.length,
+      exports: Object.keys(unusedExports || {}).length,
+    },
+    circularDeps: {
+      logic:      (legacyReport?.circularDeps || []).filter(c => c.type === 'Logic').length,
+      structural: (legacyReport?.circularDeps || []).filter(c => c.type === 'Structural').length,
+    },
+    primaryFlows: flowSummary,
+    techDebtFiles: debtFiles,
+    healthNarrative: insights?.healthNarrative || null,
+    communities: communityGroup ? Object.entries(communityGroup).map(([cid, members]) => ({
+      id: cid,
+      size: members.length,
+      reps: members.slice(0, 5).map(([f]) => path.basename(f)),
+    })) : null,
+  };
+}
+
+/**
+ * Call the LLM with the compact context and get back a full MASTER.md.
+ * Uses Haiku for cost efficiency (~1000 token input → ~1200 token output).
+ */
+async function generateWithLlm(ctx, generatedAt) {
+  const contextStr = JSON.stringify(ctx, null, 2);
+
+  const prompt = `You are a senior engineer writing codebase documentation. Given the analysis data below, write a concise MASTER.md for the \`${ctx.project}\` project.
+
+DATA:
+${contextStr}
+
+Write the MASTER.md in this exact structure:
+
+# Codebase Intelligence — MASTER.md
+> Generated: ${generatedAt}
+
+## What this does
+[2-3 sentences: what the product is, who uses it, core value. Name specific domains from features list.]
+
+## Platform & stack
+[1-2 sentences: platform, primary language, key frameworks/libraries from adapters.]
+
+## Architecture
+[2-3 sentences: pattern (Clean Swift/VIP, MVC, MVVM, etc.), how data flows, key structural observations.]
+
+## Entry points
+[table with columns: File | Confidence | Method | Reason. Use entryPointsWithConfidence data. Confidence format: "72% (HIGH/MODERATE/LOW)".]
+
+## Suggested reading order
+[numbered list of 10-15 files, starting with the highest-confidence entry point. Include brief reason for each (2-5 words). Show confidence percentage at top: "Entry confidence: X% (METHOD)". If confidence >= 80%, show single list. If 50-79%, show "Option A" and "Option B". If <50%, show multiple options.]
+
+## Watch zones
+| File | Score | Role | Risk reason |
+|------|-------|------|-------------|
+[top 8 from topRiskFiles — explain WHY each is risky in 3-5 words]
+
+## Background processes
+[compact table: Kind | Count | What it does — skip section if daemons array is empty]
+
+## External adapters
+[compact grouped list by category — skip section if adapters array is empty]
+
+## Feature domains
+[comma-separated list of feature names]
+
+## Dead code
+[one sentence summary. Skip if both files and exports are 0.]
+
+---
+*Generated by wednesday-skills map*
+
+Rules:
+- Be direct. No filler phrases like "this file contains" or "this module handles".
+- Name specific files from the data — don't invent file names.
+- Skip any section if the data for it is empty/zero.
+- Keep each section short — developers read this in under 2 minutes.`;
+
+  return callLLM({ model: 'haiku', messages: [{ role: 'user', content: prompt }], maxTokens: 3000, operation: 'master-md' });
 }
 
 async function callHaikuArchitecture(sampleNodes, stats) {

@@ -1,0 +1,27 @@
+name: PR Comment Triage
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  triage:
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '@agent')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Triage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: node scripts/triage.js

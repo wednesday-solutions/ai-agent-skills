@@ -15,6 +15,8 @@ const { blastRadius } = require('./analysis/blast-radius');
 const { apiSurface, buildApiSurface } = require('./analysis/api-surface');
 const { findDeadCode, findCircularDeps } = require('./analysis/dead-code');
 const { score, scoreAll } = require('./analysis/safety-scorer');
+const { detectEntryPoints } = require('./analysis/entry-point-detector');
+const { classifyAllRoles } = require('./analysis/role-classifier');
 const { trace } = require('./analysis/call-graph');
 const { buildLegacyReport } = require('./analysis/legacy-health');
 const { fillGapsForNode } = require('./subagents/gap-filler');
@@ -31,6 +33,9 @@ const { genTests, selectTargets } = require('./reasoning/test-generator');
 const { hasApiKey, getApiKey, tokenLogger } = require('./core/llm-client');
 const { analyseComments } = require('./analysis/comment-intel');
 const { detectFeatureModules } = require('./analysis/feature-modules');
+const { classifyRole } = require('./summarization/role-classifier');
+const { computeCommunities } = require('./analysis/communities');
+const queries = require('./db/queries');
 
 /**
  * Compute SHA-1 hashes for a list of absolute file paths.
@@ -56,7 +61,7 @@ function computeHashes(files, rootDir) {
  */
 function buildTestCoverageMap(nodes) {
   const coverageMap = {};
-  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/;
+  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__|Tests\.swift$|Spec\.swift$|UITests\.swift$|\/Tests\/|_test\.go$|Test\.kt$|\/androidTest\//;
 
   for (const file of Object.keys(nodes)) {
     if (!TEST_RE.test(file)) coverageMap[file] = 0;
@@ -242,11 +247,26 @@ async function analyze(rootDir, opts = {}) {
     node.riskScore = computeRiskScore(node);
   }
 
+  // ── Enrich nodes with denormalized counts for fast queries ────────────────
+  for (const node of Object.values(mergedNodes)) {
+    node.importedByCount = (node.importedBy || []).length;
+    node.imports = node.imports || [];
+  }
+
   // ── Persist all nodes to store with hashes ────────────────────────────────
   store.writeAll(mergedNodes, allHashes);
+
+  // ── Phase D: Community Detection ──────────────────────────────────────────
+  try {
+    const communities = computeCommunities(store);
+    store.updateCommunities(communities);
+    log(`Clustered ${Object.keys(communities).length} files into logical communities`);
+  } catch (e) {
+    console.warn('[analysis] Community detection failed:', e.message);
+  }
+
   store.setMeta('last_analyzed', new Date().toISOString());
   store.setMeta('root_dir', rootDir);
-  store.close();
 
   // ── Export dep-graph.json (from merged nodes + supplementary data) ────────
   const all = Object.values(mergedNodes);
@@ -292,12 +312,92 @@ async function analyze(rootDir, opts = {}) {
     fs.writeFileSync(path.join(p.analysisDir, 'api-surface.json'),   JSON.stringify(apiMap, null, 2));
     fs.writeFileSync(path.join(p.analysisDir, 'dead-code.json'),     JSON.stringify({ deadFiles, unusedExports, circularDeps: legacy.circularDeps }, null, 2));
 
+    // Phase 3: Save enrichment to graph.db
+    // Blast radius
+    try {
+      for (const [file, data] of Object.entries(blastMap)) {
+        store.saveBlastRadius(file, {
+          directDependents: data.dependents.slice(0, data.direct),
+          transitiveDependents: data.dependents,
+          crossLanguageHits: data.crossLang,
+          maxImportDepth: 0, // Computed separately if needed
+        });
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save blast radius:', e.message);
+    }
+
+    // Dead code
+    try {
+      const deadCodeEntries = [];
+      for (const df of deadFiles) {
+        if (!df.file) continue;
+        deadCodeEntries.push({ filePath: df.file, type: 'file', isSafeToDelete: df.risk === 'low' });
+      }
+      for (const [filePath, exports] of Object.entries(unusedExports || {})) {
+        for (const exportName of exports) {
+          deadCodeEntries.push({ filePath, type: 'export', exportName, isSafeToDelete: false });
+        }
+      }
+      if (deadCodeEntries.length > 0) {
+        store.saveDeadCode(deadCodeEntries);
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save dead code:', e.message);
+    }
+
+    // Circular dependencies
+    try {
+      const cycles = (legacy.circularDeps || [])
+        .filter(c => c.type === 'Logic')
+        .map(c => ({
+          files: c.path ? c.path.split(' -> ') : [],
+          severity: c.type === 'Logic' ? 'logic' : 'structural',
+        }))
+        .filter(c => c.files.length > 0);
+      if (cycles.length > 0) {
+        store.saveCircularDependencies(cycles);
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save circular deps:', e.message);
+    }
+
+    // Entry points detection
+    try {
+      const pkg = (() => {
+        try {
+          return require(path.join(rootDir, 'package.json'));
+        } catch {
+          return {};
+        }
+      })();
+      const graphCoverage = 85; // Placeholder, could compute from gaps
+      const entryPoints = detectEntryPoints(graph.nodes, pkg, graphCoverage);
+      if (entryPoints.length > 0) {
+        store.saveEntryPoints(entryPoints);
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save entry points:', e.message);
+    }
+
+    // Role classification
+    try {
+      const roles = classifyAllRoles(graph.nodes);
+      if (roles.length > 0) {
+        store.saveModuleRoles(roles);
+      }
+    } catch (e) {
+      console.warn('[db-enrichment] Failed to save module roles:', e.message);
+    }
+
     // Conflict detection
     await analyzeAndWriteConflicts(rootDir, p.analysisDir, apiKey);
 
     // Comment intelligence
     await analyseComments(graph.nodes, rootDir, p.analysisDir, apiKey);
   }
+
+  store.close();
 
   const elapsed = Date.now() - start;
   log(`Done. ${Object.keys(graph.nodes).length} files in ${elapsed}ms`);
@@ -375,14 +475,50 @@ async function summarize(rootDir, opts = {}) {
   // Load commentIntel first — if enrichment has already run, module purposes
   // skip LLM calls entirely and produce better summaries (developer intent > inference)
   const commentIntel = loadCommentIntel(p);
-  const { summaries, apiCalls } = await summarizeAll(graph.nodes, rootDir, p.cacheDir, apiKey, commentIntel);
+  const { summaries, apiCalls } = await summarizeAll(
+    graph.nodes, rootDir, p.cacheDir, apiKey, commentIntel,
+    opts.daemonsByFile || {}, opts.adaptersByFile || {}
+  );
 
   fs.mkdirSync(p.codebaseDir, { recursive: true });
   fs.writeFileSync(p.summaries, JSON.stringify(summaries, null, 2));
 
-  const legacy = buildLegacyReport(graph.nodes);
+  // Write summaries + bands back to DB so queries don't need to load JSON
+  const scoreMap = scoreAll(graph.nodes, {}, commentIntel);
   const store = GraphStore.open(p.dbPath);
-  const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel, 0, 0, {}, store);
+  store.updateSummaries(summaries);
+  store.updateScores(
+    Object.fromEntries(Object.entries(scoreMap).map(([f, s]) => [f, { band: s.band, score: s.score }]))
+  );
+  store.updateRoles(
+    Object.fromEntries(Object.keys(graph.nodes).map(f => [f, classifyRole(f, graph.nodes[f])]))
+  );
+
+  // Convert flat daemonsByFile / adaptersByFile into byKind maps for generateMasterMd
+  const _daemonsByFile  = opts.daemonsByFile  || {};
+  const _adaptersByFile = opts.adaptersByFile || {};
+  const daemonData = Object.keys(_daemonsByFile).length > 0 ? {
+    byKind: Object.entries(_daemonsByFile).reduce((acc, [file, entries]) => {
+      for (const e of entries) {
+        acc[e.kind] = acc[e.kind] || [];
+        acc[e.kind].push({ ...e, file });
+      }
+      return acc;
+    }, {}),
+  } : null;
+  const adapterData = Object.keys(_adaptersByFile).length > 0 ? {
+    byKind: Object.entries(_adaptersByFile).reduce((acc, [file, entries]) => {
+      for (const e of entries) {
+        acc[e.kind] = acc[e.kind] || {};
+        acc[e.kind][e.library || e.kind] = (acc[e.kind][e.library || e.kind] || []);
+        acc[e.kind][e.library || e.kind].push({ ...e, file });
+      }
+      return acc;
+    }, {}),
+  } : null;
+
+  const legacy = buildLegacyReport(graph.nodes);
+  const masterPath = await generateMasterMd(graph, summaries, legacy, p.codebaseDir, apiKey, commentIntel, 0, 0, {}, store, daemonData, adapterData);
   store.close();
 
   // QA the MASTER.md
@@ -522,7 +658,7 @@ module.exports = {
     if (!fs.existsSync(hooksDir)) return false;
 
     const packageHooks = path.join(__dirname, '..', '..', 'assets', 'hooks');
-    for (const hook of ['post-commit', 'post-merge']) {
+    for (const hook of ['commit-msg', 'pre-commit', 'post-commit', 'post-merge']) {
       const src = path.join(packageHooks, hook);
       const dest = path.join(hooksDir, hook);
       if (fs.existsSync(src)) {
@@ -531,5 +667,20 @@ module.exports = {
       }
     }
     return true;
+  },
+
+  query: (rootDir, type, ...args) => {
+    const p = paths(rootDir);
+    if (!fs.existsSync(p.dbPath)) throw new Error('Run wednesday-skills analyze first (database missing).');
+    
+    if (typeof queries[type] !== 'function') {
+      throw new Error(`Unknown query type: ${type}. Available: ${Object.keys(queries).filter(k => typeof queries[k] === 'function').join(', ')}`);
+    }
+
+    try {
+      return queries[type](p.dbPath, ...args);
+    } finally {
+      // Logic to close DB if needed, but queries.js uses a cache for now
+    }
   },
 };

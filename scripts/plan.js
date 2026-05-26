@@ -51,8 +51,8 @@ loadEnv();
 const ANTHROPIC_API_KEY = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY;
 const USE_OPENROUTER = !!process.env.OPENROUTER_API_KEY;
 
-const FAST_MODEL = 'stepfun/step-3.5-flash:free';
-const SMART_MODEL = 'stepfun/step-3.5-flash:free';
+const FAST_MODEL = process.env.OPENROUTER_MODEL_HAIKU || 'google/gemini-2.5-flash:free';
+const SMART_MODEL = process.env.OPENROUTER_MODEL_CAPABLE || 'google/gemini-2.5-flash:free';
 
 const PERSONA_MAX_TOKENS = 4096;
 const SYNTHESIS_MAX_TOKENS = 8192;
@@ -742,7 +742,70 @@ async function main() {
   stages.synthesis.startedAt = Date.now();
   redraw();
 
-  const plan = await runSynthesis(brief, qna, research, architect, pm, security);
+  let plan = await runSynthesis(brief, qna, research, architect, pm, security);
+
+  if (!plan) {
+    plan = `# Project Plan
+
+## Overview
+This is a fallback project plan template. It is created when the AI synthesis service is offline or credentials are not configured.
+
+## Clarifications
+| Question | Answer |
+|----------|--------|
+| Scale | MVP |
+
+## Tech Stack
+| Layer | Choice | Reason |
+|-------|--------|--------|
+| Frontend | React | Fast MVP development |
+
+## Architecture
+A standard robust model-view-controller layout with modular boundaries.
+
+## Phases
+### Phase 1 — Foundation
+**Goal:** Setup basic repository, packages, and linting.
+**Timeline:** 1 week
+**Tasks:**
+- [ ] Initialize repository
+**Acceptance Criteria:**
+- [ ] Project compiles
+
+## Security Plan
+| Threat | Likelihood | Impact | Mitigation |
+|--------|-----------|--------|-----------|
+| Unauthorized Access | Low | High | Use JWT auth |
+
+**Auth strategy:** JWT Auth
+**Compliance flags:** None
+**Security tasks added to phases:** Add JWT verification middleware
+
+## Success Metrics
+| Metric | Target | Measured By |
+|--------|--------|------------|
+| Response Time | < 200ms | APM |
+
+## Risks
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|-----------|
+| Integration Delay | Medium | Medium | Mock early |
+
+## Tensions
+None identified.
+
+## Assumptions
+- Standard Node.js environment is available.
+
+## Out of Scope
+- Advanced horizontal scaling.
+
+## Branch Naming (GIT-OS)
+- \`feat/<name>\` from main
+- \`fix/<name>\` from main
+- \`chore/<name>\` from main
+`;
+  }
 
   stages.synthesis.state = 'done';
   clearInterval(ticker);

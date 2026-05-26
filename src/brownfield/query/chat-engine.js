@@ -170,10 +170,11 @@ function handleSummaryLookup(question, nodes, summaries, store) {
     if (matches.length === 1) {
       // Single unambiguous match
       const { file, lineStart, signature } = matches[0];
-      const fileSummary = summaries[file] || 'No summary available.';
+      const detail = store.getFileSummary(file);
+      const fileSummary = detail?.summary || summaries[file] || 'No summary available.';
       return {
         answer: `**${candidateName}** (${file}:${lineStart})\n\`${signature}\`\n\n${fileSummary}`,
-        source: 'symbols table + summaries.json',
+        source: 'symbols table + database',
       };
     } else if (matches.length > 1) {
       // Ambiguous — list matches and fall back to file summary
@@ -195,6 +196,31 @@ function handleSummaryLookup(question, nodes, summaries, store) {
     };
   }
 
+  // Use store if available (Phase 3 — indexed retrieval)
+  if (store) {
+    const detail = store.getFileSummary(file);
+    if (detail) {
+      const lines = [
+        `**\`${file}\`**`,
+        '',
+        detail.summary ? detail.summary : `*No LLM summary available — run \`wednesday-skills summarize\` to generate.*`,
+        '',
+        `**Stats:**`,
+        `- Role: ${detail.role || 'n/a'}`,
+        `- Risk score: ${detail.riskScore}/100`,
+        `- Entry point: ${detail.entryPointType || 'no'} (conf: ${detail.entryPointConfidence}%)`,
+        `- Imported by: ${detail.importedByCount} files`,
+        `- BLAST radius: ${detail.blastRadius?.transitive || 0}`,
+        `- Dead code: ${detail.isDeadFile ? 'Yes' : 'No'}`,
+      ];
+      if (detail.purpose) lines.push('', `**Purpose:**`, detail.purpose);
+      if (detail.dangerReason) lines.push('', `**Danger:**`, detail.dangerReason);
+      
+      return { answer: lines.join('\n'), source: 'graph.db (indexed lookup)', file };
+    }
+  }
+
+  // Legacy fallback (Phase 2 — loading full JSON objects)
   const node = nodes[file];
   const summary = summaries[file];
 
@@ -245,7 +271,7 @@ async function handleSymbolBlast(question, store) {
 
 // ── Handler: blast radius ─────────────────────────────────────────────────────
 
-function handleBlastRadius(question, nodes) {
+function handleBlastRadius(question, nodes, store) {
   const mention = extractFileMention(question);
   const file = mention ? findNode(mention, nodes) : null;
 
@@ -256,7 +282,32 @@ function handleBlastRadius(question, nodes) {
     };
   }
 
-  // BFS from the file following importedBy edges
+  // Use store if available (Phase 3 — indexed BFS)
+  if (store) {
+    const blast = store.getBlastRadius(file);
+    if (blast) {
+      const lines = [
+        `**Blast radius: \`${file}\`**`,
+        '',
+        `- Direct dependents: **${blast.direct.length}**`,
+        `- Total (transitive): **${blast.transitive}**`,
+        `- Cross-language impacts: ${blast.crossLang || 0}`,
+        '',
+      ];
+      if (blast.transitive === 0) {
+        lines.push('Nothing depends on this file — safe to change without side-effects.');
+      } else {
+        lines.push('**Files that break if you change this:**');
+        blast.direct.slice(0, 20).forEach(f => {
+          lines.push(`- \`${f}\` *(direct)*`);
+        });
+        if (blast.direct.length > 20) lines.push(`- ...and ${blast.direct.length - 20} more`);
+      }
+      return { answer: lines.join('\n'), source: 'graph.db (indexed BLAST)', file };
+    }
+  }
+
+  // Legacy BFS from the file following importedBy edges
   const visited = new Set();
   const queue = [file];
   const direct = new Set();
@@ -299,7 +350,7 @@ function handleBlastRadius(question, nodes) {
     if (allDeps.length > 20) lines.push(`- ...and ${allDeps.length - 20} more`);
   }
 
-  return { answer: lines.join('\n'), source: 'dep-graph.json (BFS traversal)', file };
+  return { answer: lines.join('\n'), source: 'dep-graph.json (legacy BFS)', file };
 }
 
 // ── Handler: graph filter ─────────────────────────────────────────────────────
@@ -336,7 +387,7 @@ function parseCriteria(question) {
 
 function handleGraphFilter(question, nodes) {
   const criteria = parseCriteria(question);
-  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/;
+  const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__|Tests\.swift$|Spec\.swift$|UITests\.swift$|\/Tests\/|_test\.go$|Test\.kt$|\/androidTest\//;
 
   // Build test coverage map
   const covered = new Set();
@@ -630,10 +681,10 @@ async function answerQuestion(question, rootDir, graph, summaries, store = null)
       result = handleSummaryLookup(question, nodes, summaries, store);
       break;
     case 'blast-radius':
-      result = handleBlastRadius(question, nodes);
+      result = handleBlastRadius(question, nodes, store);
       break;
     case 'graph-filter':
-      result = handleGraphFilter(question, nodes);
+      result = handleGraphFilter(question, nodes, store);
       break;
     case 'path-traversal':
       result = handlePathTraversal(question, nodes);

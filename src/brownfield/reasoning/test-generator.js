@@ -12,7 +12,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const { callLLM, hasApiKey } = require('../core/llm-client');
 
-const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__/;
+const TEST_RE = /\.test\.[jt]sx?$|\.spec\.[jt]sx?$|__tests__|Tests\.swift$|Spec\.swift$|UITests\.swift$|\/Tests\/|_test\.go$|Test\.kt$|\/androidTest\//;
 
 // ── Target selection ──────────────────────────────────────────────────────────
 

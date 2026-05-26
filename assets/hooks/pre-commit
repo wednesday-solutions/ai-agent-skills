@@ -1,0 +1,37 @@
+#!/bin/bash
+# Wednesday Skills — pre-commit hook
+# Blocks commits on new JS/TS files missing a @wednesday-skills:purpose header.
+# Zero LLM. Pure grep. < 1 second.
+
+STAGED=$(git diff --cached --name-only --diff-filter=A \
+  | grep -E '\.(js|jsx|ts|tsx)$' \
+  | grep -v -E '\.(test|spec|d)\.(js|jsx|ts|tsx)$' \
+  | grep -v -E '^(\.wednesday|node_modules)')
+
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+MISSING=""
+for FILE in $STAGED; do
+  if ! head -5 "$FILE" | grep -q "@wednesday-skills:purpose"; then
+    MISSING="$MISSING\n    → $FILE"
+  fi
+done
+
+if [ -n "$MISSING" ]; then
+  echo ""
+  echo "  ✗ Wednesday Skills: Module header missing in new file(s):"
+  printf "$MISSING\n"
+  echo ""
+  echo "  Add this block at the top of each file before committing:"
+  echo ""
+  echo "  /**"
+  echo "   * @wednesday-skills:purpose <what this module does>"
+  echo "   * @wednesday-skills:risk low | medium | high"
+  echo "   */"
+  echo ""
+  exit 1
+fi
+
+exit 0

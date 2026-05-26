@@ -14,56 +14,32 @@ Most AI agents in large codebases fail in the same ways: they hallucinate struct
 
 It works by pre-computing a **structural dependency graph** (SQLite, AST-based, zero LLM) of your entire codebase once, then giving every AI agent — Claude Code, Cursor, Gemini CLI, GitHub Copilot — a precise manual for how to work in *your specific project*. From that point on, structural questions are answered from the graph in milliseconds, not from re-reading source files.
 
----
-
 ## What You Get After Install
 
-### 1. The Intelligence Hub (`.wednesday/`)
+This system integrates directly with **Claude Code**, **Gemini**, and other AI tools as an **on-demand skill**, feeding them structured repo context and enforcing local guardrails. **Answering structural questions via our pre-computed graph saves 70–90% of LLM tokens per query.**
 
-A hidden directory that acts as the repository's brain:
+### 1. Unified Codebase Intelligence Hub (`.wednesday/`)
+- **AST-parsed Dependency Graph (`graph.db`)**: Builds and maintains a SQLite database mapping every import, export, and function call across JS, TS, Python, Go, Swift, etc. This eliminates the need for AI agents to repeatedly read files, reducing LLM token consumption by up to 90%.
+- **Living Agent Configuration Files**: Automatically generates and updates `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, and `.github/copilot-instructions.md` with available skills and rules.
 
-| File | Purpose |
-|------|---------|
-| `graph.db` | SQLite dependency map — every import, function call, and export across the whole codebase |
-| `codebase/MASTER.md` | AI-generated architecture guide — user flows, danger zones, module ownership |
-| `codebase/summaries.json` | Plain-English purpose of every module, pre-computed |
-| `skills/` | Per-agent instruction sets that load on demand |
+### 2. Guardrails and Enforced Quality Standards
+- **Complexity Gates**: Enforces a cyclomatic complexity limit of `8` before code is submitted.
+- **Approved Design Assets**: Enforces UI design rules, preventing developers or AI agents from creating custom/duplicate UI components and restricting imports to approved libraries (e.g. shadcn, Magic UI).
+- **Git and Commit Discipline**: Automatically installs git hooks:
+  - `commit-msg`: Enforces conventional commit formatting via `commitlint`.
+  - `pre-commit`: Requires a `@wednesday-skills:purpose` header on new files.
+  - `post-commit` / `post-merge`: Automatically maintains and syncs the dependency graph in `< 1s` using incremental updates.
 
-### 2. Living Agent Config Files
+### 3. Immediate Change & Impact Analysis
+- **Blast Radius Analysis (`blast <file>`)**: Instantly lists direct and transitive dependents that will be affected if a specific file or symbol changes.
+- **Audit-ready Safety Scoring (`score <file>`)**: Computes a detailed file risk score from `0` to `100` using import volume, public contracts, test coverage, and historical git bug history.
 
-Every supported AI tool gets its own instruction file, automatically kept in sync:
+### 4. Automated Multi-Agent Architecture Planner (`plan`)
+- **Parallel Synthesis**: Triggers a parallel planning pipeline running PM, Architect, and Security personas simultaneously on any project brief. It resolves technical disagreements (tensions) and synthesizes a production-ready `PLAN.md` outlining phase breakdowns, JWT auth strategies, and threat mitigations.
 
-| Tool | File |
-|------|------|
-| Claude Code | `CLAUDE.md` |
-| Gemini CLI | `GEMINI.md` |
-| Cursor | `.cursorrules` |
-| GitHub Copilot | `.github/copilot-instructions.md` |
-| Antigravity | `~/.gemini/antigravity/skills/` |
-
-These files tell each agent: what skills exist, when to use them, and what it must never do (custom buttons, complexity > 8, magic numbers, etc.).
-
-### 3. Enforced Standards — No Exceptions
-
-From install onwards, every AI in your project follows the same rules:
-
-- **Complexity gate**: Cyclomatic complexity > 8 gets flagged before it reaches a PR
-- **Component gate**: Custom UI components are blocked — only shadcn, Aceternity, and Magic UI allowed
-- **Commit gate**: `commit-msg` hook runs commitlint on every commit — `"fixed stuff"` is rejected, `"fix(auth): Resolve token expiry on refresh"` passes
-- **Module header gate**: `pre-commit` hook blocks any new JS/TS file without a `@wednesday-skills:purpose` header
-- **Graph sync**: Every commit triggers an incremental graph update (< 1 second, zero LLM)
-
-### 4. Instant Impact Analysis
-
-When a developer or agent asks *"what breaks if I change this file?"*, they get a real answer pulled from the pre-computed graph — not a guess:
-
-```
-Changing src/auth/token.js will impact 14 files
-  Direct:     4 files  (api/middleware, billing/service, sessions/manager, users/auth)
-  Transitive: 10 files across Auth and Billing modules
-  Risk score: 87 / 100  ← HIGH
-  Cross-lang: 2 Swift files import this via the mobile bridge
-```
+### 5. Seamless Skill Registry & Cost-Optimized Analytics
+- **On-Demand Package Management**: Use `ws-skills search` and `ws-skills add` to pull community-built skills. Enforces PR review fixes (`@agent fix all`) as atomic commits with zero friction.
+- **Up to 99% Cost Savings**: Structural queries are automatically routed to free-tier fallback models (Gemma 3, Qwen 2.5) first, saving up to 99% on API bills (reducing a $0.1620 Sonnet analysis query down to $0.0013). Run `ws-skills stats --cost` to inspect monthly cost breakdowns locally.
 
 ---
 

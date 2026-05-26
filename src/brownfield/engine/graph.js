@@ -104,12 +104,17 @@ function buildGraph(rootDir, opts = {}) {
   return { nodes };
 }
 
-function computeRiskScore(node) {
-  let s = 0;
-  if ((node.importedByCount || 0) > 10) s += 30;
-  if (node.error) s += 50;
-  if (node.gaps && node.gaps.length > 0) s += 20;
-  return Math.min(100, s);
+function computeRiskScore(node, testCoverage = 0) {
+  const dependents = (node.importedBy || []).length;
+  const isPublicContract = (node.exports || []).length > 0 && dependents > 0;
+
+  const raw = Math.round(
+    (Math.min(dependents, 50) * 1.2) +
+    (isPublicContract ? 25 : 0) +
+    ((100 - testCoverage) * 0.15)
+  );
+
+  return Math.min(100, raw);
 }
 
 function writeGraph(graph, outDir) {

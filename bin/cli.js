@@ -1893,7 +1893,23 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
     fs.mkdirSync(skillsDir, { recursive: true });
 
     selectedSkills.forEach(skill => {
-      const src = path.join(skillsSource, skill);
+      let sourceSkill = skill;
+      const mapping = {
+        'git-os': 'wednesday-git',
+        'sprint': 'wednesday-git',
+        'pr-create': 'wednesday-git',
+        'brownfield-chat': 'codebase-intel',
+        'brownfield-fix': 'codebase-intel',
+        'brownfield-enrich': 'codebase-intel',
+        'brownfield-gaps': 'codebase-intel',
+        'wednesday-dev': 'standards-kit',
+        'wednesday-design': 'standards-kit'
+      };
+      if (mapping[skill]) {
+        sourceSkill = mapping[skill];
+      }
+
+      const src = path.join(skillsSource, sourceSkill);
       const dest = path.join(skillsDir, skill);
       const isUpdate = fs.existsSync(dest);
       // Wipe first so removed files from older versions don't linger
@@ -1901,6 +1917,35 @@ function install(targetDir, skipConfig = false, skipChecklist = false) {
       log('blue', `${isUpdate ? 'Updating' : 'Installing'} ${skill} skill...`);
       copyRecursive(src, dest);
       log('green', `  ✓ ${skill} ${isUpdate ? 'updated' : 'installed'}`);
+
+      // ALSO copy consolidated versions to their legacy folder aliases for full backward compatibility
+      if (skill === 'wednesday-git') {
+        const legacyGitSkills = ['git-os', 'sprint', 'pr-create'];
+        legacyGitSkills.forEach(legacy => {
+          const lDest = path.join(skillsDir, legacy);
+          if (fs.existsSync(lDest)) fs.rmSync(lDest, { recursive: true, force: true });
+          copyRecursive(src, lDest);
+          log('green', `  ✓ ${legacy} legacy-alias installed`);
+        });
+      }
+      if (skill === 'codebase-intel') {
+        const legacyIntelSkills = ['brownfield-chat', 'brownfield-fix', 'brownfield-enrich', 'brownfield-gaps'];
+        legacyIntelSkills.forEach(legacy => {
+          const lDest = path.join(skillsDir, legacy);
+          if (fs.existsSync(lDest)) fs.rmSync(lDest, { recursive: true, force: true });
+          copyRecursive(src, lDest);
+          log('green', `  ✓ ${legacy} legacy-alias installed`);
+        });
+      }
+      if (skill === 'standards-kit') {
+        const legacyStandardsSkills = ['wednesday-dev', 'wednesday-design'];
+        legacyStandardsSkills.forEach(legacy => {
+          const lDest = path.join(skillsDir, legacy);
+          if (fs.existsSync(lDest)) fs.rmSync(lDest, { recursive: true, force: true });
+          copyRecursive(src, lDest);
+          log('green', `  ✓ ${legacy} legacy-alias installed`);
+        });
+      }
     });
 
     // Symlink .wednesday/skills/* into .claude/skills/ so Claude Code's

@@ -1,21 +1,8 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-03-27T08:56:40.931Z",
-  "count": 17,
+  "updatedAt": "2026-05-26T07:49:28.980Z",
+  "count": 10,
   "skills": [
-    {
-      "name": "brownfield-chat",
-      "version": "1.0.0",
-      "description": "Natural-language Q&A across the full codebase. Use for multi-module questions, \"what breaks if\", git history, cross-cutting queries, and anything spanning more than one file. For a single-file lookup use brownfield-query instead.",
-      "tags": [],
-      "requires": [],
-      "conflicts": [],
-      "author": "wednesday-solutions",
-      "license": "MIT",
-      "wordCount": 529,
-      "downloads": 0,
-      "path": "skills/brownfield-chat"
-    },
     {
       "name": "brownfield-drift",
       "version": "1.0.0",
@@ -99,19 +86,6 @@
       "wordCount": 281,
       "downloads": 0,
       "path": "skills/agents/onboard-dev"
-    },
-    {
-      "name": "pr-create",
-      "version": "1.0.0",
-      "description": "Agent-driven PR creation skill. Validates branch, runs pre-push checklist, generates GIT-OS compliant PR title and body from commit history, detects stacked branches, then pushes and opens the PR via gh CLI.",
-      "tags": [],
-      "requires": [],
-      "conflicts": [],
-      "author": "wednesday-solutions",
-      "license": "MIT",
-      "wordCount": 938,
-      "downloads": 0,
-      "path": "skills/pr-create"
     },
     {
       "name": "pr-review",
